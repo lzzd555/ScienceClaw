@@ -100,6 +100,8 @@ docker compose -f docker-compose-release.yml up -d
 
 > Pulls pre-built images directly — no local compilation needed. Ready in a few minutes.
 
+> **Windows users**: You can also right-click `windows_run.bat` in the project root to launch the services. The script will automatically open your browser once everything is ready.
+
 **3. Subsequent launches**
 
 ```bash
