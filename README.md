@@ -78,12 +78,32 @@ No tedious configuration needed. ScienceClaw ships with curated tools and skill 
 
 ## 📦 Quick Start
 
-### Prerequisites
+###  Windows Users — Desktop App (One-Click Install)
+
+No Docker required, no command-line needed. Download the desktop installer and get started instantly.
+
+**1. Download the installer**
+
+👉 [ScienceClaw Desktop v0.0.3 (.tar.gz)](https://gitee.com/zidongtaichu_beijing/scienceclaw/releases/download/v0.0.3/ScienceClaw-Desktop-Setup-0.0.3.tar.gz)
+
+**2. Extract and install**
+
+After downloading, extract the archive and run the installer. Follow the setup wizard to complete installation.
+
+**3. Launch**
+
+Once installed, double-click the desktop shortcut to start ScienceClaw — ready to use out of the box.
+
+---
+
+###  macOS / Linux Users — Docker Deployment
+
+#### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/) (Docker Desktop includes Compose)
 - Recommended system RAM ≥ 8 GB
 
-### Install & Launch
+#### Install & Launch
 
 **1. Clone the repository**
 
@@ -100,31 +120,14 @@ docker compose -f docker-compose-release.yml up -d
 
 > Pulls pre-built images directly — no local compilation needed. Ready in a few minutes.
 
-> **Windows users**: You can also right-click `windows_run.bat` in the project root to launch the services. The script will automatically open your browser once everything is ready.
 
-**3. Subsequent launches**
-
-```bash
-docker compose up -d
-```
-
-> Images are already available; subsequent launches start in seconds.
-
-**4. Open in browser**
+**3. Open in browser**
 
 ```
 http://localhost:5173
 ```
 
-**5. First launch for developers — build from source**
-
-```bash
-docker compose up -d --build
-```
-
-> Builds all images from source code. Ideal for developers who need to modify the code. The first build downloads dependencies and may take longer.
-
-**6. Login**
+**4. Login**
 
 <table>
 <tr>
@@ -143,6 +146,16 @@ docker compose up -d --build
 </td>
 </tr>
 </table>
+
+---
+
+### 🛠️ Developers — Build from Source
+
+```bash
+docker compose up -d --build
+```
+
+> Builds all images from source code. Ideal for developers who need to modify the code. The first build downloads dependencies and may take longer.
 
 ---
 
