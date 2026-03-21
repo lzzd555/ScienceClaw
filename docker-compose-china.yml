@@ -30,7 +30,10 @@ services:
       retries: 30
 
   mongo:
-    image: swr.cn-north-4.myhuaweicloud.com/zdtc-rd/mongo:latest
+    image: scienceclaw-mongo:local
+    build:
+      context: ScienceClaw/mongo
+      dockerfile: Dockerfile.china
     environment:
       MONGO_INITDB_ROOT_USERNAME: scienceone
       MONGO_INITDB_ROOT_PASSWORD: Yp51Bi1eEjC77sAt
@@ -40,9 +43,19 @@ services:
       - scienceclaw_mongo_data:/data/db
     restart: unless-stopped
 
+  redis:
+    image: scienceclaw-redis:local
+    build:
+      context: ScienceClaw/redis
+      dockerfile: Dockerfile.china
+    restart: unless-stopped
+
   # ── SearXNG 搜索引擎（websearch 服务的依赖） ──
   searxng:
-    image: swr.cn-north-4.myhuaweicloud.com/zdtc-rd/searxng:latest
+    image: scienceclaw-searxng:local
+    build:
+      context: ScienceClaw/searxng
+      dockerfile: Dockerfile.china
     environment:
       SEARXNG_BASE_URL: http://localhost:8080/
       SEARXNG_LIMITER: "false"
@@ -106,11 +119,13 @@ services:
       MONGODB_PORT: 27017
       MONGODB_USER: scienceone
       MONGODB_PASSWORD: Yp51Bi1eEjC77sAt
+      TASK_SERVICE_API_KEY: ${TASK_SERVICE_API_KEY:-}
       WEBSEARCH_API_KEY: "fdsfkjikmii"
       # 网页搜索服务地址（Docker 内部通信）
       WEBSEARCH_BASE_URL: http://websearch:8068
       WEBSEARCH_URL: http://websearch:8068
-      TASK_SERVICE_API_KEY: ${TASK_SERVICE_API_KEY:-}
+      # 诊断模式：记录每步 LLM 调用的完整上下文，用于质量分析（设为空或删除此行关闭）
+      DIAGNOSTIC_MODE: "1"
       IM_ENABLED: "true"
       IM_RESPONSE_TIMEOUT: 300
       IM_MAX_MESSAGE_LENGTH: 4000
@@ -135,15 +150,11 @@ services:
       timeout: 5s
       retries: 30
 
-  redis:
-    image: swr.cn-north-4.myhuaweicloud.com/zdtc-rd/redis:7-alpine
-    restart: unless-stopped
-
   # ── 任务调度服务（Task Service）──
   scheduler_api:
     build:
       context: ScienceClaw/task-service
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.china
     image: scienceclaw-task-service:local
     environment:
       TZ: Asia/Shanghai
@@ -214,11 +225,13 @@ services:
         condition: service_started
 
   frontend:
-    image: swr.cn-north-4.myhuaweicloud.com/zdtc-rd/node:20-bookworm-slim
+    image: swr.cn-north-4.myhuaweicloud.com/claw/node:20-bookworm-slim
     working_dir: /app
     environment:
       BACKEND_URL: http://backend:8000
+      # 定时任务服务：Vite 代理 /task-service 时转发到该地址（容器内使用服务名）
       TASK_SERVICE_URL: http://scheduler_api:8001
+      # 任务执行时间展示时区，默认北京时间（与 DISPLAY_TIMEZONE 一致）
       VITE_DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Asia/Shanghai}
       NPM_CONFIG_REGISTRY: https://registry.npmmirror.com
       NPM_CONFIG_CACHE: /npm-cache
@@ -232,7 +245,7 @@ services:
     ports:
       - "5173:5173"
     command: >
-      sh -lc "npm ci --no-fund --no-audit && npm run dev -- --host 0.0.0.0 --port 5173"
+      sh -lc "npm install --no-fund --no-audit && npm run dev -- --host 0.0.0.0 --port 5173"
     restart: unless-stopped
     depends_on:
       backend:

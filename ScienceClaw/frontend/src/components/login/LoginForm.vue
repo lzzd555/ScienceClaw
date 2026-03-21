@@ -66,6 +66,13 @@
                 <LoaderCircle v-if="isLoading" :size="16" class="animate-spin" />
                 <span>{{ isLoading ? t('Processing...') : t('Login') }}</span>
               </button>
+
+              <!-- Default credentials hint -->
+              <div v-if="defaultCredentials" 
+                class="flex items-center gap-[8px] px-[14px] py-[10px] rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/40 text-amber-700 dark:text-amber-300 text-[12px] leading-[18px]">
+                <Info :size="14" class="shrink-0 mt-[1px]" />
+                <span>{{ t('Default login') }}: {{ t('Username') }} <strong>{{ defaultCredentials.username }}</strong>，{{ t('Password') }} <strong>{{ defaultCredentials.password }}</strong></span>
+              </div>
             </div>
           </div>
         </div>
@@ -87,11 +94,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Eye, EyeOff, LoaderCircle } from 'lucide-vue-next'
+import { Eye, EyeOff, LoaderCircle, Info } from 'lucide-vue-next'
 import { useAuth } from '@/api'
 import { validateUserInput } from '@/utils/auth'
 import { showErrorToast, showSuccessToast } from '@/utils/toast'
-import { getCachedAuthProvider } from '@/api/auth'
+import { getCachedAuthProvider, checkDefaultPassword } from '@/api/auth'
 
 const { t } = useI18n()
 
@@ -104,6 +111,7 @@ const emits = defineEmits<{
 
 const { login, isLoading, authError } = useAuth()
 const hasRegister = ref(false)
+const defaultCredentials = ref<{ username: string; password: string } | null>(null)
 
 // Form state
 const showPassword = ref(false)
@@ -202,6 +210,15 @@ const handleSubmit = async () => {
 onMounted(async () => {
   const authProvider = await getCachedAuthProvider()
   hasRegister.value = authProvider === 'password'
+
+  try {
+    const result = await checkDefaultPassword()
+    if (result.is_default && result.username && result.password) {
+      defaultCredentials.value = { username: result.username, password: result.password }
+    }
+  } catch {
+    // ignore
+  }
 })
 
 // Expose clearForm method for parent component

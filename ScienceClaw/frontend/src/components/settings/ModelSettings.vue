@@ -6,7 +6,7 @@
 
     <div v-else class="flex flex-col gap-8">
       <!-- Free Token Banner -->
-      <div v-if="models.length === 0" class="relative overflow-hidden rounded-2xl border border-indigo-200 dark:border-indigo-800/50 bg-gradient-to-br from-indigo-50 via-blue-50 to-purple-50 dark:from-indigo-950/40 dark:via-blue-950/30 dark:to-purple-950/30 p-6">
+      <div class="relative overflow-hidden rounded-2xl border border-indigo-200 dark:border-indigo-800/50 bg-gradient-to-br from-indigo-50 via-blue-50 to-purple-50 dark:from-indigo-950/40 dark:via-blue-950/30 dark:to-purple-950/30 p-6">
         <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-indigo-200/40 to-transparent rounded-bl-full"></div>
         <div class="relative flex flex-col gap-4">
           <div class="flex items-start gap-4">

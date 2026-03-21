@@ -1,35 +1,6 @@
-# syntax=docker/dockerfile:1.4
-FROM swr.cn-north-4.myhuaweicloud.com/zdtc-rd/python:3.12-slim
+FROM swr.cn-north-4.myhuaweicloud.com/claw/scienceclaw-websearch:release-v0.0.3
 
 WORKDIR /search
-
-ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
-    PIP_TRUSTED_HOST=mirrors.aliyun.com \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-# PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
-
-# Replace Debian sources with Aliyun mirrors
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
-
-# Install Python dependencies (BuildKit cache)
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install \
-    "crawl4ai" \
-    fastapi \
-    "uvicorn[standard]" \
-    gunicorn \
-    aiohttp \
-    pydantic \
-    python-dotenv \
-    markdown \
-    beautifulsoup4
-
-# Install Playwright Chromium browser + system deps (apt cache for --with-deps)
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    python -m playwright install --with-deps chromium
 
 # Copy websearch source code
 COPY . /search/

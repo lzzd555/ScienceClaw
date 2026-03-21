@@ -134,6 +134,24 @@ export interface ResetPasswordRequest {
 
 
 /**
+ * Check default password response type
+ */
+export interface CheckDefaultPasswordResponse {
+  is_default: boolean;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * Check if admin account still uses the default password
+ * @returns Whether the default password is unchanged
+ */
+export async function checkDefaultPassword(): Promise<CheckDefaultPasswordResponse> {
+  const response = await apiClient.get<ApiResponse<CheckDefaultPasswordResponse>>('/auth/check-default-password');
+  return response.data.data;
+}
+
+/**
  * User login
  * @param request Login credentials
  * @returns Login response with user info and tokens

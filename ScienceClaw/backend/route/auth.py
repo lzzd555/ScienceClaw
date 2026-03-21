@@ -95,6 +95,27 @@ def _user_doc_to_auth_user(doc: dict[str, Any]) -> AuthUser:
         last_login_at=_to_str_ts(last_login_at) if last_login_at else None,
     )
 
+@router.get("/check-default-password", response_model=ApiResponse)
+async def check_default_password() -> ApiResponse:
+    """Check whether the bootstrap admin account still uses the default password."""
+    username = str(getattr(settings, "bootstrap_admin_username", "admin") or "admin").strip()
+    default_pwd = str(getattr(settings, "bootstrap_admin_password", "admin123") or "admin123")
+
+    user_doc = await db.get_collection("users").find_one({"username": username})
+    if not user_doc:
+        return ApiResponse(data={"is_default": False})
+
+    stored_hash = user_doc.get("password_hash")
+    if not stored_hash:
+        return ApiResponse(data={"is_default": False})
+
+    if isinstance(stored_hash, str):
+        stored_hash = stored_hash.encode("utf-8")
+
+    is_default = bcrypt.checkpw(default_pwd.encode("utf-8"), stored_hash)
+    return ApiResponse(data={"is_default": is_default, "username": username, "password": default_pwd if is_default else None})
+
+
 @router.post("/login", response_model=ApiResponse)
 async def login(body: LoginRequest, response: Response):
     user_doc = await db.get_collection("users").find_one({"username": body.username})
