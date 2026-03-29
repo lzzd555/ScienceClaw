@@ -226,6 +226,7 @@ export default {
   'Link copied to clipboard': 'Link copied to clipboard',
   'Failed to copy link': 'Failed to copy link',
   'You are viewing a completed ScienceClaw task. Replay will start automatically in {countdown} seconds.': 'You are viewing a completed ScienceClaw task. Replay will start automatically in {countdown} seconds.',
+  'Record Skill': 'Record Skill',
   'Skills Library': 'Skills Library',
   'Skills': 'Skills',
   'Loading skills...': 'Loading skills...',

@@ -20,6 +20,13 @@
             <input v-model="searchQuery" type="text" :placeholder="t('Search skills...')"
               class="w-64 bg-white/10 backdrop-blur-sm border border-white/10 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:bg-white/15 focus:border-white/25 focus:ring-1 focus:ring-white/20 transition-all duration-200">
           </div>
+          <button 
+            @click="router.push('/rpa/recorder')"
+            class="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-bold transition-all"
+          >
+            <Video class="size-4" />
+            <span>{{ t('Record Skill') }}</span>
+          </button>
         </div>
       </div>
     </div>
@@ -137,7 +144,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Search, Eye, EyeOff, Trash2, Box } from 'lucide-vue-next';
+import { Search, Eye, EyeOff, Trash2, Box, Video } from 'lucide-vue-next';
 import { getSkills, blockSkill, deleteSkill as apiDeleteSkill } from '../api/agent';
 import { ExternalSkillItem } from '../types/response';
 import { useRouter } from 'vue-router';

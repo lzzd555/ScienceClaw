@@ -1,6 +1,10 @@
 # ── ToolUniverse（最慢，极少变动）─────────────────────────────────
 tooluniverse
 
+# ── RPA 录制与自动化 ───────────────────────────────────────────
+playwright
+playwright-stealth
+
 # ── @tool 运行依赖 + docx skill XML 处理 ───────────────────────────────
 langchain-core
 pydantic

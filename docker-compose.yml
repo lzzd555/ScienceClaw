@@ -21,6 +21,7 @@ services:
       - ./workspace:/home/scienceclaw
     ports:
       - "18080:8080"
+      - "16080:6080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/v1/docs >/dev/null || exit 1"]

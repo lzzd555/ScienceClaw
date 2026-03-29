@@ -1,0 +1,233 @@
+import json
+import logging
+from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+
+class PlaywrightGenerator:
+    """Generate Playwright Python scripts from recorded RPA steps.
+
+    Locators are pre-computed in the browser using a Playwright-codegen-style
+    algorithm (role > testid > label > placeholder > alt > title > css).
+    The generator simply translates the locator objects into Playwright API calls.
+    """
+
+    def generate_script(self, steps: List[Dict[str, Any]], params: Dict[str, Any] = None) -> str:
+        params = params or {}
+
+        lines = [
+            "import os, asyncio",
+            'os.environ["DISPLAY"] = ":99"',
+            "from playwright.async_api import async_playwright",
+            "",
+            "",
+            "async def execute_skill(page, **kwargs):",
+            '    """Auto-generated skill from RPA recording."""',
+        ]
+
+        # Deduplicate consecutive identical actions
+        deduped = self._deduplicate_steps(steps)
+
+        prev_url = None
+        prev_action = None
+        # Add initial navigation if first step isn't a navigate action
+        if deduped and deduped[0].get("action") not in ("navigate", "goto"):
+            first_url = deduped[0].get("url", "")
+            if first_url:
+                lines.append(f'    await page.goto("{first_url}")')
+                lines.append('    await page.wait_for_load_state("load")')
+                lines.append("")
+                prev_url = first_url
+
+        for step in deduped:
+            action = step.get("action", "")
+            target = step.get("target", "")
+            value = step.get("value", "")
+            url = step.get("url", "")
+            desc = step.get("description", "")
+
+            if desc:
+                lines.append(f"    # {desc}")
+
+            # Navigation
+            if action == "navigate" or (action == "goto" and url):
+                lines.append(f'    await page.goto("{url}")')
+                lines.append('    await page.wait_for_load_state("load")')
+                prev_url = url
+                prev_action = "navigate"
+                lines.append("")
+                continue
+
+            # Parse the locator object from target (stored as JSON string)
+            locator = self._build_locator(target)
+
+            if action == "click":
+                tag = step.get("tag", "")
+                # Check if this click is on a link (may trigger navigation)
+                is_link = tag.upper() == "A"
+                # Also check if the locator itself indicates a link
+                try:
+                    loc_obj = json.loads(target) if isinstance(target, str) else target
+                    if isinstance(loc_obj, dict) and loc_obj.get("role") == "link":
+                        is_link = True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                if is_link:
+                    # Use expect_navigation pattern for link clicks
+                    lines.append(f"    async with page.expect_navigation(wait_until='domcontentloaded', timeout=15000):")
+                    lines.append(f"        await {locator}.click()")
+                else:
+                    lines.append(f"    await {locator}.click()")
+                    # After non-navigation click, wait briefly for UI changes
+                    lines.append("    await page.wait_for_timeout(500)")
+            elif action == "fill":
+                fill_value = self._maybe_parameterize(value, params)
+                lines.append(f"    await {locator}.fill({fill_value})")
+            elif action == "press":
+                lines.append(f'    await {locator}.press("{value}")')
+            elif action == "select":
+                lines.append(f'    await {locator}.select_option("{value}")')
+
+            prev_action = action
+            lines.append("")
+
+        # Main runner
+        lines.extend([
+            "",
+            "async def main():",
+            "    async with async_playwright() as p:",
+            "        browser = await p.chromium.launch(",
+            '            headless=False,',
+            '            executable_path="/usr/bin/chromium-browser",',
+            '            args=["--no-sandbox", "--disable-gpu", "--start-maximized",',
+            '                  "--window-size=1280,720", "--disable-dev-shm-usage"]',
+            "        )",
+            "        context = await browser.new_context(no_viewport=True)",
+            "        page = await context.new_page()",
+            "        # Set shorter timeout so failures are reported quickly",
+            "        page.set_default_timeout(15000)",
+            "        try:",
+            "            await execute_skill(page)",
+            "            # Keep browser open so user can see the result in VNC",
+            "            await page.wait_for_timeout(5000)",
+            "            print('SKILL_SUCCESS')",
+            "        except Exception as e:",
+            "            # Keep browser open on error too so user can see the state",
+            "            try:",
+            "                await page.wait_for_timeout(3000)",
+            "            except Exception:",
+            "                pass",
+            "            print(f'SKILL_ERROR: {e}')",
+            "        finally:",
+            "            await browser.close()",
+            "",
+            "",
+            'if __name__ == "__main__":',
+            "    asyncio.run(main())",
+        ])
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _deduplicate_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove consecutive duplicate actions (same action + same target)."""
+        if not steps:
+            return steps
+        result = [steps[0]]
+        for step in steps[1:]:
+            prev = result[-1]
+            # Same action and same target → skip duplicate
+            if (step.get("action") == prev.get("action")
+                    and step.get("target") == prev.get("target")
+                    and step.get("action") != "navigate"):
+                continue
+            result.append(step)
+        return result
+
+    def _build_locator(self, target: str) -> str:
+        """Convert a locator JSON object (from browser capture) to Playwright API call.
+
+        The locator object has a 'method' field indicating the strategy:
+          role     → page.get_by_role(role, name=name, exact=True)
+          testid   → page.get_by_test_id(value)
+          label    → page.get_by_label(value, exact=True)
+          placeholder → page.get_by_placeholder(value, exact=True)
+          alt      → page.get_by_alt_text(value, exact=True)
+          title    → page.get_by_title(value, exact=True)
+          css      → page.locator(css_selector)
+        """
+        try:
+            loc = json.loads(target) if isinstance(target, str) else target
+        except (json.JSONDecodeError, TypeError):
+            # Fallback: treat as raw CSS selector
+            if target:
+                return f'page.locator("{self._escape(target)}")'
+            return 'page.locator("body")'
+
+        if not isinstance(loc, dict):
+            return f'page.locator("{self._escape(str(target))}")'
+
+        method = loc.get("method", "css")
+
+        if method == "role":
+            role = loc.get("role", "button")
+            name = self._escape(loc.get("name", ""))
+            if name:
+                return f'page.get_by_role("{role}", name="{name}", exact=True)'
+            return f'page.get_by_role("{role}")'
+
+        if method == "testid":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_test_id("{val}")'
+
+        if method == "label":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_label("{val}", exact=True)'
+
+        if method == "placeholder":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_placeholder("{val}", exact=True)'
+
+        if method == "alt":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_alt_text("{val}", exact=True)'
+
+        if method == "title":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_title("{val}", exact=True)'
+
+        if method == "text":
+            val = self._escape(loc.get("value", ""))
+            return f'page.get_by_text("{val}", exact=True)'
+
+        if method == "nested":
+            # parent >> child locator chaining
+            parent = loc.get("parent", {})
+            child = loc.get("child", {})
+            parent_loc = self._build_locator(json.dumps(parent) if isinstance(parent, dict) else str(parent))
+            child_loc = self._build_locator(json.dumps(child) if isinstance(child, dict) else str(child))
+            # Convert page.xxx to .xxx for chaining: parent.locator(child_selector)
+            child_sel = child_loc.replace("page.", "", 1)
+            return f'{parent_loc}.locator({child_sel})'
+
+        # css (default)
+        val = self._escape(loc.get("value", "body"))
+        return f'page.locator("{val}")'
+
+    @staticmethod
+    def _escape(s: str) -> str:
+        """Escape and normalize a string for embedding in Python source code."""
+        # Collapse all whitespace (newlines, tabs, multiple spaces) into single space
+        import re
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s.replace('\\', '\\\\').replace('"', '\\"')
+
+    def _maybe_parameterize(self, value: str, params: Dict[str, Any]) -> str:
+        """Check if value should be a parameter."""
+        for param_name, param_info in params.items():
+            if param_info.get("original_value") == value:
+                return f"kwargs.get('{param_name}', '{value}')"
+        safe = value.replace("'", "\\'")
+        return f"'{safe}'"

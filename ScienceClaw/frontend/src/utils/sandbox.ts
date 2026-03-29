@@ -6,6 +6,7 @@
  */
 
 const SANDBOX_PORT = 18080;
+const VNC_PORT = 16080;
 
 export function getSandboxBaseUrl(): string {
   return `${window.location.protocol}//${window.location.hostname}:${SANDBOX_PORT}`;
@@ -13,6 +14,12 @@ export function getSandboxBaseUrl(): string {
 
 export function getSandboxVncUrl(): string {
   return `${getSandboxBaseUrl()}/vnc/index.html?autoconnect=true&resize=scale&view_only=true`;
+}
+
+export function getRpaVncUrl(): string {
+  // Try direct websockify port first (serves noVNC if available),
+  // fallback to sandbox's built-in noVNC page with view_only=false for interaction
+  return `${window.location.protocol}//${window.location.hostname}:${SANDBOX_PORT}/vnc/index.html?autoconnect=true&resize=scale&view_only=false`;
 }
 
 export function getSandboxTerminalWsUrl(): string {

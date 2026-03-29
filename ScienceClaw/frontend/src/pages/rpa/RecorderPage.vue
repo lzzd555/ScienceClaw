@@ -1,0 +1,280 @@
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
+import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2 } from 'lucide-vue-next';
+import { apiClient } from '@/api/client';
+import { getRpaVncUrl } from '@/utils/sandbox';
+
+const router = useRouter();
+const route = useRoute();
+
+const sessionId = ref<string | null>(null);
+const isRecording = ref(true);
+const recordingTime = ref('00:00');
+const timerInterval = ref<any>(null);
+const loading = ref(true);
+const error = ref<string | null>(null);
+
+// VNC URL: try direct 6080 first, fallback to 18080 proxy
+const vncUrl = computed(() => {
+  return getRpaVncUrl();
+});
+
+const steps = ref<any[]>([
+  { id: '0', title: '初始化环境', description: '正在配置沙箱录制环境...', status: 'active' }
+]);
+
+const chatMessages = ref<any[]>([]);
+const newMessage = ref('');
+let pollInterval: any = null;
+
+const initSession = async () => {
+  try {
+    loading.value = true;
+    const sandboxId = (route.query.sandboxId as string) || 'default-test-sandbox';
+
+    const resp = await apiClient.post('/rpa/session/start', {
+      sandbox_session_id: sandboxId
+    });
+
+    if (resp.data.status === 'success') {
+      sessionId.value = resp.data.session.id;
+      steps.value = [
+        { id: '0', title: '环境就绪', description: '已成功启动 Playwright 浏览器，准备录制', status: 'completed' }
+      ];
+      startTimer();
+      startPollingSteps();
+    }
+  } catch (err: any) {
+    console.error('Failed to start RPA session:', err);
+    error.value = '无法启动录制会话，请检查后端服务。';
+  } finally {
+    loading.value = false;
+  }
+};
+
+const startPollingSteps = () => {
+  pollInterval = setInterval(async () => {
+    if (!sessionId.value) return;
+    try {
+      const resp = await apiClient.get(`/rpa/session/${sessionId.value}`);
+      const serverSteps = resp.data.session?.steps || [];
+      if (serverSteps.length > 0) {
+        steps.value = [
+          { id: '0', title: '环境就绪', description: '已成功启动 Playwright 浏览器', status: 'completed' },
+          ...serverSteps.map((s: any, i: number) => ({
+            id: String(i + 1),
+            title: s.description || s.action,
+            description: `${s.action} → ${s.target || s.label || ''}`,
+            status: 'completed'
+          }))
+        ];
+      }
+    } catch (err) {
+      // Ignore polling errors
+    }
+  }, 3000);
+};
+
+const startTimer = () => {
+  let seconds = 0;
+  timerInterval.value = setInterval(() => {
+    seconds++;
+    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const secs = (seconds % 60).toString().padStart(2, '0');
+    recordingTime.value = `${mins}:${secs}`;
+  }, 1000);
+};
+
+onMounted(() => {
+  initSession();
+});
+
+onBeforeUnmount(() => {
+  if (timerInterval.value) clearInterval(timerInterval.value);
+  if (pollInterval) clearInterval(pollInterval);
+});
+
+const stopRecording = async () => {
+  isRecording.value = false;
+  if (timerInterval.value) clearInterval(timerInterval.value);
+  if (pollInterval) clearInterval(pollInterval);
+
+  if (sessionId.value) {
+    try {
+      await apiClient.post(`/rpa/session/${sessionId.value}/stop`);
+    } catch (err) {
+      console.error('Failed to stop session:', err);
+    }
+  }
+  router.push(`/rpa/configure?sessionId=${sessionId.value}`);
+};
+
+const sendMessage = () => {
+  if (!newMessage.value.trim()) return;
+  chatMessages.value.push({
+    role: 'user',
+    text: newMessage.value,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  });
+  newMessage.value = '';
+};
+</script>
+
+<template>
+  <div class="flex flex-col h-screen bg-[#f5f6f7] overflow-hidden">
+    <!-- Header -->
+    <header class="h-16 flex-shrink-0 bg-gradient-to-r from-[#831bd7] to-[#ac0089] shadow-lg flex justify-between items-center px-8 z-50">
+      <div class="flex items-center gap-4">
+        <Radio class="text-white animate-pulse" :size="24" />
+        <h1 class="text-white font-extrabold text-xl tracking-tight">技能录制器</h1>
+        <div class="ml-4 px-3 py-1 bg-white/20 rounded-full flex items-center gap-2">
+          <div class="w-2 h-2 rounded-full bg-red-400 animate-pulse"></div>
+          <span class="text-white/90 text-[10px] font-bold uppercase tracking-wider">正在录制 ({{ recordingTime }})</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <button
+          @click="stopRecording"
+          class="bg-white text-[#831bd7] font-bold px-6 py-2 rounded-full hover:bg-white/90 transition-all shadow-md active:scale-95 text-sm"
+        >
+          完成录制
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex overflow-hidden">
+      <!-- Left Sidebar: Steps -->
+      <aside class="w-80 bg-[#eff1f2] border-r border-gray-200 p-6 overflow-y-auto flex flex-col">
+        <div class="flex items-center justify-between mb-8">
+          <h2 class="text-gray-900 font-extrabold text-lg">录制步骤</h2>
+          <span class="text-[#831bd7] text-[10px] font-bold bg-[#c384ff]/20 px-2 py-1 rounded-md">{{ steps.length }} 步</span>
+        </div>
+
+        <div class="space-y-4">
+          <div
+            v-for="step in steps"
+            :key="step.id"
+            class="bg-white p-4 rounded-xl shadow-sm border-l-4 transition-all"
+            :class="step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 opacity-70'"
+          >
+            <div class="flex justify-between items-start mb-1">
+              <p class="text-[10px] font-bold" :class="step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400'">
+                步骤 {{ step.id.padStart(2, '0') }}
+              </p>
+              <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
+            </div>
+            <h3 class="text-gray-900 font-semibold text-sm">{{ step.title }}</h3>
+            <p class="text-gray-500 text-[11px] mt-2 leading-relaxed">{{ step.description }}</p>
+          </div>
+
+          <div v-if="isRecording" class="flex flex-col items-center justify-center py-8 gap-3 border-2 border-dashed border-gray-300 rounded-xl opacity-60">
+            <div class="animate-spin text-[#831bd7]">
+              <Wand2 :size="20" />
+            </div>
+            <p class="text-xs text-gray-500 font-medium">检测新操作中...</p>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center: VNC Viewport -->
+      <main class="flex-1 bg-[#f5f6f7] p-8 flex flex-col min-w-0">
+        <div class="flex-1 bg-[#1e1e1e] rounded-2xl shadow-2xl relative overflow-hidden flex flex-col border border-gray-800">
+          <div class="h-10 bg-[#dadddf] flex items-center px-4 gap-2 flex-shrink-0">
+            <div class="flex gap-1.5">
+              <div class="w-2.5 h-2.5 rounded-full bg-red-400"></div>
+              <div class="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
+              <div class="w-2.5 h-2.5 rounded-full bg-green-400"></div>
+            </div>
+            <div class="flex-1 bg-white rounded-md h-6 mx-4 flex items-center px-3 shadow-inner">
+              <Terminal class="text-gray-400" :size="12" />
+              <span class="text-[10px] text-gray-600 ml-2 truncate">Playwright Chromium — VNC 实时串流</span>
+            </div>
+          </div>
+
+          <div class="flex-1 relative bg-black overflow-hidden">
+            <iframe
+              v-if="sessionId"
+              :src="vncUrl"
+              class="w-full h-full border-0"
+              allow="clipboard-read; clipboard-write"
+            />
+            <div v-else class="absolute inset-0 flex items-center justify-center flex-col gap-4 text-white/50">
+              <Terminal :size="64" class="opacity-20" />
+              <p v-if="loading" class="text-sm font-medium">正在启动 Playwright 浏览器...</p>
+              <p v-else-if="error" class="text-sm font-medium text-red-400">{{ error }}</p>
+            </div>
+
+            <div v-if="sessionId" class="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md border border-white/20 px-4 py-2 rounded-full flex items-center gap-3">
+              <Radio class="text-red-400 animate-pulse" :size="14" />
+              <span class="text-white text-[10px] font-bold tracking-wider uppercase">实时 VNC 串流</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-6 flex justify-center gap-4">
+          <button class="flex items-center gap-2 bg-white px-5 py-2.5 rounded-xl text-xs font-bold text-gray-700 shadow-sm hover:bg-gray-50 transition-colors border border-gray-200">
+            <Camera :size="16" class="text-gray-500" />
+            截图标记
+          </button>
+        </div>
+      </main>
+
+      <!-- Right Sidebar: AI Chat -->
+      <aside class="w-80 bg-white border-l border-gray-200 flex flex-col shadow-[-10px_0_40px_-10px_rgba(0,0,0,0.03)]">
+        <div class="p-6 border-b border-gray-100 bg-gray-50/50">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#831bd7] to-[#ac0089] flex items-center justify-center text-white shadow-lg shadow-purple-200">
+              <Wand2 :size="20" />
+            </div>
+            <div>
+              <h3 class="text-gray-900 font-bold text-sm">AI 录制助手</h3>
+              <p class="text-[10px] text-[#831bd7] font-bold">已就绪 · 协助录制中</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
+          <div v-if="chatMessages.length === 0" class="text-center text-gray-400 text-xs mt-8">
+            在 VNC 中操作浏览器，步骤会自动记录到左侧面板。
+          </div>
+          <div
+            v-for="(msg, idx) in chatMessages"
+            :key="idx"
+            class="flex flex-col gap-1.5"
+            :class="msg.role === 'user' ? 'items-end' : 'items-start'"
+          >
+            <div
+              class="max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed"
+              :class="msg.role === 'user'
+                ? 'bg-[#831bd7] text-white rounded-tr-none shadow-md shadow-purple-100'
+                : 'bg-[#eff1f2] text-gray-700 rounded-tl-none border border-gray-100'"
+            >
+              {{ msg.text }}
+            </div>
+            <span class="text-[9px] text-gray-400 font-medium px-1">{{ msg.time }}</span>
+          </div>
+        </div>
+
+        <div class="p-4 bg-gray-50 border-t border-gray-100">
+          <div class="relative">
+            <input
+              v-model="newMessage"
+              @keyup.enter="sendMessage"
+              class="w-full bg-white border border-gray-200 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none"
+              placeholder="向助手提问..."
+              type="text"
+            />
+            <button
+              @click="sendMessage"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-[#831bd7] hover:scale-110 transition-transform p-1.5"
+            >
+              <Send :size="16" />
+            </button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</template>

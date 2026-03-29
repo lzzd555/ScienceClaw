@@ -1,5 +1,5 @@
-import { createApp } from 'vue'
-import { createRouter, createWebHistory } from 'vue-router'
+import { createApp, h } from 'vue'
+import { createRouter, createWebHistory, RouterView } from 'vue-router'
 import App from './App.vue'
 import './assets/global.css'
 import './assets/theme.css'
@@ -20,6 +20,9 @@ import ScienceToolDetail from './pages/ScienceToolDetail.vue'
 import TasksPage from './pages/TasksPage.vue'
 import LoginPage from './pages/LoginPage.vue'
 import MainLayout from './pages/MainLayout.vue'
+import RecorderPage from './pages/rpa/RecorderPage.vue'
+import ConfigurePage from './pages/rpa/ConfigurePage.vue'
+import TestPage from './pages/rpa/TestPage.vue'
 import { configure } from "vue-gtag";
 import SharePage from './pages/SharePage.vue';
 import ShareLayout from './pages/ShareLayout.vue';
@@ -77,6 +80,25 @@ export const router = createRouter({
           path: 'tasks',
           component: TasksPage,
           meta: { requiresAuth: true }
+        }
+      ]
+    },
+    {
+      path: '/rpa',
+      component: { render: () => h(RouterView) },
+      meta: { requiresAuth: true },
+      children: [
+        { 
+          path: 'recorder', 
+          component: RecorderPage,
+        },
+        { 
+          path: 'configure', 
+          component: ConfigurePage,
+        },
+        { 
+          path: 'test', 
+          component: TestPage,
         }
       ]
     },

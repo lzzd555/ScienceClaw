@@ -290,6 +290,7 @@ export default {
   'Dark': '深色',
   'System': '跟随系统',
   'Appearance': '外观',
+  'Record Skill': '录制技能',
   'Skills Library': '技能库',
   'Skills': '技能',
   'Loading skills...': '加载技能中...',

@@ -23,6 +23,7 @@ from backend.route.science import router as science_router
 from backend.route.chat import router as chat_router
 from backend.route.statistics import router as statistics_router
 from backend.route.im import router as im_router, start_im_runtime, stop_im_runtime
+from backend.route.rpa import router as rpa_router
 from backend.models import init_system_models
 from backend.user.bootstrap import ensure_admin_user
 from backend.im.migrations import backfill_session_sources
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(statistics_router, prefix="/api/v1")
     app.include_router(im_router, prefix="/api/v1")
+    app.include_router(rpa_router, prefix="/api/v1/rpa")
 
     logger.info("FastAPI initialized with /api/v1 endpoints")
     return app

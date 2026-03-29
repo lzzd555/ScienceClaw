@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         build-essential clang \
         fonts-wqy-microhei fontconfig \
         poppler-utils pandoc libreoffice-writer \
+        xvfb x11vnc websockify fluxbox \
     && fc-cache -fv
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm config set registry ${NPM_MIRROR} \
@@ -27,6 +28,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip config set global.timeout 600 \
     && python3 -m pip install -r /tmp/requirements.txt \
+    && python3 -m playwright install --with-deps chromium \
     && rm -f /tmp/requirements.txt \
     && python3 -c "import matplotlib; matplotlib.get_cachedir()" \
     && python3 -c "import matplotlib.font_manager; matplotlib.font_manager._load_fontmanager(try_read_cache=False)"
