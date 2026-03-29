@@ -25,6 +25,8 @@ class RPAStep(BaseModel):
     tag: Optional[str] = None
     label: Optional[str] = None
     url: Optional[str] = None
+    source: str = "record"  # "record" or "ai"
+    prompt: Optional[str] = None  # original user instruction for AI steps
 
 
 class RPASession(BaseModel):
@@ -53,6 +55,7 @@ CAPTURE_JS = """
 (() => {
     if (window.__rpa_injected) return;
     window.__rpa_injected = true;
+    window.__rpa_paused = false;
 
     // ── Score constants (lower = better, mirrors Playwright codegen) ──
     var S_TESTID=1, S_ROLE_NAME=100, S_PLACEHOLDER=120, S_LABEL=140,
@@ -393,6 +396,7 @@ CAPTURE_JS = """
     // ── Event listeners ─────────────────────────────────────────────
     document.addEventListener('click', function(e) {
         if (!e.isTrusted) return;
+        if (window.__rpa_paused) return;
         var el = e.target;
         // Skip clicks on SELECT/OPTION (handled by change event)
         if (el.tagName==='SELECT'||el.tagName==='OPTION') return;
@@ -409,6 +413,7 @@ CAPTURE_JS = """
 
     document.addEventListener('input', function(e) {
         if (!e.isTrusted) return;
+        if (window.__rpa_paused) return;
         var el = e.target;
         clearTimeout(el.__rpa_timer);
         el.__rpa_timer = setTimeout(function() {
@@ -419,6 +424,7 @@ CAPTURE_JS = """
 
     document.addEventListener('change', function(e) {
         if (!e.isTrusted) return;
+        if (window.__rpa_paused) return;
         var el = e.target;
         if (el.tagName === 'SELECT') {
             emit({action:'select', locator:generateLocator(el),
@@ -428,6 +434,7 @@ CAPTURE_JS = """
 
     document.addEventListener('keydown', function(e) {
         if (!e.isTrusted) return;
+        if (window.__rpa_paused) return;
         if (e.key === 'Enter') {
             var el = e.target;
             emit({action:'press', locator:generateLocator(el),
