@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2 } from 'lucide-vue-next';
+import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import { getRpaVncUrl } from '@/utils/sandbox';
 
@@ -24,8 +24,19 @@ const steps = ref<any[]>([
   { id: '0', title: '初始化环境', description: '正在配置沙箱录制环境...', status: 'active' }
 ]);
 
-const chatMessages = ref<any[]>([]);
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  time: string;
+  script?: string;
+  status?: 'streaming' | 'executing' | 'done' | 'error';
+  error?: string;
+  showCode?: boolean;
+}
+
+const chatMessages = ref<ChatMessage[]>([]);
 const newMessage = ref('');
+const sending = ref(false);
 let pollInterval: any = null;
 
 const initSession = async () => {
@@ -65,8 +76,9 @@ const startPollingSteps = () => {
           ...serverSteps.map((s: any, i: number) => ({
             id: String(i + 1),
             title: s.description || s.action,
-            description: `${s.action} → ${s.target || s.label || ''}`,
-            status: 'completed'
+            description: s.source === 'ai' ? (s.prompt || s.description || 'AI 操作') : `${s.action} → ${s.target || s.label || ''}`,
+            status: 'completed',
+            source: s.source || 'record',
           }))
         ];
       }
@@ -110,14 +122,86 @@ const stopRecording = async () => {
   router.push(`/rpa/configure?sessionId=${sessionId.value}`);
 };
 
-const sendMessage = () => {
-  if (!newMessage.value.trim()) return;
-  chatMessages.value.push({
-    role: 'user',
-    text: newMessage.value,
-    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  });
+const sendMessage = async () => {
+  if (!newMessage.value.trim() || !sessionId.value || sending.value) return;
+  const userText = newMessage.value.trim();
   newMessage.value = '';
+  sending.value = true;
+
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  chatMessages.value.push({ role: 'user', text: userText, time: now });
+
+  // Add assistant placeholder
+  const assistantMsg: ChatMessage = { role: 'assistant', text: '', time: now, status: 'streaming' };
+  chatMessages.value.push(assistantMsg);
+  const msgIdx = chatMessages.value.length - 1;
+
+  try {
+    const resp = await fetch(`/api/v1/rpa/session/${sessionId.value}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
+      },
+      body: JSON.stringify({ message: userText }),
+    });
+
+    if (!resp.ok || !resp.body) {
+      chatMessages.value[msgIdx].text = '请求失败，请重试。';
+      chatMessages.value[msgIdx].status = 'error';
+      sending.value = false;
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          const raw = line.slice(5).trim();
+          if (!raw) continue;
+          try {
+            const data = JSON.parse(raw);
+            if (eventType === 'message_chunk') {
+              chatMessages.value[msgIdx].text += data.text || '';
+            } else if (eventType === 'script') {
+              chatMessages.value[msgIdx].script = data.code || '';
+            } else if (eventType === 'executing') {
+              chatMessages.value[msgIdx].status = 'executing';
+            } else if (eventType === 'result') {
+              chatMessages.value[msgIdx].status = data.success ? 'done' : 'error';
+              if (data.error) chatMessages.value[msgIdx].error = data.error;
+            } else if (eventType === 'error') {
+              chatMessages.value[msgIdx].status = 'error';
+              chatMessages.value[msgIdx].error = data.message || '未知错误';
+            }
+          } catch { /* ignore parse errors */ }
+          eventType = '';
+        }
+      }
+    }
+
+    if (!chatMessages.value[msgIdx].status || chatMessages.value[msgIdx].status === 'streaming') {
+      chatMessages.value[msgIdx].status = 'done';
+    }
+  } catch (err: any) {
+    chatMessages.value[msgIdx].text = `连接失败: ${err.message}`;
+    chatMessages.value[msgIdx].status = 'error';
+  } finally {
+    sending.value = false;
+  }
 };
 </script>
 
@@ -157,12 +241,17 @@ const sendMessage = () => {
             v-for="step in steps"
             :key="step.id"
             class="bg-white p-4 rounded-xl shadow-sm border-l-4 transition-all"
-            :class="step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 opacity-70'"
+            :class="[
+              step.source === 'ai' ? 'border-[#ac0089]' : (step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 opacity-70')
+            ]"
           >
             <div class="flex justify-between items-start mb-1">
-              <p class="text-[10px] font-bold" :class="step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400'">
-                步骤 {{ step.id.padStart(2, '0') }}
-              </p>
+              <div class="flex items-center gap-1.5">
+                <Bot v-if="step.source === 'ai'" class="text-[#ac0089]" :size="12" />
+                <p class="text-[10px] font-bold" :class="step.source === 'ai' ? 'text-[#ac0089]' : (step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400')">
+                  {{ step.source === 'ai' ? 'AI' : '步骤' }} {{ step.id.padStart(2, '0') }}
+                </p>
+              </div>
               <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
             </div>
             <h3 class="text-gray-900 font-semibold text-sm">{{ step.title }}</h3>
@@ -251,7 +340,28 @@ const sendMessage = () => {
                 ? 'bg-[#831bd7] text-white rounded-tr-none shadow-md shadow-purple-100'
                 : 'bg-[#eff1f2] text-gray-700 rounded-tl-none border border-gray-100'"
             >
-              {{ msg.text }}
+              <div class="whitespace-pre-wrap">{{ msg.text }}</div>
+              <!-- Status indicators -->
+              <div v-if="msg.status === 'executing'" class="mt-2 flex items-center gap-1.5 text-[10px] text-[#831bd7] font-medium">
+                <div class="w-2 h-2 rounded-full bg-[#831bd7] animate-pulse"></div>
+                正在执行...
+              </div>
+              <div v-if="msg.status === 'error' && msg.error" class="mt-2 text-[10px] text-red-500 bg-red-50 p-2 rounded-lg">
+                {{ msg.error }}
+              </div>
+              <div v-if="msg.status === 'done' && msg.role === 'assistant'" class="mt-2 flex items-center gap-1 text-[10px] text-green-600 font-medium">
+                <CheckCircle :size="10" /> 执行成功
+              </div>
+              <!-- Code block toggle -->
+              <button
+                v-if="msg.script"
+                @click="msg.showCode = !msg.showCode"
+                class="mt-2 flex items-center gap-1 text-[10px] text-[#831bd7] hover:underline font-medium"
+              >
+                <Code :size="10" />
+                {{ msg.showCode ? '收起代码' : '查看代码' }}
+              </button>
+              <pre v-if="msg.script && msg.showCode" class="mt-2 bg-gray-900 text-green-300 text-[10px] p-3 rounded-lg overflow-x-auto max-h-48 overflow-y-auto"><code>{{ msg.script }}</code></pre>
             </div>
             <span class="text-[9px] text-gray-400 font-medium px-1">{{ msg.time }}</span>
           </div>
@@ -262,13 +372,15 @@ const sendMessage = () => {
             <input
               v-model="newMessage"
               @keyup.enter="sendMessage"
-              class="w-full bg-white border border-gray-200 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none"
-              placeholder="向助手提问..."
+              :disabled="sending"
+              class="w-full bg-white border border-gray-200 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
+              :placeholder="sending ? 'AI 正在处理...' : '向助手提问...'"
               type="text"
             />
             <button
               @click="sendMessage"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-[#831bd7] hover:scale-110 transition-transform p-1.5"
+              :disabled="sending"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-[#831bd7] hover:scale-110 transition-transform p-1.5 disabled:opacity-50"
             >
               <Send :size="16" />
             </button>
