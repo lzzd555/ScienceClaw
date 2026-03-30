@@ -983,7 +983,7 @@ async def read_skill_file(
         col = _db.get_collection("skills")
         doc = await col.find_one(
             {"user_id": current_user.id, "name": skill_name},
-            {f"files.{body.file}": 1}
+            {"files": 1}
         )
         if not doc:
             raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")

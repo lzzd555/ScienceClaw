@@ -115,9 +115,11 @@ class MongoSkillBackend:
             raise FileNotFoundError(f"Skill is blocked: {skill_name}")
 
         col = self._get_col()
+        # Fetch entire files dict — can't use dot-notation projection
+        # because filenames like "SKILL.md" contain dots
         doc = await col.find_one(
             {**self._base_filter(), "name": skill_name},
-            {f"files.{file_name}": 1}
+            {"files": 1}
         )
         if not doc or not doc.get("files", {}).get(file_name):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -147,26 +149,32 @@ class MongoSkillBackend:
             # Creating a new skill directory (no-op, skill created on first file write)
             return {"path": file_path, "status": "ok"}
 
-        # Upsert: create skill doc if not exists, set file content
-        result = await col.update_one(
+        # Read-modify-write: can't use dot-notation $set because filenames
+        # like "SKILL.md" contain dots which MongoDB interprets as nested paths
+        existing = await col.find_one(
             {**self._base_filter(), "name": skill_name},
-            {
-                "$set": {
-                    f"files.{file_name}": content,
-                    "updated_at": _now(),
-                },
-                "$setOnInsert": {
-                    "user_id": self._user_id,
-                    "name": skill_name,
-                    "description": "",
-                    "source": "agent",
-                    "blocked": False,
-                    "params": {},
-                    "created_at": _now(),
-                },
-            },
-            upsert=True,
+            {"files": 1}
         )
+
+        if existing:
+            files = existing.get("files", {})
+            files[file_name] = content
+            await col.update_one(
+                {**self._base_filter(), "name": skill_name},
+                {"$set": {"files": files, "updated_at": _now()}},
+            )
+        else:
+            await col.insert_one({
+                "user_id": self._user_id,
+                "name": skill_name,
+                "description": "",
+                "source": "agent",
+                "blocked": False,
+                "params": {},
+                "files": {file_name: content},
+                "created_at": _now(),
+                "updated_at": _now(),
+            })
 
         # If SKILL.md was written, parse frontmatter to update description
         if file_name == "SKILL.md":
