@@ -62,9 +62,12 @@ class MongoDB:
         await cls.db.session_events.create_index("session_id")
         await cls.db.session_events.create_index([("timestamp", 1)])
 
-        # Blocked skills collection
-        await cls.db.blocked_skills.create_index(
-            [("user_id", 1), ("skill_name", 1)], unique=True
+        # Skills collection (multi-tenant)
+        await cls.db.skills.create_index(
+            [("user_id", 1), ("name", 1)], unique=True
+        )
+        await cls.db.skills.create_index(
+            [("user_id", 1), ("blocked", 1)]
         )
         await cls.db.im_user_bindings.create_index(
             [("platform", 1), ("platform_user_id", 1)], unique=True
@@ -94,3 +97,17 @@ class MongoDB:
 
 # Global instance helper
 db = MongoDB
+
+
+async def get_blocked_skill_names(user_id: str) -> set[str]:
+    """Query blocked skill names for a user from the skills collection."""
+    col = MongoDB.get_collection("skills")
+    cursor = col.find(
+        {"user_id": user_id, "blocked": True},
+        {"name": 1}
+    )
+    names = set()
+    async for doc in cursor:
+        if doc.get("name"):
+            names.add(doc["name"])
+    return names
