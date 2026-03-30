@@ -50,6 +50,16 @@ class PlaywrightGenerator:
             if desc:
                 lines.append(f"    # {desc}")
 
+            # AI-generated script — embed directly with sync→async conversion
+            if action == "ai_script":
+                ai_code = step.get("value", "")
+                if ai_code:
+                    converted = self._sync_to_async(ai_code)
+                    for code_line in converted.split("\n"):
+                        lines.append(f"    {code_line}" if code_line.strip() else "")
+                lines.append("")
+                continue
+
             # Navigation
             if action == "navigate" or (action == "goto" and url):
                 lines.append(f'    await page.goto("{url}")')
@@ -231,3 +241,24 @@ class PlaywrightGenerator:
                 return f"kwargs.get('{param_name}', '{value}')"
         safe = value.replace("'", "\\'")
         return f"'{safe}'"
+
+    @staticmethod
+    def _sync_to_async(code: str) -> str:
+        """Convert Playwright sync API code to async by adding await."""
+        import re as _re
+        lines = code.split("\n")
+        result = []
+        for line in lines:
+            stripped = line.lstrip()
+            indent = line[:len(line) - len(stripped)]
+            if stripped and not stripped.startswith("#") and not stripped.startswith("def "):
+                if _re.search(r'\bpage\.', stripped):
+                    if not stripped.startswith("await "):
+                        assign_match = _re.match(r'^(\w[\w\s,]*=\s*)(page\..+)$', stripped)
+                        if assign_match:
+                            result.append(f"{indent}{assign_match.group(1)}await {assign_match.group(2)}")
+                            continue
+                        result.append(f"{indent}await {stripped}")
+                        continue
+            result.append(line)
+        return "\n".join(result)
