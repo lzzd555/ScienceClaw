@@ -64,10 +64,14 @@ Behavior:
 Update the recorder page to:
 
 1. Stop hardcoding local sandbox ports for the main recording viewport.
-2. Read the remote VNC URL returned by the backend.
+2. Read the VNC proxy URL returned by the backend.
 3. Render that URL in the existing `iframe`.
 
-Keep the current `iframe` approach for now because it is the lowest-risk way to show the hosted browser.
+The browser should no longer connect to the hosted sandbox origin directly. Instead:
+
+1. Frontend loads the iframe from the backend.
+2. Backend proxies VNC HTML/assets/websocket traffic to the hosted sandbox.
+3. Backend injects sandbox auth on those proxied requests.
 
 ### 5. Leave the rest untouched in this phase
 
@@ -87,11 +91,17 @@ Backend:
 2. `SANDBOX_MCP_URL=https://your-hosted-sandbox/mcp`
 3. `SANDBOX_API_TOKEN=...`
 4. `SANDBOX_VNC_URL=https://your-hosted-sandbox/vnc/index.html?autoconnect=true&resize=scale&view_only=false`
+5. `SANDBOX_EXTRA_HEADERS={"X-Your-Header":"value","Cookie":"..."}`
 
 Frontend:
 
 1. No new frontend-only variable is required for the recorder page after this change.
 2. The page should consume the VNC URL returned by the backend.
+
+Notes:
+
+1. `SANDBOX_EXTRA_HEADERS` is a JSON object string.
+2. These headers are attached by the backend when it calls sandbox HTTP endpoints and when it opens the websocket to sandbox.
 
 ## Validation Checklist
 

@@ -1,9 +1,13 @@
 import json
 import logging
+import asyncio
+from contextlib import suppress
 from typing import Dict, Any
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
+import websockets
 
 from backend.rpa.manager import rpa_manager
 from backend.rpa.generator import PlaywrightGenerator
@@ -13,7 +17,11 @@ from backend.rpa.assistant import RPAAssistant
 from backend.user.dependencies import get_current_user, User
 from backend.config import settings
 from backend.mongodb.db import db
-from backend.sandbox_utils import get_sandbox_vnc_url
+from backend.sandbox_utils import (
+    build_sandbox_auth_headers,
+    build_sandbox_vnc_target_url,
+    get_sandbox_vnc_proxy_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +30,15 @@ generator = PlaywrightGenerator()
 executor = ScriptExecutor(rpa_manager.sandbox_url)
 exporter = SkillExporter()
 assistant = RPAAssistant(rpa_manager.sandbox_url)
+
+
+_PROXY_RESPONSE_HEADERS = {
+    "content-type",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "expires",
+}
 
 
 class StartSessionRequest(BaseModel):
@@ -79,11 +96,87 @@ async def start_rpa_session(
         return {
             "status": "success",
             "session": session,
-            "sandbox": {"vnc_url": get_sandbox_vnc_url()},
+            "sandbox": {"vnc_url": get_sandbox_vnc_proxy_url()},
         }
     except Exception as e:
         logger.error(f"Failed to start RPA session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sandbox/vnc/{asset_path:path}")
+async def proxy_sandbox_vnc_asset(asset_path: str, request: Request):
+    target_url = build_sandbox_vnc_target_url(
+        asset_path or "index.html",
+        request.query_params.multi_items(),
+    )
+    headers = build_sandbox_auth_headers()
+    accept = request.headers.get("accept")
+    if accept:
+        headers["Accept"] = accept
+
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        resp = await client.get(target_url, headers=headers)
+        filtered_headers = {
+            key: value
+            for key, value in resp.headers.items()
+            if key.lower() in _PROXY_RESPONSE_HEADERS
+        }
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=filtered_headers,
+        )
+
+
+@router.websocket("/sandbox/vnc/websockify")
+async def proxy_sandbox_vnc_websocket(websocket: WebSocket):
+    await websocket.accept()
+    target_url = build_sandbox_vnc_target_url(
+        "websockify",
+        websocket.query_params.multi_items(),
+        websocket=True,
+    )
+
+    try:
+        async with websockets.connect(
+            target_url,
+            additional_headers=build_sandbox_auth_headers(),
+            open_timeout=30,
+        ) as remote_ws:
+            async def client_to_remote():
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    if message.get("bytes") is not None:
+                        await remote_ws.send(message["bytes"])
+                    elif message.get("text") is not None:
+                        await remote_ws.send(message["text"])
+
+            async def remote_to_client():
+                async for message in remote_ws:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = [
+                asyncio.create_task(client_to_remote()),
+                asyncio.create_task(remote_to_client()),
+            ]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            for task in done:
+                task.result()
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.error(f"Failed to proxy VNC websocket: {exc}")
+        with suppress(Exception):
+            await websocket.close(code=1011, reason="VNC proxy error")
 
 
 @router.get("/session/{session_id}")

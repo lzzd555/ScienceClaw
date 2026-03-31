@@ -1,4 +1,5 @@
 import os
+import json
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     sandbox_mcp_url: str = os.environ.get("SANDBOX_MCP_URL") or f"{sandbox_base_url.rstrip('/')}/mcp"
     sandbox_api_token: str = os.environ.get("SANDBOX_API_TOKEN", "")
     sandbox_vnc_url: str = os.environ.get("SANDBOX_VNC_URL", "")
+    sandbox_extra_headers_raw: str = os.environ.get("SANDBOX_EXTRA_HEADERS", "{}")
 
     # 任务调度服务调用聊天接口时的 API Key（可选）
     task_service_api_key: str = os.environ.get("TASK_SERVICE_API_KEY", "")
@@ -52,3 +54,23 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
+
+
+def parse_sandbox_extra_headers(raw: str) -> dict[str, str]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    headers: dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        if value is None:
+            continue
+        headers[key] = str(value)
+    return headers
