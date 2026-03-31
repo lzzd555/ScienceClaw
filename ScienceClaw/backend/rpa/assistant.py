@@ -7,6 +7,7 @@ from typing import Dict, List, Any, AsyncGenerator, Optional
 
 import httpx
 from backend.deepagent.engine import get_llm_model
+from backend.sandbox_utils import build_sandbox_headers, get_sandbox_mcp_url
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,8 @@ EXTRACT_ELEMENTS_JS = r"""() => {
 class RPAAssistant:
     """AI recording assistant: takes natural language, generates and executes Playwright code."""
 
-    def __init__(self, sandbox_url: str):
-        self.sandbox_url = sandbox_url.rstrip("/")
+    def __init__(self, sandbox_url: str | None = None):
+        self.sandbox_url = (sandbox_url or get_sandbox_mcp_url()).rstrip("/")
         self._histories: Dict[str, List[Dict[str, str]]] = {}
 
     def _get_history(self, session_id: str) -> List[Dict[str, str]]:
@@ -324,13 +325,9 @@ class RPAAssistant:
         }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{self.sandbox_url}/mcp",
+                self.sandbox_url,
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()
@@ -344,13 +341,9 @@ class RPAAssistant:
         }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{self.sandbox_url}/mcp",
+                self.sandbox_url,
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()

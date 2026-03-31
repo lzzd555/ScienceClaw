@@ -6,7 +6,6 @@
  */
 
 const SANDBOX_PORT = 18080;
-const VNC_PORT = 16080;
 
 export function getSandboxBaseUrl(): string {
   return `${window.location.protocol}//${window.location.hostname}:${SANDBOX_PORT}`;

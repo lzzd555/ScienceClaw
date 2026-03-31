@@ -10,6 +10,7 @@ from datetime import datetime
 import httpx
 from pydantic import BaseModel, Field
 from .vlm_analyzer import VLMAnalyzer
+from backend.sandbox_utils import build_sandbox_headers, get_sandbox_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -811,11 +812,7 @@ class RPASessionManager:
             resp = await client.post(
                 f"{self.sandbox_url}/mcp",
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()
@@ -831,11 +828,7 @@ class RPASessionManager:
             resp = await client.post(
                 f"{self.sandbox_url}/mcp",
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()
@@ -851,7 +844,7 @@ class RPASessionManager:
 from backend.config import settings
 
 rpa_manager = RPASessionManager(
-    sandbox_url=settings.sandbox_mcp_url.replace("/mcp", ""),
+    sandbox_url=get_sandbox_base_url(),
     vlm_api_key=settings.model_ds_api_key,
     vlm_base_url=settings.model_ds_base_url,
 )

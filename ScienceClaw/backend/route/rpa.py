@@ -13,6 +13,7 @@ from backend.rpa.assistant import RPAAssistant
 from backend.user.dependencies import get_current_user, User
 from backend.config import settings
 from backend.mongodb.db import db
+from backend.sandbox_utils import get_sandbox_vnc_url
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,11 @@ async def start_rpa_session(
             user_id=str(current_user.id),
             sandbox_session_id=request.sandbox_session_id,
         )
-        return {"status": "success", "session": session}
+        return {
+            "status": "success",
+            "session": session,
+            "sandbox": {"vnc_url": get_sandbox_vnc_url()},
+        }
     except Exception as e:
         logger.error(f"Failed to start RPA session: {e}")
         raise HTTPException(status_code=500, detail=str(e))

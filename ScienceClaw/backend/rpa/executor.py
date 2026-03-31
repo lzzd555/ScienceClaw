@@ -4,14 +4,16 @@ import base64
 from typing import Dict, Any, Callable
 import httpx
 
+from backend.sandbox_utils import build_sandbox_headers, get_sandbox_mcp_url
+
 logger = logging.getLogger(__name__)
 
 
 class ScriptExecutor:
     """Execute generated Playwright scripts in sandbox."""
 
-    def __init__(self, sandbox_url: str):
-        self.sandbox_url = sandbox_url.rstrip("/")
+    def __init__(self, sandbox_url: str | None = None):
+        self.sandbox_url = (sandbox_url or get_sandbox_mcp_url()).rstrip("/")
 
     async def execute(
         self,
@@ -105,13 +107,9 @@ class ScriptExecutor:
         }
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                f"{self.sandbox_url}/mcp",
+                self.sandbox_url,
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()
@@ -125,13 +123,9 @@ class ScriptExecutor:
         }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                f"{self.sandbox_url}/mcp",
+                self.sandbox_url,
                 json=payload,
-                headers={
-                    "X-Session-ID": session_id,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                },
+                headers=build_sandbox_headers(session_id),
             )
             resp.raise_for_status()
             result = resp.json()

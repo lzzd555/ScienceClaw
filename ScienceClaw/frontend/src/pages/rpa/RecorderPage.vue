@@ -3,7 +3,6 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
-import { getRpaVncUrl } from '@/utils/sandbox';
 
 const router = useRouter();
 const route = useRoute();
@@ -14,10 +13,10 @@ const recordingTime = ref('00:00');
 const timerInterval = ref<any>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
+const remoteVncUrl = ref('');
 
-// VNC URL: try direct 6080 first, fallback to 18080 proxy
 const vncUrl = computed(() => {
-  return getRpaVncUrl();
+  return remoteVncUrl.value;
 });
 
 const steps = ref<any[]>([
@@ -50,6 +49,10 @@ const initSession = async () => {
 
     if (resp.data.status === 'success') {
       sessionId.value = resp.data.session.id;
+      remoteVncUrl.value = resp.data.sandbox?.vnc_url || '';
+      if (!remoteVncUrl.value) {
+        error.value = '未配置远程浏览器预览地址，请检查 SANDBOX_VNC_URL。';
+      }
       steps.value = [
         { id: '0', title: '环境就绪', description: '已成功启动 Playwright 浏览器，准备录制', status: 'completed' }
       ];
@@ -284,7 +287,7 @@ const sendMessage = async () => {
 
           <div class="flex-1 relative bg-black overflow-hidden">
             <iframe
-              v-if="sessionId"
+              v-if="sessionId && vncUrl"
               :src="vncUrl"
               class="w-full h-full border-0"
               allow="clipboard-read; clipboard-write"

@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     pandoc_cmd: str = os.environ.get("PANDOC_CMD", "/usr/local/bin/pandoc")
 
     # 沙盒服务（MCP 协议）
-    sandbox_mcp_url: str = os.environ.get("SANDBOX_MCP_URL", "http://sandbox:8080/mcp")
+    sandbox_base_url: str = os.environ.get("SANDBOX_BASE_URL", "http://sandbox:8080")
+    sandbox_mcp_url: str = os.environ.get("SANDBOX_MCP_URL") or f"{sandbox_base_url.rstrip('/')}/mcp"
+    sandbox_api_token: str = os.environ.get("SANDBOX_API_TOKEN", "")
+    sandbox_vnc_url: str = os.environ.get("SANDBOX_VNC_URL", "")
 
     # 任务调度服务调用聊天接口时的 API Key（可选）
     task_service_api_key: str = os.environ.get("TASK_SERVICE_API_KEY", "")
