@@ -89,6 +89,14 @@ def create_app() -> FastAPI:
                 content={"status": "not_ready", "storage": str(exc)},
             )
 
+    @app.get("/api/v1/client-config")
+    async def client_config():
+        """Return configuration needed by the frontend."""
+        from backend.config import settings
+        return {
+            "sandbox_public_url": settings.sandbox_public_url or "",
+        }
+
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(sessions_router, prefix="/api/v1")
     app.include_router(file_router, prefix="/api/v1")

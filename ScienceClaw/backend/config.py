@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # 沙盒服务（MCP 协议）
     sandbox_mcp_url: str = os.environ.get("SANDBOX_MCP_URL", "http://sandbox:8080/mcp")
 
+    # 前端可访问的沙盒地址（分离部署时需配置，默认空表示与前端同 host）
+    sandbox_public_url: str = os.environ.get("SANDBOX_PUBLIC_URL", "")
+
     # 任务调度服务调用聊天接口时的 API Key（可选）
     task_service_api_key: str = os.environ.get("TASK_SERVICE_API_KEY", "")
 

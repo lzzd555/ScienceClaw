@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css'  // KaTeX 数学公式样式
 import './utils/toast'
 import i18n from './composables/useI18n'
 import { getStoredToken, getCachedAuthProvider } from './api/auth'
+import { initSandboxConfig } from './utils/sandbox'
 
 // Import page components
 import HomePage from './pages/HomePage.vue'
@@ -135,3 +136,6 @@ const app = createApp(App)
 app.use(router)
 app.use(i18n)
 app.mount('#app')
+
+// Prime sandbox config cache (non-blocking)
+initSandboxConfig()

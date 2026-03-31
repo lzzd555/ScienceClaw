@@ -1,15 +1,58 @@
 /**
  * Sandbox URL utilities.
  *
- * The agent-infra/sandbox container exposes port 8080 internally,
- * mapped to 18080 on the host via docker-compose.
+ * When SANDBOX_PUBLIC_URL is configured on the backend, all sandbox URLs
+ * use that as the base (for split deployments). Otherwise, falls back to
+ * same-host with default ports (local dev / single-machine Docker).
  */
 
-const SANDBOX_PORT = 18080;
-const VNC_PORT = 16080;
+import { apiClient } from '@/api/client';
+
+const DEFAULT_SANDBOX_PORT = 18080;
+
+/** Cached sandbox base URL (fetched once from backend). */
+let _sandboxBaseUrl: string | null = null;
+let _fetchPromise: Promise<string> | null = null;
+
+/**
+ * Fetch sandbox_public_url from backend (cached).
+ * Returns empty string if not configured.
+ */
+async function fetchSandboxPublicUrl(): Promise<string> {
+  if (_sandboxBaseUrl !== null) return _sandboxBaseUrl;
+  if (_fetchPromise) return _fetchPromise;
+
+  _fetchPromise = apiClient
+    .get('/client-config')
+    .then((res) => {
+      _sandboxBaseUrl = res.data?.sandbox_public_url || '';
+      return _sandboxBaseUrl;
+    })
+    .catch(() => {
+      _sandboxBaseUrl = '';
+      return '';
+    });
+
+  return _fetchPromise;
+}
+
+/**
+ * Get sandbox base URL synchronously.
+ * Uses cached value if available, otherwise falls back to same-host default.
+ * Call `initSandboxConfig()` early in app startup to prime the cache.
+ */
+function getSandboxBaseUrlSync(): string {
+  if (_sandboxBaseUrl) return _sandboxBaseUrl;
+  return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_SANDBOX_PORT}`;
+}
+
+/** Prime the sandbox URL cache. Call once at app startup. */
+export async function initSandboxConfig(): Promise<void> {
+  await fetchSandboxPublicUrl();
+}
 
 export function getSandboxBaseUrl(): string {
-  return `${window.location.protocol}//${window.location.hostname}:${SANDBOX_PORT}`;
+  return getSandboxBaseUrlSync();
 }
 
 export function getSandboxVncUrl(): string {
@@ -17,14 +60,15 @@ export function getSandboxVncUrl(): string {
 }
 
 export function getRpaVncUrl(): string {
-  // Try direct websockify port first (serves noVNC if available),
-  // fallback to sandbox's built-in noVNC page with view_only=false for interaction
-  return `${window.location.protocol}//${window.location.hostname}:${SANDBOX_PORT}/vnc/index.html?autoconnect=true&resize=scale&view_only=false`;
+  return `${getSandboxBaseUrl()}/vnc/index.html?autoconnect=true&resize=scale&view_only=false`;
 }
 
 export function getSandboxTerminalWsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.hostname}:${SANDBOX_PORT}/v1/shell/ws`;
+  const base = getSandboxBaseUrl();
+  const proto = base.startsWith('https') ? 'wss:' : 'ws:';
+  // Extract host from base URL
+  const url = new URL(base);
+  return `${proto}//${url.host}/v1/shell/ws`;
 }
 
 export function getSandboxScreenshotUrl(): string {
