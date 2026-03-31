@@ -116,5 +116,96 @@ class CDPConnector:
             self._pw_loop = None
 
 
-# Global singleton
+class LocalCDPConnector:
+    """Local Playwright browser manager.
+
+    Launches a local Chromium browser in headful mode instead of
+    connecting to a remote sandbox via CDP.
+    Uses the same dedicated thread/ProactorEventLoop pattern as
+    CDPConnector for Windows compatibility.
+    """
+
+    def __init__(self):
+        self._playwright: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._lock = asyncio.Lock()
+        # Dedicated event loop + thread for Playwright (Windows compat)
+        self._pw_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pw_thread: Optional[threading.Thread] = None
+
+    def _ensure_pw_loop(self):
+        """Start a background thread with ProactorEventLoop for Playwright."""
+        if self._pw_thread and self._pw_thread.is_alive():
+            return
+        self._pw_loop = asyncio.new_event_loop()
+        import sys
+        if sys.platform == "win32":
+            self._pw_loop = asyncio.ProactorEventLoop()
+        self._pw_thread = threading.Thread(
+            target=self._pw_loop.run_forever, daemon=True, name="playwright-local-loop"
+        )
+        self._pw_thread.start()
+
+    async def _run_in_pw_loop(self, coro):
+        """Schedule a coroutine on the Playwright event loop and await result."""
+        self._ensure_pw_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, self._pw_loop)
+        return await asyncio.wrap_future(future)
+
+    async def get_browser(self) -> Browser:
+        """Get or create a local headful browser."""
+        async with self._lock:
+            if self._browser and self._browser.is_connected():
+                return self._browser
+
+            logger.info("Launching local Playwright Chromium (headful)")
+            self._playwright, self._browser = await self._run_in_pw_loop(
+                self._launch()
+            )
+            logger.info("Local browser launched")
+            return self._browser
+
+    @staticmethod
+    async def _launch():
+        """Start Playwright and launch a local headful Chromium browser."""
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(headless=False)
+        return pw, browser
+
+    async def close(self):
+        """Clean up browser and playwright."""
+        if self._browser:
+            try:
+                if self._pw_loop and self._pw_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._browser.close(), self._pw_loop
+                    )
+                    future.result(timeout=5)
+                self._browser = None
+            except Exception:
+                pass
+        if self._playwright:
+            try:
+                if self._pw_loop and self._pw_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._playwright.stop(), self._pw_loop
+                    )
+                    future.result(timeout=5)
+                self._playwright = None
+            except Exception:
+                pass
+        if self._pw_loop:
+            self._pw_loop.call_soon_threadsafe(self._pw_loop.stop)
+            self._pw_loop = None
+
+
+# Global singletons
 cdp_connector = CDPConnector()
+local_cdp_connector = LocalCDPConnector()
+
+
+def get_cdp_connector():
+    """Return the appropriate CDP connector based on storage_backend."""
+    if settings.storage_backend == "local":
+        return local_cdp_connector
+    return cdp_connector
