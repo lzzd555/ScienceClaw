@@ -13,6 +13,7 @@ const DEFAULT_SANDBOX_PORT = 18080;
 /** Cached sandbox base URL (fetched once from backend). */
 let _sandboxBaseUrl: string | null = null;
 let _fetchPromise: Promise<string> | null = null;
+let _storageBackend: string | null = null;
 
 /**
  * Fetch sandbox_public_url from backend (cached).
@@ -26,10 +27,12 @@ async function fetchSandboxPublicUrl(): Promise<string> {
     .get('/client-config')
     .then((res) => {
       _sandboxBaseUrl = res.data?.sandbox_public_url || '';
+      _storageBackend = res.data?.storage_backend || 'mongo';
       return _sandboxBaseUrl;
     })
     .catch(() => {
       _sandboxBaseUrl = '';
+      _storageBackend = 'mongo';
       return '';
     });
 
@@ -76,6 +79,10 @@ export function getSandboxScreenshotUrl(): string {
 }
 
 export type SandboxPreviewMode = 'terminal' | 'browser' | 'none';
+
+export function isLocalMode(): boolean {
+  return _storageBackend === 'local';
+}
 
 /**
  * Tools that trigger the terminal preview panel.
