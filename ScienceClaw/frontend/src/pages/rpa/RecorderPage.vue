@@ -3,7 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
-import { getRpaVncUrl } from '@/utils/sandbox';
+import { getRpaVncUrl, isLocalMode } from '@/utils/sandbox';
 
 const router = useRouter();
 const route = useRoute();
@@ -14,6 +14,10 @@ const recordingTime = ref('00:00');
 const timerInterval = ref<any>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
+
+const localMode = ref(isLocalMode());
+const canvasRef = ref<HTMLCanvasElement | null>(null);
+let screencastWs: WebSocket | null = null;
 
 // VNC URL: try direct 6080 first, fallback to 18080 proxy
 const vncUrl = computed(() => {
@@ -55,6 +59,9 @@ const initSession = async () => {
       ];
       startTimer();
       startPollingSteps();
+      if (localMode.value) {
+        connectScreencast(resp.data.session.id);
+      }
     }
   } catch (err: any) {
     console.error('Failed to start RPA session:', err);
@@ -105,7 +112,105 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (timerInterval.value) clearInterval(timerInterval.value);
   if (pollInterval) clearInterval(pollInterval);
+  if (screencastWs) {
+    screencastWs.close();
+    screencastWs = null;
+  }
 });
+
+const getModifiers = (e: MouseEvent | KeyboardEvent | WheelEvent): number => {
+  let mask = 0;
+  if (e.altKey) mask |= 1;
+  if (e.ctrlKey) mask |= 2;
+  if (e.metaKey) mask |= 4;
+  if (e.shiftKey) mask |= 8;
+  return mask;
+};
+
+const drawFrame = (base64Data: string, metadata: { width: number; height: number }) => {
+  const canvas = canvasRef.value;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const img = new Image();
+  img.onload = () => {
+    if (canvas.width !== metadata.width) canvas.width = metadata.width;
+    if (canvas.height !== metadata.height) canvas.height = metadata.height;
+    ctx.drawImage(img, 0, 0);
+  };
+  img.src = `data:image/jpeg;base64,${base64Data}`;
+};
+
+const connectScreencast = (sid: string) => {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${window.location.host}/api/v1/rpa/screencast/${sid}`;
+  screencastWs = new WebSocket(wsUrl);
+
+  screencastWs.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'frame') {
+        drawFrame(msg.data, msg.metadata);
+      }
+    } catch { /* ignore parse errors */ }
+  };
+
+  screencastWs.onclose = () => {
+    screencastWs = null;
+  };
+};
+
+const sendInputEvent = (e: Event) => {
+  if (!screencastWs || screencastWs.readyState !== WebSocket.OPEN) return;
+  const canvas = canvasRef.value;
+  if (!canvas) return;
+
+  if (e instanceof MouseEvent && !(e instanceof WheelEvent)) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    const actionMap: Record<string, string> = {
+      mousedown: 'mousePressed',
+      mouseup: 'mouseReleased',
+      mousemove: 'mouseMoved',
+    };
+    const action = actionMap[e.type];
+    if (!action) return;
+    const buttonMap = ['left', 'middle', 'right'];
+    screencastWs.send(JSON.stringify({
+      type: 'mouse',
+      action,
+      x,
+      y,
+      button: buttonMap[e.button] || 'left',
+      clickCount: e.type === 'mousedown' ? 1 : 0,
+      modifiers: getModifiers(e),
+    }));
+  } else if (e instanceof WheelEvent) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    screencastWs.send(JSON.stringify({
+      type: 'wheel',
+      x,
+      y,
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      modifiers: getModifiers(e),
+    }));
+  } else if (e instanceof KeyboardEvent) {
+    const action = e.type === 'keydown' ? 'keyDown' : 'keyUp';
+    screencastWs.send(JSON.stringify({
+      type: 'keyboard',
+      action,
+      key: e.key,
+      code: e.code,
+      text: e.type === 'keydown' && e.key.length === 1 ? e.key : '',
+      modifiers: getModifiers(e),
+    }));
+  }
+};
 
 const stopRecording = async () => {
   isRecording.value = false;
@@ -284,10 +389,23 @@ const sendMessage = async () => {
 
           <div class="flex-1 relative bg-black overflow-hidden">
             <iframe
-              v-if="sessionId"
+              v-if="sessionId && !localMode"
               :src="vncUrl"
               class="w-full h-full border-0"
               allow="clipboard-read; clipboard-write"
+            />
+            <canvas
+              v-else-if="sessionId && localMode"
+              ref="canvasRef"
+              class="w-full h-full object-contain cursor-default"
+              tabindex="0"
+              @mousedown="sendInputEvent"
+              @mouseup="sendInputEvent"
+              @mousemove="sendInputEvent"
+              @wheel.prevent="sendInputEvent"
+              @keydown.prevent="sendInputEvent"
+              @keyup.prevent="sendInputEvent"
+              @contextmenu.prevent
             />
             <div v-else class="absolute inset-0 flex items-center justify-center flex-col gap-4 text-white/50">
               <Terminal :size="64" class="opacity-20" />
@@ -297,7 +415,7 @@ const sendMessage = async () => {
 
             <div v-if="sessionId" class="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md border border-white/20 px-4 py-2 rounded-full flex items-center gap-3">
               <Radio class="text-red-400 animate-pulse" :size="14" />
-              <span class="text-white text-[10px] font-bold tracking-wider uppercase">实时 VNC 串流</span>
+              <span class="text-white text-[10px] font-bold tracking-wider uppercase">{{ localMode ? '实时 CDP 串流' : '实时 VNC 串流' }}</span>
             </div>
           </div>
         </div>
