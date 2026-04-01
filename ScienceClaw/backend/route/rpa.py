@@ -113,6 +113,23 @@ async def stop_rpa_session(
     return {"status": "success", "session": session}
 
 
+@router.delete("/session/{session_id}/step/{step_index}")
+async def delete_step(
+    session_id: str,
+    step_index: int,
+    current_user: User = Depends(get_current_user),
+):
+    session = await rpa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    success = await rpa_manager.delete_step(session_id, step_index)
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid step index")
+    return {"status": "success"}
+
+
 @router.post("/session/{session_id}/generate")
 async def generate_script(
     session_id: str,

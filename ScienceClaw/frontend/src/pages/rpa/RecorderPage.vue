@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code } from 'lucide-vue-next';
+import { Pause, Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import { getRpaVncUrl, isLocalMode } from '@/utils/sandbox';
 
@@ -238,6 +238,27 @@ const stopRecording = async () => {
   router.push(`/rpa/configure?sessionId=${sessionId.value}`);
 };
 
+const deleteStep = async (stepIndex: number) => {
+  if (!sessionId.value) return;
+  try {
+    await apiClient.delete(`/rpa/session/${sessionId.value}/step/${stepIndex}`);
+    const resp = await apiClient.get(`/rpa/session/${sessionId.value}`);
+    const serverSteps = resp.data.session?.steps || [];
+    steps.value = [
+      { id: '0', title: '环境就绪', description: '已成功启动 Playwright 浏览器', status: 'completed' },
+      ...serverSteps.map((s: any, i: number) => ({
+        id: String(i + 1),
+        title: s.description || s.action,
+        description: s.source === 'ai' ? (s.prompt || s.description || 'AI 操作') : `${s.action} → ${s.target || s.label || ''}`,
+        status: 'completed',
+        source: s.source || 'record',
+      }))
+    ];
+  } catch (err) {
+    console.error('Failed to delete step:', err);
+  }
+};
+
 const sendMessage = async () => {
   if (!newMessage.value.trim() || !sessionId.value || sending.value) return;
   const userText = newMessage.value.trim();
@@ -354,9 +375,9 @@ const sendMessage = async () => {
 
         <div class="space-y-4">
           <div
-            v-for="step in steps"
+            v-for="(step, index) in steps"
             :key="step.id"
-            class="bg-white p-4 rounded-xl shadow-sm border-l-4 transition-all"
+            class="bg-white p-4 rounded-xl shadow-sm border-l-4 transition-all group relative"
             :class="[
               step.source === 'ai' ? 'border-[#ac0089]' : (step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 opacity-70')
             ]"
@@ -368,7 +389,17 @@ const sendMessage = async () => {
                   {{ step.source === 'ai' ? 'AI' : '步骤' }} {{ step.id.padStart(2, '0') }}
                 </p>
               </div>
-              <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
+              <div class="flex items-center gap-1">
+                <button
+                  v-if="index > 0"
+                  @click="deleteStep(index - 1)"
+                  class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
+                  title="删除步骤"
+                >
+                  <X class="text-red-500" :size="14" />
+                </button>
+                <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
+              </div>
             </div>
             <h3 class="text-gray-900 font-semibold text-sm">{{ step.title }}</h3>
             <p class="text-gray-500 text-[11px] mt-2 leading-relaxed">{{ step.description }}</p>

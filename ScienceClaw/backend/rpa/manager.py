@@ -517,6 +517,14 @@ class RPASessionManager:
     async def get_session(self, session_id: str) -> Optional[RPASession]:
         return self.sessions.get(session_id)
 
+    async def delete_step(self, session_id: str, step_index: int) -> bool:
+        """Delete a step by index from the session."""
+        session = self.sessions.get(session_id)
+        if not session or step_index < 0 or step_index >= len(session.steps):
+            return False
+        session.steps.pop(step_index)
+        return True
+
     def get_page(self, session_id: str) -> Optional[Page]:
         return self._pages.get(session_id)
 
