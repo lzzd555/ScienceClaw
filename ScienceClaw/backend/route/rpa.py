@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from typing import Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from pydantic import BaseModel
@@ -142,13 +143,44 @@ async def test_script(
 
     logs = []
     browser = await get_cdp_connector().get_browser()
-    result = await executor.execute(
-        browser,
-        script,
-        on_log=lambda msg: logs.append(msg),
-        session_id=session_id,
-        page_registry=rpa_manager._pages,
-    )
+
+    # 本地模式：先创建 page 并注册，等待前端连接 screencast
+    if settings.storage_backend == "local":
+        context = await browser.new_context(no_viewport=True)
+        page = await context.new_page()
+        page.set_default_timeout(15000)
+        rpa_manager._pages[session_id] = page
+
+        # 等待前端连接 screencast
+        await asyncio.sleep(1.0)
+
+        # 执行脚本
+        try:
+            namespace: Dict[str, Any] = {}
+            exec(compile(script, "<rpa_script>", "exec"), namespace)
+
+            if "execute_skill" not in namespace:
+                result = {"success": False, "output": "", "error": "No execute_skill() function in script"}
+            else:
+                await asyncio.wait_for(namespace["execute_skill"](page), timeout=90.0)
+                await page.wait_for_timeout(3000)
+                result = {"success": True, "output": "SKILL_SUCCESS"}
+        except Exception as e:
+            result = {"success": False, "output": f"SKILL_ERROR: {e}", "error": str(e)}
+        finally:
+            # 清理
+            await asyncio.sleep(1.0)
+            rpa_manager._pages.pop(session_id, None)
+            await context.close()
+    else:
+        # Docker 模式：使用原有逻辑
+        result = await executor.execute(
+            browser,
+            script,
+            on_log=lambda msg: logs.append(msg),
+            session_id=session_id,
+            page_registry=rpa_manager._pages,
+        )
 
     return {"status": "success", "result": result, "logs": logs, "script": script}
 
