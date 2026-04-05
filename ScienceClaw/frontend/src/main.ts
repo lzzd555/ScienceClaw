@@ -74,6 +74,11 @@ export const router = createRouter({
           path: 'tasks',
           component: TasksPage,
           meta: { requiresAuth: true }
+        },
+        {
+          path: 'credentials',
+          component: CredentialsPage,
+          meta: { requiresAuth: true }
         }
       ]
     },
@@ -95,11 +100,6 @@ export const router = createRouter({
           component: TestPage,
         }
       ]
-    },
-    {
-      path: '/credentials',
-      component: CredentialsPage,
-      meta: { requiresAuth: true },
     },
     {
       path: '/login',

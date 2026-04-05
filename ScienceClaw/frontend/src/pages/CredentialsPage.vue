@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Shield, Plus, Trash2, Edit3, X } from 'lucide-vue-next';
+import { Plus, X, KeyRound, Globe, Pencil, Trash2, Clock, Eye, EyeOff } from 'lucide-vue-next';
 import {
   listCredentials,
   createCredential,
@@ -15,8 +15,10 @@ const { t } = useI18n();
 
 const credentials = ref<Credential[]>([]);
 const loading = ref(true);
-const showForm = ref(false);
+const showModal = ref(false);
 const editingId = ref<string | null>(null);
+const filterText = ref('');
+const showPassword = ref(false);
 
 const form = ref<CredentialCreate>({
   name: '',
@@ -25,10 +27,41 @@ const form = ref<CredentialCreate>({
   domain: '',
 });
 
+const filteredCredentials = computed(() => {
+  if (!filterText.value) return credentials.value;
+  const q = filterText.value.toLowerCase();
+  return credentials.value.filter(
+    c => c.name.toLowerCase().includes(q) || c.username.toLowerCase().includes(q) || (c.domain || '').toLowerCase().includes(q)
+  );
+});
+
+const totalCount = computed(() => credentials.value.length);
+
+const lastUpdated = computed(() => {
+  if (!credentials.value.length) return '-';
+  const latest = credentials.value.reduce((a, b) =>
+    new Date(a.updated_at) > new Date(b.updated_at) ? a : b
+  );
+  const diff = Date.now() - new Date(latest.updated_at).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return t('Just now');
+  if (mins < 60) return `${mins} ${t('minutes ago')}`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ${t('hours ago')}`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${t('days ago')}`;
+});
+
 const resetForm = () => {
   form.value = { name: '', username: '', password: '', domain: '' };
   editingId.value = null;
-  showForm.value = false;
+  showModal.value = false;
+  showPassword.value = false;
+};
+
+const openCreate = () => {
+  resetForm();
+  showModal.value = true;
 };
 
 const load = async () => {
@@ -65,7 +98,7 @@ const startEdit = (cred: Credential) => {
     password: '',
     domain: cred.domain,
   };
-  showForm.value = true;
+  showModal.value = true;
 };
 
 const remove = async (id: string) => {
@@ -79,78 +112,190 @@ onMounted(load);
 
 <template>
   <div class="min-h-screen bg-[#f5f6f7]">
-    <header class="h-16 bg-white border-b border-gray-200 flex items-center px-8 gap-4">
-      <Shield class="text-[#831bd7]" :size="24" />
-      <h1 class="text-gray-900 font-extrabold text-xl">{{ t('Credential Management') }}</h1>
-      <div class="flex-1"></div>
-      <button
-        @click="showForm = true; editingId = null; form = { name: '', username: '', password: '', domain: '' }"
-        class="flex items-center gap-2 bg-[#831bd7] text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-[#7018b8]"
-      >
-        <Plus :size="16" />
-        {{ t('New Credential') }}
-      </button>
-    </header>
+    <div class="p-10 max-w-full 2xl:max-w-screen-2xl mx-auto">
+      <!-- Page Header -->
+      <div class="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-6">
+        <div>
+          <h2 class="text-4xl font-extrabold text-gray-900 tracking-tight">{{ t('Credential Management') }}</h2>
+          <p class="mt-2 text-gray-500 text-base max-w-2xl">{{ t('Credential page description') }}</p>
+        </div>
+        <button
+          @click="openCreate"
+          class="flex items-center gap-2 bg-[#831bd7] text-white px-8 py-3.5 rounded-xl font-bold shadow-xl shadow-purple-500/20 hover:shadow-2xl hover:bg-[#831bd7]/90 transition-all"
+        >
+          <Plus :size="20" />
+          <span>{{ t('New Credential') }}</span>
+        </button>
+      </div>
 
-    <div class="max-w-4xl mx-auto p-8 space-y-6">
-      <!-- Form -->
-      <div v-if="showForm" class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="font-bold text-lg">{{ editingId ? t('Edit Credential') : t('New Credential') }}</h2>
-          <button @click="resetForm" class="p-1 hover:bg-gray-100 rounded"><X :size="18" /></button>
-        </div>
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="text-xs text-gray-500 font-medium mb-1 block">{{ t('Credential Name') }}</label>
-            <input v-model="form.name" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#831bd7] outline-none" :placeholder="t('Credential Name')" />
+      <!-- Stats Cards -->
+      <div class="grid grid-cols-1 gap-6 mb-8 md:grid-cols-2">
+        <div class="bg-white p-6 rounded-xl shadow-sm flex items-center gap-5">
+          <div class="w-14 h-14 rounded-xl bg-[#831bd7]/5 flex items-center justify-center text-[#831bd7]">
+            <KeyRound :size="24" />
           </div>
           <div>
-            <label class="text-xs text-gray-500 font-medium mb-1 block">{{ t('Username') }}</label>
-            <input v-model="form.username" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#831bd7] outline-none" :placeholder="t('Username')" />
-          </div>
-          <div>
-            <label class="text-xs text-gray-500 font-medium mb-1 block">{{ t('Password') }}</label>
-            <input v-model="form.password" type="password" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#831bd7] outline-none" :placeholder="editingId ? t('Leave empty to keep') : t('Password')" />
-          </div>
-          <div>
-            <label class="text-xs text-gray-500 font-medium mb-1 block">{{ t('Domain') }}</label>
-            <input v-model="form.domain" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#831bd7] outline-none" placeholder="github.com" />
+            <p class="text-sm font-semibold text-slate-400 mb-0.5 uppercase tracking-wider">{{ t('Total credentials') }}</p>
+            <p class="text-3xl font-extrabold text-gray-900">{{ totalCount }}</p>
           </div>
         </div>
-        <div class="flex justify-end mt-4">
-          <button @click="save" class="bg-[#831bd7] text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-[#7018b8]">
-            {{ editingId ? t('Save') : t('Create') }}
-          </button>
+        <div class="bg-white p-6 rounded-xl shadow-sm flex items-center gap-5">
+          <div class="w-14 h-14 rounded-xl bg-[#ac0089]/5 flex items-center justify-center text-[#ac0089]">
+            <Clock :size="24" />
+          </div>
+          <div>
+            <p class="text-sm font-semibold text-slate-400 mb-0.5 uppercase tracking-wider">{{ t('Last updated') }}</p>
+            <p class="text-3xl font-extrabold text-gray-900">{{ lastUpdated }}</p>
+          </div>
         </div>
       </div>
 
-      <!-- List -->
-      <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-        <div v-if="loading" class="text-center text-gray-400 py-8">{{ t('Loading...') }}</div>
-        <div v-else-if="credentials.length === 0" class="text-center text-gray-400 py-8">
-          {{ t('No credentials yet') }}
-        </div>
-        <div v-else class="space-y-3">
-          <div
-            v-for="cred in credentials"
-            :key="cred.id"
-            class="flex items-center gap-4 p-4 bg-gray-50 rounded-lg"
-          >
-            <Shield class="text-[#831bd7] flex-shrink-0" :size="18" />
-            <div class="flex-1 min-w-0">
-              <p class="text-sm font-semibold text-gray-900">{{ cred.name }}</p>
-              <p class="text-xs text-gray-500">{{ cred.username }} {{ cred.domain ? `· ${cred.domain}` : '' }}</p>
-            </div>
-            <span class="text-xs text-gray-400 font-mono">*****</span>
-            <button @click="startEdit(cred)" class="p-1.5 hover:bg-gray-200 rounded" :title="t('Edit')">
-              <Edit3 :size="14" class="text-gray-500" />
-            </button>
-            <button @click="remove(cred.id)" class="p-1.5 hover:bg-red-50 rounded" :title="t('Delete')">
-              <Trash2 :size="14" class="text-red-500" />
-            </button>
+      <!-- Credentials Table -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+        <div class="px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-b border-slate-50">
+          <h3 class="text-xl font-bold">{{ t('Credential list') }}</h3>
+          <div class="relative w-full sm:w-auto">
+            <input
+              v-model="filterText"
+              class="bg-slate-50 border border-slate-100 rounded-xl pl-4 pr-4 py-2 text-sm w-full sm:w-80 focus:ring-2 focus:ring-[#831bd7]/10 transition-all"
+              :placeholder="t('Quick filter...')"
+            />
           </div>
+        </div>
+
+        <!-- Loading -->
+        <div v-if="loading" class="flex items-center justify-center py-20 text-slate-400">
+          {{ t('Loading...') }}
+        </div>
+
+        <!-- Empty State -->
+        <div v-else-if="credentials.length === 0" class="flex flex-col items-center justify-center py-24">
+          <div class="w-16 h-16 rounded-full bg-[#831bd7]/5 flex items-center justify-center mb-6">
+            <KeyRound :size="28" class="text-[#831bd7]/40" />
+          </div>
+          <h4 class="text-xl font-bold text-gray-900 mb-2">{{ t('No credentials yet') }}</h4>
+          <p class="text-slate-400 mb-8">{{ t('No credentials hint') }}</p>
+          <button
+            @click="openCreate"
+            class="border-2 border-[#831bd7] text-[#831bd7] px-8 py-3 rounded-full font-bold hover:bg-[#831bd7] hover:text-white transition-all"
+          >
+            {{ t('New Credential') }}
+          </button>
+        </div>
+
+        <!-- Table -->
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead>
+              <tr class="bg-slate-50/50">
+                <th class="px-8 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-[0.1em]">{{ t('Credential Name') }}</th>
+                <th class="px-8 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-[0.1em]">{{ t('Username') }}</th>
+                <th class="px-8 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-[0.1em]">{{ t('Domain') }}</th>
+                <th class="px-8 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-[0.1em] text-right">{{ t('Actions') }}</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-50">
+              <tr
+                v-for="cred in filteredCredentials"
+                :key="cred.id"
+                class="group hover:bg-slate-50/50 transition-colors"
+              >
+                <td class="px-8 py-5">
+                  <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-lg bg-[#831bd7]/5 flex items-center justify-center text-[#831bd7] group-hover:bg-[#831bd7]/10 transition-colors">
+                      <Globe :size="16" />
+                    </div>
+                    <span class="font-bold text-gray-900">{{ cred.name }}</span>
+                  </div>
+                </td>
+                <td class="px-8 py-5 text-gray-500 font-medium">{{ cred.username }}</td>
+                <td class="px-8 py-5 text-slate-400 italic">{{ cred.domain || '-' }}</td>
+                <td class="px-8 py-5 text-right">
+                  <div class="flex items-center justify-end gap-2">
+                    <button @click="startEdit(cred)" class="p-2 text-slate-400 hover:text-[#831bd7] transition-colors" :title="t('Edit')">
+                      <Pencil :size="16" />
+                    </button>
+                    <button @click="remove(cred.id)" class="p-2 text-slate-400 hover:text-red-500 transition-colors" :title="t('Delete')">
+                      <Trash2 :size="16" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
+
+    <!-- Modal Overlay -->
+    <Teleport to="body">
+      <div v-if="showModal" class="fixed inset-0 z-[60] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-6" @click.self="resetForm">
+        <div class="bg-white w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden">
+          <div class="p-8 border-b border-slate-100 flex items-center justify-between">
+            <h3 class="text-2xl font-extrabold">{{ editingId ? t('Edit Credential') : t('New Credential') }}</h3>
+            <button @click="resetForm" class="p-2 hover:bg-slate-100 rounded-full transition-all">
+              <X :size="20" />
+            </button>
+          </div>
+          <div class="p-8 space-y-6">
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">{{ t('Credential Name') }}</label>
+              <input
+                v-model="form.name"
+                class="w-full bg-[#eff1f2] border-none rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#831bd7]/20 outline-none"
+                :placeholder="t('Credential name placeholder')"
+              />
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">{{ t('Username') }}</label>
+                <input
+                  v-model="form.username"
+                  class="w-full bg-[#eff1f2] border-none rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#831bd7]/20 outline-none"
+                />
+              </div>
+              <div>
+                <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">{{ t('Domain') }}</label>
+                <input
+                  v-model="form.domain"
+                  class="w-full bg-[#eff1f2] border-none rounded-lg p-3 text-sm focus:ring-2 focus:ring-[#831bd7]/20 outline-none"
+                  placeholder="example.com"
+                />
+              </div>
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">{{ t('Password') }} / Token</label>
+              <div class="relative">
+                <input
+                  v-model="form.password"
+                  :type="showPassword ? 'text' : 'password'"
+                  class="w-full bg-[#eff1f2] border-none rounded-lg p-3 pr-10 text-sm focus:ring-2 focus:ring-[#831bd7]/20 outline-none"
+                  :placeholder="editingId ? t('Leave empty to keep') : ''"
+                />
+                <button
+                  type="button"
+                  @click="showPassword = !showPassword"
+                  class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <EyeOff v-if="showPassword" :size="16" />
+                  <Eye v-else :size="16" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="px-8 py-6 bg-slate-50/50 flex justify-end gap-4">
+            <button @click="resetForm" class="px-6 py-3 font-bold text-slate-500 hover:text-gray-900 transition-colors">
+              {{ t('Cancel') }}
+            </button>
+            <button
+              @click="save"
+              class="bg-[#831bd7] text-white px-8 py-3 rounded-full font-bold shadow-lg shadow-purple-500/20 hover:opacity-90 transition-all"
+            >
+              {{ editingId ? t('Save') : t('Create') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

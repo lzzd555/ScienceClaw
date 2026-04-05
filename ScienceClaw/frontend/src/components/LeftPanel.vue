@@ -50,6 +50,17 @@
         <div v-if="isTasksActive" class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gradient-to-b from-sky-300 to-teal-400 rounded-r-full"></div>
       </button>
 
+      <!-- Credentials Tab -->
+      <button @click="handleCredentialsTabClick"
+        class="nav-btn size-10 rounded-xl flex items-center justify-center transition-all duration-250 group relative"
+        :class="isCredentialsActive
+          ? 'bg-purple-100/50 text-[#831bd7] shadow-sm'
+          : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300'"
+      >
+        <KeyRound :size="19" :stroke-width="isCredentialsActive ? 2.5 : 1.8" />
+        <div v-if="isCredentialsActive" class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gradient-to-b from-[#831bd7] to-[#ac0089] rounded-r-full"></div>
+      </button>
+
       <!-- Spacer -->
       <div class="flex-1"></div>
 
@@ -232,7 +243,7 @@
 import {
   Plus, Command, MessageSquareDashed, Blocks, MessageSquare,
   Wrench, CalendarClock, Settings2, Search, X, ChevronRight, Pin,
-  Play
+  Play, KeyRound
 } from 'lucide-vue-next';
 import SessionItem from './SessionItem.vue';
 import UserMenu from './UserMenu.vue';
@@ -310,10 +321,11 @@ const filterTabs = computed(() => [
 ])
 
 // Navigation State
-const isChatActive = computed(() => route.path === '/' || route.path.startsWith('/chat/session') || (route.path.startsWith('/chat') && !route.path.includes('skills') && !route.path.includes('tools') && !route.path.startsWith('/chat/tasks')))
+const isChatActive = computed(() => route.path === '/' || route.path.startsWith('/chat/session') || (route.path.startsWith('/chat') && !route.path.includes('skills') && !route.path.includes('tools') && !route.path.startsWith('/chat/tasks') && !route.path.startsWith('/chat/credentials')))
 const isSkillsActive = computed(() => route.path.includes('/chat/skills'))
 const isToolsActive = computed(() => route.path.includes('/chat/tools') && !route.path.startsWith('/chat/tasks'))
 const isTasksActive = computed(() => route.path.startsWith('/chat/tasks'))
+const isCredentialsActive = computed(() => route.path.startsWith('/chat/credentials'))
 
 const handleChatTabClick = () => {
   if (isChatActive.value && isLeftPanelShow.value) {
@@ -350,6 +362,13 @@ const handleTasksTabClick = () => {
   }
   router.push('/chat/tasks')
   fetchScheduledTasks()
+}
+
+const handleCredentialsTabClick = () => {
+  if (isLeftPanelShow.value) {
+    toggleLeftPanel()
+  }
+  router.push('/chat/credentials')
 }
 
 const handleNewScheduledTaskClick = () => {
