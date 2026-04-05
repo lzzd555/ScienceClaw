@@ -48,6 +48,7 @@ class CredentialVault:
         except OSError:
             logger.warning("Could not write CREDENTIAL_KEY to .env — set it manually")
         os.environ["CREDENTIAL_KEY"] = key_hex
+        settings.credential_key = key_hex
         return key_hex
 
     def encrypt(self, plaintext: str) -> str:
@@ -58,10 +59,14 @@ class CredentialVault:
 
     def decrypt(self, encrypted: str) -> str:
         """Decrypt base64(nonce + ciphertext) → plaintext."""
+        from cryptography.exceptions import InvalidTag
         raw = base64.b64decode(encrypted)
         nonce = raw[:_NONCE_SIZE]
         ct = raw[_NONCE_SIZE:]
-        return self._aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+        try:
+            return self._aesgcm.decrypt(nonce, ct, None).decode("utf-8")
+        except InvalidTag:
+            raise ValueError("Failed to decrypt credential — key may have changed")
 
     async def create(self, user_id: str, data: CredentialCreate) -> CredentialResponse:
         from backend.storage import get_repository

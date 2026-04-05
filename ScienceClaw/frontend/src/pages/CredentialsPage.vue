@@ -142,10 +142,10 @@ onMounted(load);
               <p class="text-xs text-gray-500">{{ cred.username }} {{ cred.domain ? `· ${cred.domain}` : '' }}</p>
             </div>
             <span class="text-xs text-gray-400 font-mono">*****</span>
-            <button @click="startEdit(cred)" class="p-1.5 hover:bg-gray-200 rounded" title="编辑">
+            <button @click="startEdit(cred)" class="p-1.5 hover:bg-gray-200 rounded" :title="t('Edit')">
               <Edit3 :size="14" class="text-gray-500" />
             </button>
-            <button @click="remove(cred.id)" class="p-1.5 hover:bg-red-50 rounded" title="删除">
+            <button @click="remove(cred.id)" class="p-1.5 hover:bg-red-50 rounded" :title="t('Delete')">
               <Trash2 :size="14" class="text-red-500" />
             </button>
           </div>
