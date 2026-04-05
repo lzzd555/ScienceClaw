@@ -125,6 +125,11 @@ export function getSkillFileDownloadUrl(skillName: string, path: string): string
     return `/api/v1/sessions/skills/${encodeURIComponent(skillName)}/download?path=${encodeURIComponent(path)}`;
 }
 
+export async function writeSkillFile(skillName: string, file: string, content: string): Promise<{file: string, saved: boolean}> {
+  const response = await apiClient.put<ApiResponse<{file: string, saved: boolean}>>(`/sessions/skills/${encodeURIComponent(skillName)}/write`, { file, content });
+  return response.data.data;
+}
+
 export async function saveSkillFromSession(sessionId: string, skillName: string): Promise<{skill_name: string, saved: boolean}> {
   const response = await apiClient.post<ApiResponse<{skill_name: string, saved: boolean}>>(`/sessions/${sessionId}/skills/save`, { skill_name: skillName });
   return response.data.data;

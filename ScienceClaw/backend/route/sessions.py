@@ -1032,6 +1032,64 @@ async def read_skill_file(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+class WriteSkillFileRequest(BaseModel):
+    file: str
+    content: str
+
+
+@router.put("/skills/{skill_name}/write", response_model=ApiResponse)
+async def write_skill_file(
+    skill_name: str,
+    body: WriteSkillFileRequest,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    """Write / update a file inside an external skill."""
+    try:
+        if settings.storage_backend == "local":
+            # Reject writes to builtin skills
+            builtin_dir = _Path(settings.builtin_skills_dir).resolve()
+            builtin_skill = builtin_dir / skill_name
+            if builtin_skill.is_dir():
+                raise HTTPException(
+                    status_code=403,
+                    detail="Built-in skills cannot be edited",
+                )
+            skill_dir = _Path(settings.external_skills_dir) / skill_name
+            if not skill_dir.is_dir():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Skill '{skill_name}' not found",
+                )
+            file_path = (skill_dir / body.file).resolve()
+            # Path traversal protection
+            if not str(file_path).startswith(str(skill_dir.resolve())):
+                raise HTTPException(status_code=403, detail="Invalid file path")
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(body.content, encoding="utf-8")
+            return ApiResponse(data={"file": body.file, "saved": True})
+        else:
+            col = _get_repo("skills")
+            doc = await col.find_one(
+                {"user_id": current_user.id, "name": skill_name},
+                projection={"_id": 1},
+            )
+            if not doc:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Skill '{skill_name}' not found",
+                )
+            await col.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {f"files.{body.file}": body.content}},
+            )
+            return ApiResponse(data={"file": body.file, "saved": True})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("write_skill_file failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 外置 Tools 管理（必须放在 /{session_id} 路由之前）
 # ═══════════════════════════════════════════════════════════════════

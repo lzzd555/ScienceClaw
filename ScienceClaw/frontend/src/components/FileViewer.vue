@@ -6,10 +6,11 @@
         v-if="content"
         :value="content"
         :filename="fileName"
-        :read-only="true"
+        :read-only="!editable"
         theme="vs"
         :minimap="false"
         :word-wrap="'on'"
+        @change="onEditorChange"
       />
       <div v-else class="flex items-center justify-center h-full">
          <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
@@ -17,11 +18,23 @@
     </div>
 
     <!-- Markdown -->
-    <div v-else-if="isMarkdown" class="flex-1 h-0 overflow-y-auto p-8 bg-white">
-      <div class="max-w-4xl mx-auto">
-        <MarkdownFilePreview v-if="content" :content="content" />
-        <div v-else class="flex items-center justify-center h-full">
-           <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+    <div v-else-if="isMarkdown" class="flex-1 h-0 overflow-hidden">
+      <MonacoEditor
+        v-if="editable && content"
+        :value="content"
+        :filename="fileName"
+        :read-only="false"
+        theme="vs"
+        :minimap="false"
+        :word-wrap="'on'"
+        @change="onEditorChange"
+      />
+      <div v-else-if="!editable" class="h-full overflow-y-auto p-8 bg-white">
+        <div class="max-w-4xl mx-auto">
+          <MarkdownFilePreview v-if="content" :content="content" />
+          <div v-else class="flex items-center justify-center h-full">
+             <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -71,7 +84,16 @@ const props = defineProps<{
   skillName: string;
   path: string; // Relative path in skill
   content?: string | null; // For text based files
+  editable?: boolean;
 }>();
+
+const emit = defineEmits<{
+  change: [value: string];
+}>();
+
+const onEditorChange = (value: string) => {
+  emit('change', value);
+};
 
 const extension = computed(() => props.fileName.split('.').pop()?.toLowerCase() || '');
 

@@ -11,7 +11,7 @@
         <div class="size-11 rounded-xl bg-white/15 backdrop-blur-sm flex items-center justify-center text-white text-lg font-bold shadow-lg">
           {{ skillName.charAt(0).toUpperCase() }}
         </div>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <h1 class="text-base font-bold text-white truncate">{{ skillName }}</h1>
           <div class="flex items-center gap-1 text-white/50 text-xs">
             <span class="cursor-pointer hover:text-white/80 transition-colors" @click="navigateToRoot">root</span>
@@ -20,6 +20,40 @@
               <span class="cursor-pointer hover:text-white/80 transition-colors" @click="navigateToPart(index)">{{ part }}</span>
             </template>
           </div>
+        </div>
+        <!-- Edit / Save Controls -->
+        <div class="flex items-center gap-2">
+          <template v-if="editMode">
+            <button
+              @click="cancelEdit"
+              class="px-3 py-1.5 text-sm font-medium text-white/80 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+            >
+              {{ t('Cancel') }}
+            </button>
+            <button
+              @click="saveFile"
+              :disabled="!dirty || saving"
+              class="px-4 py-1.5 text-sm font-semibold rounded-lg transition-all flex items-center gap-1.5"
+              :class="dirty ? 'bg-white text-violet-700 hover:bg-white/90 shadow-lg' : 'bg-white/20 text-white/40 cursor-not-allowed'"
+            >
+              <Save class="size-3.5" />
+              {{ saving ? t('Saving...') : t('Save') }}
+            </button>
+          </template>
+          <button
+            v-else-if="!isBuiltin"
+            @click="enterEdit"
+            class="px-4 py-1.5 text-sm font-semibold bg-white/15 text-white hover:bg-white/25 rounded-lg transition-colors flex items-center gap-1.5 backdrop-blur-sm"
+          >
+            <Pencil class="size-3.5" />
+            {{ t('Edit') }}
+          </button>
+          <span
+            v-else
+            class="px-3 py-1 text-xs font-medium bg-white/10 text-white/50 rounded-full"
+          >
+            {{ t('Built-in') }}
+          </span>
         </div>
       </div>
     </div>
@@ -62,12 +96,13 @@
               <Folder v-if="item.type === 'directory'" class="size-4 text-amber-400 flex-shrink-0" />
               <FileText v-else class="size-4 text-gray-400 flex-shrink-0" />
               <span class="truncate">{{ item.name }}</span>
+              <span v-if="editMode && dirtyFiles.has(item.path)" class="ml-auto size-2 rounded-full bg-amber-400 flex-shrink-0"></span>
             </div>
           </template>
         </div>
       </div>
 
-      <!-- File Content Preview -->
+      <!-- File Content / Editor -->
       <div class="flex-1 overflow-hidden flex flex-col">
         <div v-if="selectedFile" class="flex-1 flex flex-col overflow-hidden">
           <div v-if="error" class="flex-1 flex items-center justify-center p-6">
@@ -76,14 +111,33 @@
               <p class="text-xs text-red-500/70 mt-1">{{ error }}</p>
             </div>
           </div>
-          <FileViewer v-else :file-name="selectedFileName" :skill-name="skillName" :path="selectedFile" :content="fileContent" class="flex-1" />
+
+          <!-- ParamEditor for params.json in edit mode -->
+          <ParamEditor
+            v-else-if="editMode && isParamsJson"
+            :content="fileContent || '{}'"
+            class="flex-1"
+            @change="onContentChange"
+          />
+
+          <!-- FileViewer for all other cases -->
+          <FileViewer
+            v-else
+            :file-name="selectedFileName"
+            :skill-name="skillName"
+            :path="selectedFile"
+            :content="fileContent"
+            :editable="editMode"
+            class="flex-1"
+            @change="onContentChange"
+          />
         </div>
         <div v-else class="flex-1 flex items-center justify-center">
           <div class="text-center">
             <div class="size-20 rounded-2xl bg-gray-50 dark:bg-gray-900 flex items-center justify-center mx-auto mb-3">
               <FileSearch class="size-8 opacity-20" />
             </div>
-            <p class="text-sm text-[var(--text-tertiary)]">Select a file to view content</p>
+            <p class="text-sm text-[var(--text-tertiary)]">{{ t('Select a file to view content') }}</p>
             <p class="text-xs text-[var(--text-tertiary)] opacity-50 mt-1">Browse the file tree on the left</p>
           </div>
         </div>
@@ -95,10 +149,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, Folder, FileText, FileSearch } from 'lucide-vue-next';
-import { getSkillFiles, readSkillFile } from '../api/agent';
+import { useI18n } from 'vue-i18n';
+import { ArrowLeft, Folder, FileText, FileSearch, Pencil, Save } from 'lucide-vue-next';
+import { getSkillFiles, readSkillFile, getSkills, writeSkillFile } from '../api/agent';
 import FileViewer from '../components/FileViewer.vue';
+import ParamEditor from '../components/ParamEditor.vue';
 
+const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const skillName = route.params.skillName as string;
@@ -116,15 +173,23 @@ const heroGradient = computed(() => {
 });
 
 const loading = ref(true);
-const contentLoading = ref(false);
 const error = ref<string | null>(null);
 const fileTree = ref<any[]>([]);
 const currentPath = ref("");
 const selectedFile = ref<string | null>(null);
 const fileContent = ref<string | null>(null);
+const isBuiltin = ref(false);
+
+// Edit state
+const editMode = ref(false);
+const dirty = ref(false);
+const saving = ref(false);
+const editedContent = ref<string | null>(null);
+const dirtyFiles = ref(new Set<string>());
 
 const selectedFileName = computed(() => selectedFile.value?.split('/').pop() || "");
 const pathParts = computed(() => currentPath.value ? currentPath.value.split('/') : []);
+const isParamsJson = computed(() => selectedFileName.value === 'params.json');
 
 const isTextFile = (filename: string) => {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -141,18 +206,59 @@ const loadFiles = async () => {
 const handleItemClick = async (item: any) => {
   if (item.type === 'directory') {
     currentPath.value = item.path;
-    selectedFile.value = null; fileContent.value = null;
+    selectedFile.value = null; fileContent.value = null; editedContent.value = null;
     await loadFiles();
   } else { selectFile(item); }
 };
 
 const selectFile = async (item: any) => {
-  error.value = null; selectedFile.value = item.path; fileContent.value = null;
+  // If dirty and switching file, keep the dirty content tracked
+  error.value = null;
+  selectedFile.value = item.path;
+  fileContent.value = null;
+  editedContent.value = null;
+  dirty.value = false;
   if (isTextFile(item.name)) {
-    contentLoading.value = true;
-    try { fileContent.value = (await readSkillFile(skillName, item.path)).content; }
-    catch (e: any) { error.value = e.message || "Failed to load content"; }
-    finally { contentLoading.value = false; }
+    try {
+      fileContent.value = (await readSkillFile(skillName, item.path)).content;
+    } catch (e: any) {
+      error.value = e.message || "Failed to load content";
+    }
+  }
+};
+
+const onContentChange = (value: string) => {
+  editedContent.value = value;
+  dirty.value = true;
+  if (selectedFile.value) {
+    dirtyFiles.value.add(selectedFile.value);
+  }
+};
+
+const enterEdit = () => {
+  editMode.value = true;
+};
+
+const cancelEdit = () => {
+  editMode.value = false;
+  dirty.value = false;
+  editedContent.value = null;
+  dirtyFiles.value.clear();
+};
+
+const saveFile = async () => {
+  if (!selectedFile.value || editedContent.value === null) return;
+  saving.value = true;
+  try {
+    await writeSkillFile(skillName, selectedFile.value, editedContent.value);
+    fileContent.value = editedContent.value;
+    dirty.value = false;
+    dirtyFiles.value.delete(selectedFile.value);
+    editedContent.value = null;
+  } catch (e: any) {
+    error.value = e.message || 'Failed to save file';
+  } finally {
+    saving.value = false;
   }
 };
 
@@ -172,7 +278,15 @@ const navigateToRoot = async () => {
 };
 const goBack = () => router.back();
 
-onMounted(loadFiles);
+onMounted(async () => {
+  await loadFiles();
+  // Check if this is a builtin skill
+  try {
+    const skills = await getSkills();
+    const skill = skills.find(s => s.name === skillName);
+    if (skill) isBuiltin.value = !!skill.builtin;
+  } catch {}
+});
 </script>
 
 <style scoped>
