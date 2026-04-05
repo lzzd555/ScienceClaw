@@ -77,6 +77,10 @@ The skill is implemented in `skill.py` using Playwright for browser automation.
 
             (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
             (skill_dir / "skill.py").write_text(script, encoding="utf-8")
+            # Save params config (includes credential_id for sensitive params)
+            (skill_dir / "params.json").write_text(
+                json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
 
             logger.info(f"Skill '{skill_name}' exported to {skill_dir}")
         else:

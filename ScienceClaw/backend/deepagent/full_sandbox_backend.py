@@ -188,6 +188,57 @@ class FullSandboxBackend(SandboxBackendProtocol):
             return self._shell_session_id
         return _run_sync(self._aensure_session())
 
+    # ── 凭据注入 ──────────────────────────────────────────────
+
+    async def _maybe_inject_credentials(self, command: str) -> str:
+        """Detect `python skill.py` commands and inject decrypted credentials as CLI args."""
+        import shlex
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            return command
+
+        # Find the `python skill.py` part (may be preceded by `cd ... &&`)
+        run_tokens = tokens
+        if "&&" in tokens:
+            and_idx = tokens.index("&&")
+            run_tokens = tokens[and_idx + 1:]
+
+        if len(run_tokens) < 2 or run_tokens[0] not in {"python", "python3"}:
+            return command
+        if not run_tokens[1].endswith("skill.py"):
+            return command
+
+        # Look up skill params from MongoDB
+        try:
+            from backend.storage import get_repository
+            skill_name = run_tokens[1].rsplit("/", 1)[-1].replace("/skill.py", "")
+            # Try to find the skill directory name from the path
+            import posixpath
+            parent_dir = posixpath.dirname(run_tokens[1])
+            skill_name = posixpath.basename(parent_dir) if parent_dir else ""
+            if not skill_name:
+                return command
+
+            repo = get_repository("skills")
+            doc = await repo.find_one({"name": skill_name, "user_id": self._user_id})
+            if not doc or not doc.get("params"):
+                return command
+
+            from backend.credential.vault import inject_credentials
+            injected = await inject_credentials(self._user_id, doc["params"], {})
+            if not injected:
+                return command
+
+            # Append --key=value for each injected credential
+            extra_args = " ".join(
+                f"--{k}={shlex.quote(str(v))}" for k, v in injected.items()
+            )
+            return f"{command} {extra_args}"
+        except Exception as exc:
+            logger.warning(f"[FullSandbox] Credential injection failed: {exc}")
+            return command
+
     # ── 命令执行 (Execute) ────────────────────────────────────
 
     def _parse_exec_response(self, result: dict) -> tuple[ExecuteResponse, bool]:
@@ -291,6 +342,9 @@ class FullSandboxBackend(SandboxBackendProtocol):
     async def aexecute(
         self, command: str, *, timeout: int | None = None
     ) -> ExecuteResponse:
+        # Inject credentials for skill.py commands
+        command = await self._maybe_inject_credentials(command)
+
         effective_timeout = timeout or self._execute_timeout
         debug_run_id = f"{self._session_id}-{int(time.time() * 1000)}"
         circuit_response = self._check_circuit_breaker()

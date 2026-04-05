@@ -408,6 +408,7 @@ async def deep_agent(
             virtual_mode=False,
             timeout=ts.sandbox_exec_timeout,
             inherit_env=True,
+            user_id=user_id or "",
         )
         sandbox_workspace = local_workspace
     else:
@@ -630,6 +631,7 @@ async def deep_agent_eval(
             virtual_mode=False,
             timeout=ts.sandbox_exec_timeout,
             inherit_env=True,
+            user_id=user_id or "",
         )
         sandbox_workspace = local_workspace
     else:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +16,7 @@ from deepagents.backends.protocol import ExecuteResponse
 from backend.browser_preview import browser_preview_registry
 from backend.rpa.cdp_connector import get_cdp_connector
 
+logger = logging.getLogger(__name__)
 RPA_PAGE_TIMEOUT_MS = 60000
 
 
@@ -26,9 +29,10 @@ class ParsedSkillCommand:
 class LocalPreviewShellBackend(LocalShellBackend):
     """Intercept local RPA skill execution so chat preview can stream the browser."""
 
-    def __init__(self, session_id: str, *args, **kwargs) -> None:
+    def __init__(self, session_id: str, *args, user_id: str = "", **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._session_id = session_id
+        self._user_id = user_id
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         parsed = self._parse_skill_command(command)
@@ -103,7 +107,11 @@ class LocalPreviewShellBackend(LocalShellBackend):
             await browser_preview_registry.register(self._session_id, page)
 
             await asyncio.sleep(0.5)
-            _result = await asyncio.wait_for(execute_skill(page, **parsed.kwargs), timeout=effective_timeout)
+            # Inject credentials for sensitive params
+            skill_kwargs = dict(parsed.kwargs)
+            if self._user_id:
+                skill_kwargs = await self._inject_credentials(parsed.script_path, skill_kwargs)
+            _result = await asyncio.wait_for(execute_skill(page, **skill_kwargs), timeout=effective_timeout)
             await page.wait_for_timeout(3000)
 
             data_line = ""
@@ -135,6 +143,21 @@ class LocalPreviewShellBackend(LocalShellBackend):
                     await context.close()
                 except Exception:
                     pass
+
+    async def _inject_credentials(
+        self, script_path: Path, kwargs: Dict[str, str]
+    ) -> Dict[str, str]:
+        """Read params.json next to skill.py and inject decrypted credentials."""
+        params_path = script_path.parent / "params.json"
+        if not params_path.is_file():
+            return kwargs
+        try:
+            params = json.loads(params_path.read_text(encoding="utf-8"))
+            from backend.credential.vault import inject_credentials
+            return await inject_credentials(self._user_id, params, kwargs)
+        except Exception as exc:
+            logger.warning(f"Credential injection failed: {exc}")
+            return kwargs
 
     @staticmethod
     def _load_module(script_path: Path) -> ModuleType:
