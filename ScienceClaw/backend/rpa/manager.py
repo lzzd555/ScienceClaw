@@ -28,6 +28,7 @@ class RPAStep(BaseModel):
     url: Optional[str] = None
     source: str = "record"  # "record" or "ai"
     prompt: Optional[str] = None  # original user instruction for AI steps
+    sensitive: bool = False
 
 
 class RPASession(BaseModel):
@@ -459,8 +460,11 @@ CAPTURE_JS = r"""
         var el = e.target;
         clearTimeout(el.__rpa_timer);
         el.__rpa_timer = setTimeout(function() {
+            var isPassword = (el.type === 'password');
             emit({action:'fill', locator:generateLocator(el),
-                  value:el.value||'', tag:el.tagName});
+                  value: isPassword ? '{{credential}}' : (el.value||''),
+                  tag:el.tagName,
+                  sensitive: isPassword});
         }, 800);
     }, true);
 
@@ -621,14 +625,16 @@ class RPASessionManager:
                         return
 
         locator_info = evt.get("locator", {})
+        is_sensitive = evt.get("sensitive", False)
         step_data = {
             "action": evt.get("action", "unknown"),
             "target": json.dumps(locator_info) if locator_info else "",
-            "value": evt.get("value", ""),
+            "value": "{{credential}}" if is_sensitive else evt.get("value", ""),
             "label": "",
             "tag": evt.get("tag", ""),
             "url": evt.get("url", ""),
             "description": self._make_description(evt),
+            "sensitive": is_sensitive,
         }
         await self.add_step(session_id, step_data)
         logger.debug(f"[RPA] Step: {step_data['description'][:60]}")
@@ -657,7 +663,8 @@ class RPASessionManager:
             target = str(locator)
 
         if action == "fill":
-            return f'输入 "{value}" 到 {target}'
+            display_value = '*****' if evt.get("sensitive") else f'"{value}"'
+            return f'输入 {display_value} 到 {target}'
         if action == "click":
             return f"点击 {target}"
         if action == "press":
