@@ -188,5 +188,55 @@ class TestListSkillFilesFiltering(unittest.TestCase):
         self.assertNotIn("settings.json", names)
 
 
+class TestListSkillDirs(unittest.TestCase):
+    """Test that _list_skill_dirs applies the filter correctly."""
+
+    def setUp(self):
+        """Create a temporary skill directory."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.skill_dir = _Path(self.temp_dir) / "test_skill"
+        self.skill_dir.mkdir()
+
+        # Create SKILL.md with frontmatter
+        (self.skill_dir / "SKILL.md").write_text("""---
+name: test_skill
+description: Test skill
+---
+# Test Skill""")
+        (self.skill_dir / "skill.py").write_text("def run(): pass")
+        (self.skill_dir / "params.json").write_text("{}")
+
+        # Create files that should be filtered
+        pycache_dir = self.skill_dir / "__pycache__"
+        pycache_dir.mkdir()
+        (pycache_dir / "skill.cpython-313.pyc").write_bytes(b"fake")
+        (self.skill_dir / "module.pyc").write_text("fake")
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        shutil.rmtree(self.temp_dir)
+
+    def test_list_skill_dirs_filters_files(self):
+        """Test that _list_skill_dirs filters cache files."""
+        _list_skill_dirs = SESSIONS_MODULE._list_skill_dirs
+
+        skills = _list_skill_dirs(self.temp_dir, builtin=False)
+
+        self.assertEqual(len(skills), 1)
+        skill = skills[0]
+
+        # Should only have 3 normal files
+        self.assertEqual(len(skill["files"]), 3)
+
+        file_names = [_Path(f).name for f in skill["files"]]
+        self.assertIn("SKILL.md", file_names)
+        self.assertIn("skill.py", file_names)
+        self.assertIn("params.json", file_names)
+
+        # Verify filtered files are NOT in the list
+        self.assertNotIn("skill.cpython-313.pyc", file_names)
+        self.assertNotIn("module.pyc", file_names)
+
+
 if __name__ == "__main__":
     unittest.main()

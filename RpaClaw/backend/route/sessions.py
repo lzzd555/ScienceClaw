@@ -753,7 +753,8 @@ def _list_skill_dirs(base_dir: str, builtin: bool = False) -> List[Dict[str, Any
         if not (child / "SKILL.md").is_file():
             continue
         meta = _parse_skill_frontmatter(child)
-        files = [str(f.relative_to(child)) for f in child.rglob("*") if f.is_file()]
+        # 过滤掉不需要展示的文件
+        files = [str(f.relative_to(child)) for f in child.rglob("*") if f.is_file() and not should_skip_file(f)]
         skills.append({**meta, "files": files, "builtin": builtin})
     return skills
 
