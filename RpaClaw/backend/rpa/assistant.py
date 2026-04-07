@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 ELEMENT_EXTRACTION_TIMEOUT_S = 5.0
 EXECUTION_TIMEOUT_S = 60.0
+THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+THINK_CONTENT_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 SYSTEM_PROMPT = """你是一个 RPA 录制助手。用户正在录制浏览器自动化技能，你需要根据用户的自然语言描述，结合当前页面状态和历史操作，生成 Playwright 异步 API 代码片段。
 
@@ -344,6 +346,52 @@ async def _execute_on_page(page: Page, code: str) -> Dict[str, Any]:
             pass
 
 
+def _extract_llm_response_text(response: Any) -> str:
+    """Normalize LangChain AIMessage content into a plain text response."""
+    content = getattr(response, "content", "")
+    additional_kwargs = getattr(response, "additional_kwargs", {}) or {}
+
+    reasoning = additional_kwargs.get("reasoning_content", "")
+    fallback_text = reasoning.strip() if isinstance(reasoning, str) else ""
+
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        thinking_parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type", "")
+                if block_type == "thinking":
+                    thinking_parts.append(str(block.get("thinking", "")).strip())
+                    continue
+                text = block.get("text") or block.get("content")
+                if text:
+                    text_parts.append(str(text))
+            elif isinstance(block, str):
+                text_parts.append(block)
+            elif block is not None:
+                text_parts.append(str(block))
+        clean = "\n".join(part.strip() for part in text_parts if str(part).strip()).strip()
+        if clean:
+            return clean
+        thoughts = "\n".join(part for part in thinking_parts if part).strip()
+        return thoughts or fallback_text
+
+    if isinstance(content, str):
+        clean = THINK_TAG_RE.sub("", content).strip()
+        if clean:
+            return clean
+        if not fallback_text:
+            matches = THINK_CONTENT_RE.findall(content)
+            fallback_text = "\n".join(match.strip() for match in matches if match.strip()).strip()
+        return fallback_text
+
+    if content is None:
+        return fallback_text
+
+    text = str(content).strip()
+    return text or fallback_text
+
+
 REACT_SYSTEM_PROMPT = """你是一个 RPA 自动化 Agent。用户给你一个目标任务，你需要通过观察当前页面状态，逐步规划并执行浏览器操作，直到任务完成。
 
 每一轮你必须输出一个 JSON 对象（不要包裹在代码块中），格式如下：
@@ -600,4 +648,4 @@ URL: {url}
             elif m["role"] == "assistant":
                 lc_messages.append(AIMessage(content=m["content"]))
         response = await model.ainvoke(lc_messages)
-        yield response.content if hasattr(response, "content") else str(response)
+        yield _extract_llm_response_text(response)
