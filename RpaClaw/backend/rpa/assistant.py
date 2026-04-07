@@ -392,6 +392,53 @@ def _extract_llm_response_text(response: Any) -> str:
     return text or fallback_text
 
 
+def _extract_llm_chunk_text(chunk: Any) -> str:
+    """Extract displayable text from a streamed chunk."""
+    content = getattr(chunk, "content", "")
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type", "")
+                if block_type == "thinking":
+                    continue
+                text = block.get("text") or block.get("content")
+                if text:
+                    text_parts.append(str(text))
+            elif isinstance(block, str):
+                text_parts.append(block)
+            elif block is not None:
+                text_parts.append(str(block))
+        return "".join(text_parts)
+    if isinstance(content, str):
+        return THINK_TAG_RE.sub("", content)
+    return ""
+
+
+def _extract_llm_chunk_fallback_text(chunk: Any) -> str:
+    """Extract reasoning/thinking fallback text from a streamed chunk."""
+    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    reasoning = additional_kwargs.get("reasoning_content", "")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning.strip()
+
+    content = getattr(chunk, "content", "")
+    if isinstance(content, list):
+        thoughts: List[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                thought = str(block.get("thinking", "")).strip()
+                if thought:
+                    thoughts.append(thought)
+        return "\n".join(thoughts).strip()
+
+    if isinstance(content, str):
+        matches = THINK_CONTENT_RE.findall(content)
+        return "\n".join(match.strip() for match in matches if match.strip()).strip()
+
+    return ""
+
+
 REACT_SYSTEM_PROMPT = """你是一个 RPA 自动化 Agent。用户给你一个目标任务，你需要通过观察当前页面状态，逐步规划并执行浏览器操作，直到任务完成。
 
 每一轮你必须输出一个 JSON 对象（不要包裹在代码块中），格式如下：
@@ -640,12 +687,32 @@ URL: {url}
         model_config: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-        model = get_llm_model(config=model_config, streaming=False)
+        model = get_llm_model(config=model_config, streaming=True)
         lc_messages = [SystemMessage(content=REACT_SYSTEM_PROMPT)]
         for m in history:
             if m["role"] == "user":
                 lc_messages.append(HumanMessage(content=m["content"]))
             elif m["role"] == "assistant":
                 lc_messages.append(AIMessage(content=m["content"]))
+        if hasattr(model, "astream"):
+            text_parts: List[str] = []
+            fallback_parts: List[str] = []
+            async for chunk in model.astream(lc_messages):
+                text = _extract_llm_chunk_text(chunk)
+                if text:
+                    text_parts.append(text)
+                    continue
+                fallback = _extract_llm_chunk_fallback_text(chunk)
+                if fallback:
+                    fallback_parts.append(fallback)
+            full_text = "".join(text_parts)
+            if full_text.strip():
+                yield full_text
+                return
+            fallback_text = "\n".join(part for part in fallback_parts if part).strip()
+            if fallback_text:
+                yield fallback_text
+                return
+
         response = await model.ainvoke(lc_messages)
         yield _extract_llm_response_text(response)
