@@ -98,6 +98,10 @@ Logs are written to:
 - Backend: `%USERPROFILE%\RpaClaw\logs\backend.log`
 - Task-service: `%USERPROFILE%\RpaClaw\logs\task-service.log`
 
+Packaged app files:
+- Extra environment overrides: `<install-dir>\.env`
+- Setup wizard config: `<install-dir>\app-config.json`
+
 Electron DevTools: Press `Ctrl+Shift+I` in the app window
 
 ## Project Structure

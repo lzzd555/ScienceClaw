@@ -2,20 +2,22 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AppConfig } from './types';
+import { resolveRuntimePaths } from './runtime';
 
 const APP_NAME = 'RpaClaw';
-const CONFIG_FILE = 'app-config.json';
 
 export class ConfigManager {
   private configPath: string;
   private config: AppConfig | null = null;
 
   constructor() {
-    const appDataDir = path.join(app.getPath('appData'), APP_NAME);
-    if (!fs.existsSync(appDataDir)) {
-      fs.mkdirSync(appDataDir, { recursive: true });
-    }
-    this.configPath = path.join(appDataDir, CONFIG_FILE);
+    const runtimePaths = resolveRuntimePaths({
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      resourcesPath: process.resourcesPath,
+      currentDir: __dirname,
+    });
+    this.configPath = runtimePaths.configFilePath;
   }
 
   /**

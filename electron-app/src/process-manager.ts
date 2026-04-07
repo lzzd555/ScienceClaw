@@ -2,56 +2,36 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
-import { BackendEnv, ProcessStatus } from './types';
+import { ProcessStatus } from './types';
+import { buildBackendEnv, loadEnvFile, resolveRuntimePaths, RuntimePaths } from './runtime';
 import treeKill from 'tree-kill';
 
 export class ProcessManager {
   private backendProcess: ChildProcess | null = null;
   private taskServiceProcess: ChildProcess | null = null;
-  private installDir: string;
   private homeDir: string;
+  private runtimePaths: RuntimePaths;
 
   constructor(homeDir: string) {
     this.homeDir = homeDir;
-    // In packaged app, resources are in app.getAppPath()/resources
-    // In dev mode, they're relative to project root
-    this.installDir = app.isPackaged
-      ? path.join(process.resourcesPath)
-      : path.join(__dirname, '..', '..');
+    this.runtimePaths = resolveRuntimePaths({
+      isPackaged: app.isPackaged,
+      execPath: process.execPath,
+      resourcesPath: process.resourcesPath,
+      currentDir: __dirname,
+    });
   }
 
   /**
    * Build environment variables for backend processes
    */
-  private buildEnv(): BackendEnv {
-    const pythonDir = path.join(this.installDir, 'python');
-    const pythonExe = path.join(pythonDir, 'python.exe');
-    const sitePackages = path.join(pythonDir, 'Lib', 'site-packages');
-    const playwrightBrowsers = path.join(
-      sitePackages,
-      'playwright',
-      'driver',
-      'package',
-      '.local-browsers'
-    );
-    const frontendDist = path.join(this.installDir, 'frontend-dist');
-
-    return {
-      STORAGE_BACKEND: 'local',
-      RPA_CLAW_HOME: this.homeDir,
-      WORKSPACE_DIR: path.join(this.homeDir, 'workspace'),
-      EXTERNAL_SKILLS_DIR: path.join(this.homeDir, 'external_skills'),
-      LOCAL_DATA_DIR: path.join(this.homeDir, 'data'),
-      BUILTIN_SKILLS_DIR: path.join(this.installDir, 'builtin_skills'),
-      BACKEND_PORT: '12001',
-      TASK_SERVICE_PORT: '12002',
-      PYTHONHOME: pythonDir,
-      PYTHONPATH: sitePackages,
-      PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsers,
-      ENVIRONMENT: 'production',
-      LOG_LEVEL: 'INFO',
-      FRONTEND_DIST_DIR: frontendDist,
-    };
+  private buildEnv(): Record<string, string> {
+    const extraEnv = loadEnvFile(this.runtimePaths.envFilePath);
+    return buildBackendEnv({
+      homeDir: this.homeDir,
+      resourceDir: this.runtimePaths.resourceDir,
+      extraEnv,
+    });
   }
 
   /**
@@ -76,7 +56,7 @@ export class ProcessManager {
 
     // In development mode, check if Python exists, if not, skip backend start
     const pythonExe = path.join(env.PYTHONHOME, 'python.exe');
-    const backendDir = path.join(this.installDir, 'backend');
+    const backendDir = path.join(this.runtimePaths.resourceDir, 'backend');
 
     if (!app.isPackaged && !fs.existsSync(pythonExe)) {
       console.log('Development mode: Python not found at', pythonExe);
@@ -148,7 +128,7 @@ export class ProcessManager {
 
     // In development mode, check if Python exists, if not, skip task-service start
     const pythonExe = path.join(env.PYTHONHOME, 'python.exe');
-    const taskServiceDir = path.join(this.installDir, 'task-service');
+    const taskServiceDir = path.join(this.runtimePaths.resourceDir, 'task-service');
 
     if (!app.isPackaged && !fs.existsSync(pythonExe)) {
       console.log('Development mode: Python not found at', pythonExe);
