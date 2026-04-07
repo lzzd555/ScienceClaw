@@ -1,6 +1,7 @@
 import json
 import logging
 import asyncio
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Dict, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
@@ -342,48 +343,25 @@ async def test_script(
         user_id=str(current_user.id),
     )
 
-    # 本地模式：先创建 page 并注册，等待前端连接 screencast
+    downloads_dir = str(Path(settings.workspace_dir) / "rpa_downloads" / session_id)
+    connector = get_cdp_connector()
+    pw_loop_runner = getattr(connector, "run_in_pw_loop", None)
+
+    # 本地模式：通过 pw_loop_runner 确保 Playwright 操作在正确的事件循环里执行
     if settings.storage_backend == "local":
-        context = await browser.new_context(no_viewport=True)
-        page = await context.new_page()
-        page.set_default_timeout(RPA_PAGE_TIMEOUT_MS)
-        page.set_default_navigation_timeout(RPA_PAGE_TIMEOUT_MS)
-        rpa_manager._pages[session_id] = page
-
-        # 等待前端连接 screencast
-        await asyncio.sleep(1.0)
-
-        # 执行脚本
-        try:
-            namespace: Dict[str, Any] = {}
-            exec(compile(script, "<rpa_script>", "exec"), namespace)
-
-            if "execute_skill" not in namespace:
-                result = {"success": False, "output": "", "error": "No execute_skill() function in script"}
-            else:
-                # Inject credentials into kwargs for sensitive params
-                test_kwargs: Dict[str, Any] = {}
-                if request.params:
-                    test_kwargs = await inject_credentials(
-                        str(current_user.id), request.params, {}
-                    )
-                _skill_result = await asyncio.wait_for(
-                    namespace["execute_skill"](page, **test_kwargs),
-                    timeout=RPA_TEST_TIMEOUT_S,
-                )
-                await page.wait_for_timeout(3000)
-                if _skill_result:
-                    data_line = "SKILL_DATA:" + json.dumps(_skill_result, ensure_ascii=False, default=str) + "\n"
-                    result = {"success": True, "output": data_line + "SKILL_SUCCESS", "data": _skill_result}
-                else:
-                    result = {"success": True, "output": "SKILL_SUCCESS"}
-        except Exception as e:
-            result = {"success": False, "output": f"SKILL_ERROR: {e}", "error": str(e)}
-        finally:
-            # 清理
-            await asyncio.sleep(1.0)
-            rpa_manager._pages.pop(session_id, None)
-            await context.close()
+        test_kwargs: Dict[str, Any] = {"_downloads_dir": downloads_dir}
+        if request.params:
+            test_kwargs.update(await inject_credentials(str(current_user.id), request.params, {}))
+        result = await executor.execute(
+            browser,
+            script,
+            on_log=lambda msg: logs.append(msg),
+            session_id=session_id,
+            page_registry=rpa_manager._pages,
+            kwargs=test_kwargs,
+            downloads_dir=downloads_dir,
+            pw_loop_runner=pw_loop_runner,
+        )
     else:
         # Docker 模式：使用原有逻辑
         docker_kwargs: Dict[str, Any] = {}
@@ -398,6 +376,7 @@ async def test_script(
             session_id=session_id,
             page_registry=rpa_manager._pages,
             kwargs=docker_kwargs,
+            downloads_dir=downloads_dir,
         )
 
     return {"status": "success", "result": result, "logs": logs, "script": script}

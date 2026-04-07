@@ -211,35 +211,30 @@ class FullSandboxBackend(SandboxBackendProtocol):
         if not run_tokens[1].endswith("skill.py"):
             return command
 
-        # Look up skill params from MongoDB
+        # Always inject _downloads_dir for skill.py commands
+        downloads_dir = f"{self._remote_workspace}/downloads"
+        extra_args = f"--_downloads_dir={shlex.quote(downloads_dir)}"
+
+        # Also inject credentials if available
         try:
-            from backend.storage import get_repository
-            skill_name = run_tokens[1].rsplit("/", 1)[-1].replace("/skill.py", "")
-            # Try to find the skill directory name from the path
             import posixpath
+            from backend.storage import get_repository
             parent_dir = posixpath.dirname(run_tokens[1])
             skill_name = posixpath.basename(parent_dir) if parent_dir else ""
-            if not skill_name:
-                return command
-
-            repo = get_repository("skills")
-            doc = await repo.find_one({"name": skill_name, "user_id": self._user_id})
-            if not doc or not doc.get("params"):
-                return command
-
-            from backend.credential.vault import inject_credentials
-            injected = await inject_credentials(self._user_id, doc["params"], {})
-            if not injected:
-                return command
-
-            # Append --key=value for each injected credential
-            extra_args = " ".join(
-                f"--{k}={shlex.quote(str(v))}" for k, v in injected.items()
-            )
-            return f"{command} {extra_args}"
+            if skill_name:
+                repo = get_repository("skills")
+                doc = await repo.find_one({"name": skill_name, "user_id": self._user_id})
+                if doc and doc.get("params"):
+                    from backend.credential.vault import inject_credentials
+                    injected = await inject_credentials(self._user_id, doc["params"], {})
+                    if injected:
+                        extra_args += " " + " ".join(
+                            f"--{k}={shlex.quote(str(v))}" for k, v in injected.items()
+                        )
         except Exception as exc:
             logger.warning(f"[FullSandbox] Credential injection failed: {exc}")
-            return command
+
+        return f"{command} {extra_args}"
 
     # ── 命令执行 (Execute) ────────────────────────────────────
 

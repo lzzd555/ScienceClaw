@@ -15,6 +15,7 @@ from deepagents.backends.protocol import ExecuteResponse
 
 from backend.browser_preview import browser_preview_registry
 from backend.rpa.cdp_connector import get_cdp_connector
+from backend.config import settings
 
 logger = logging.getLogger(__name__)
 RPA_PAGE_TIMEOUT_MS = 60000
@@ -89,30 +90,60 @@ class LocalPreviewShellBackend(LocalShellBackend):
         effective_timeout = timeout if timeout is not None else 90
         context = None
         page = None
-        try:
-            module = self._load_module(parsed.script_path)
-            execute_skill = getattr(module, "execute_skill", None)
-            if not callable(execute_skill):
-                return ExecuteResponse(
-                    output="SKILL_ERROR: No execute_skill() function found\n",
-                    exit_code=1,
-                    truncated=False,
-                )
 
-            browser = await get_cdp_connector().get_browser()
-            context = await browser.new_context(no_viewport=True)
+        module = self._load_module(parsed.script_path)
+        execute_skill = getattr(module, "execute_skill", None)
+        if not callable(execute_skill):
+            return ExecuteResponse(
+                output="SKILL_ERROR: No execute_skill() function found\n",
+                exit_code=1,
+                truncated=False,
+            )
+
+        skill_kwargs = dict(parsed.kwargs)
+        if self._user_id:
+            skill_kwargs = await self._inject_credentials(parsed.script_path, skill_kwargs)
+        skill_kwargs.setdefault("_downloads_dir", str(Path(settings.workspace_dir) / self._session_id / "downloads"))
+
+        connector = get_cdp_connector()
+        pw_loop_runner = getattr(connector, "run_in_pw_loop", None)
+
+        async def _pw_setup():
+            browser = await connector.get_browser()
+            context = await browser.new_context(no_viewport=True, accept_downloads=True)
             page = await context.new_page()
             page.set_default_timeout(RPA_PAGE_TIMEOUT_MS)
             page.set_default_navigation_timeout(RPA_PAGE_TIMEOUT_MS)
-            await browser_preview_registry.register(self._session_id, page)
+            return context, page
 
-            await asyncio.sleep(0.5)
-            # Inject credentials for sensitive params
-            skill_kwargs = dict(parsed.kwargs)
-            if self._user_id:
-                skill_kwargs = await self._inject_credentials(parsed.script_path, skill_kwargs)
+        async def _pw_run(page):
             _result = await asyncio.wait_for(execute_skill(page, **skill_kwargs), timeout=effective_timeout)
             await page.wait_for_timeout(3000)
+            return _result
+
+        async def _pw_close(context):
+            await context.close()
+
+        try:
+            if pw_loop_runner:
+                context, page = await pw_loop_runner(_pw_setup())
+            else:
+                context, page = await _pw_setup()
+
+            await browser_preview_registry.register(self._session_id, page)
+            await asyncio.sleep(0.5)
+
+            try:
+                if pw_loop_runner:
+                    _result = await pw_loop_runner(_pw_run(page))
+                else:
+                    _result = await _pw_run(page)
+            finally:
+                await browser_preview_registry.unregister(self._session_id, page)
+                if pw_loop_runner:
+                    await pw_loop_runner(_pw_close(context))
+                else:
+                    await _pw_close(context)
 
             data_line = ""
             if _result:
@@ -135,9 +166,6 @@ class LocalPreviewShellBackend(LocalShellBackend):
                 exit_code=1,
                 truncated=False,
             )
-        finally:
-            if page is not None:
-                await browser_preview_registry.unregister(self._session_id, page)
             if context is not None:
                 try:
                     await context.close()

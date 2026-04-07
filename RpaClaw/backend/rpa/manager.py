@@ -513,7 +513,7 @@ class RPASessionManager:
             session_id=sandbox_session_id,
             user_id=user_id,
         )
-        context = await browser.new_context(no_viewport=True)
+        context = await browser.new_context(no_viewport=True, accept_downloads=True)
         page = await context.new_page()
         page.set_default_timeout(RPA_PAGE_TIMEOUT_MS)
         page.set_default_navigation_timeout(RPA_PAGE_TIMEOUT_MS)
@@ -555,6 +555,31 @@ class RPASessionManager:
                 pass
 
         page.on("load", on_load)
+
+        async def on_download(download):
+            suggested = download.suggested_filename
+            # Wait briefly for the click step to be recorded before upgrading it
+            await asyncio.sleep(0.3)
+            session = self.sessions.get(session_id)
+            if session and session.steps:
+                # Upgrade the most recent click step to a download_click
+                for step in reversed(session.steps):
+                    if step.action == "click":
+                        step.action = "download_click"
+                        step.value = suggested
+                        step.description = f"下载文件 {suggested}"
+                        await self._broadcast_step(session_id, step)
+                        return
+            # Fallback: no preceding click found, record standalone
+            evt = {
+                "action": "download",
+                "value": suggested,
+                "url": page.url,
+                "timestamp": int(datetime.now().timestamp() * 1000),
+            }
+            await self._handle_event(session_id, evt)
+
+        page.on("download", on_download)
 
         await page.goto("about:blank")
         await page.bring_to_front()
@@ -673,6 +698,8 @@ class RPASessionManager:
             return f"选择 {value} 在 {target}"
         if action == "navigate":
             return f"导航到 {evt.get('url', '')}"
+        if action == "download":
+            return f"下载文件 {value}"
         return f"{action} on {target}"
 
     async def add_step(self, session_id: str, step_data: Dict[str, Any]) -> RPAStep:

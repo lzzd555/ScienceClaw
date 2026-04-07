@@ -166,6 +166,10 @@ class LocalCDPConnector:
         future = asyncio.run_coroutine_threadsafe(coro, self._pw_loop)
         return await asyncio.wrap_future(future)
 
+    async def run_in_pw_loop(self, coro):
+        """Public: schedule a coroutine on the Playwright event loop."""
+        return await self._run_in_pw_loop(coro)
+
     async def get_browser(self, session_id: Optional[str] = None, user_id: Optional[str] = None) -> Browser:
         """Get or create a local headful browser."""
         async with self._lock:

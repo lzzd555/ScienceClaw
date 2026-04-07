@@ -47,7 +47,7 @@ async def main():
     cdp_url = await _get_cdp_url()
     pw = await async_playwright().start()
     browser = await pw.chromium.connect_over_cdp(cdp_url)
-    context = await browser.new_context(no_viewport=True)
+    context = await browser.new_context(no_viewport=True, accept_downloads=True)
     page = await context.new_page()
     page.set_default_timeout({default_timeout_ms})
     page.set_default_navigation_timeout({navigation_timeout_ms})
@@ -88,7 +88,7 @@ async def main():
 
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(headless=False)
-    context = await browser.new_context(no_viewport=True)
+    context = await browser.new_context(no_viewport=True, accept_downloads=True)
     page = await context.new_page()
     page.set_default_timeout({default_timeout_ms})
     page.set_default_navigation_timeout({navigation_timeout_ms})
@@ -164,6 +164,14 @@ if __name__ == "__main__":
                 lines.append("")
                 continue
 
+            # Standalone download step has no locator — handle before _build_locator
+            if action == "download":
+                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', (value or "file").split('.')[0]) or "file"
+                lines.append(f'    # NOTE: download of "{value}" was triggered by a previous action')
+                lines.append(f'    # If this step appears, manually wrap the triggering click with expect_download()')
+                lines.append("")
+                continue
+
             # Parse the locator object from target (stored as JSON string)
             locator = self._build_locator(target)
 
@@ -187,6 +195,17 @@ if __name__ == "__main__":
                     lines.append(f"    await {locator}.click()")
                     # After non-navigation click, wait briefly for UI changes
                     lines.append("    await page.wait_for_timeout(500)")
+            elif action == "download_click":
+                # Click that triggers a file download — wrap with expect_download
+                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', (value or "file").split('.')[0]) or "file"
+                lines.append(f"    async with page.expect_download() as _dl_info:")
+                lines.append(f"        await {locator}.click()")
+                lines.append(f"    _dl = await _dl_info.value")
+                lines.append(f"    _dl_dir = kwargs.get('_downloads_dir', '.')")
+                lines.append(f"    import os as _os; _os.makedirs(_dl_dir, exist_ok=True)")
+                lines.append(f"    _dl_dest = _os.path.join(_dl_dir, _dl.suggested_filename)")
+                lines.append(f"    await _dl.save_as(_dl_dest)")
+                lines.append(f'    _results["download_{safe_name}"] = {{"filename": _dl.suggested_filename, "path": _dl_dest}}')
             elif action == "fill":
                 fill_value = self._maybe_parameterize(value, params)
                 lines.append(f"    await {locator}.fill({fill_value})")
