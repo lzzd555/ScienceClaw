@@ -6,6 +6,25 @@ The current RPA recorder assumes one session maps to one Playwright `Page`. When
 
 This design replaces the single-page session model with a session-scoped multi-tab model. Each RPA session owns one browser context, multiple tracked tabs, one active tab, and one session-level screencast controller. New tabs automatically become active by default. The frontend renders a browser-like tab strip so users can manually switch tabs while keeping recording, display, test execution, and agent execution aligned with the same active tab.
 
+## Implementation Status (2026-04-08)
+
+The current branch now implements the core multi-tab model described below:
+
+- `backend/rpa/manager.py` tracks one session context plus multiple tabs, metadata, and one active tab.
+- New pages created by `context.on("page")` are registered, injected, and auto-activated.
+- `/api/v1/rpa/session/{session_id}/tabs` and `/api/v1/rpa/session/{session_id}/tabs/{tab_id}/activate` are implemented.
+- `backend/rpa/screencast.py` now contains a session-level `SessionScreencastController` that switches the streamed CDP page when the active tab changes.
+- Recorder and test pages render a browser-style tab strip from `tabs_snapshot` and support manual tab switching.
+- Test execution, assistant chat, and ReAct agent execution now follow the active tab instead of holding one stale page reference.
+- Recording upgrades plain `click` steps into `navigate_click` or `open_tab_click` when runtime evidence proves a same-tab navigation or popup/new-tab transition.
+- Script generation now uses `tabs` plus `current_page`, supports `open_tab_click` and `switch_tab`, and backfills missing multi-tab semantics for older recordings by inferring transitions from `tab_id` changes.
+
+The following user-reported regressions were fixed during implementation:
+
+- New-tab actions were being recorded but the preview stayed on the old page. The manager now promotes the event source tab to active when events arrive from a non-active tab.
+- Link clicks were over-generated as `expect_navigation(...)`. Navigation waiting is now emitted only for `navigate_click`.
+- Popup/new-tab clicks could still replay as plain `click()` for older recordings. The generator now infers popup and tab-switch semantics from later `tab_id` changes when explicit step upgrades are missing.
+
 ## Goals
 
 - Preserve recording when a user action opens a new tab.
@@ -102,7 +121,7 @@ Activation performs:
 - `active_tab_id = target_tab_id`
 - `await page.bring_to_front()`
 - screencast controller switch to the new page
-- frontend `tab_activated` event broadcast
+- frontend observes the next `tabs_snapshot`
 
 ## Backend Design
 
@@ -144,6 +163,7 @@ New step types:
 - `open_tab_click`
 - `switch_tab`
 - `close_tab`
+- `navigate_click`
 
 Rules:
 
@@ -151,8 +171,14 @@ Rules:
 - The resulting step stores both `source_tab_id` and `target_tab_id`.
 - A manual or automatic activation emits a `switch_tab` step if the effective interaction target changes.
 - Normal `fill`, `press`, `click`, `select`, and `navigate` steps remain unchanged except for `tab_id`.
+- A click that stays in the same tab but does trigger a real navigation is upgraded from plain `click` to `navigate_click`.
 
 This keeps the timeline understandable for users and gives the generator enough structure to rebuild tab behavior deterministically.
+
+Current implementation notes:
+
+- `open_tab_click`, `navigate_click`, `switch_tab`, and `close_tab` are implemented as first-class runtime steps.
+- Generator-side inference is still retained for backward compatibility so older recordings that only reveal tab transitions through later `tab_id` changes continue to replay correctly.
 
 ### Session-Level Screencast Controller
 
@@ -176,6 +202,12 @@ Key behavior:
 
 This avoids reconnecting the frontend socket on every tab switch.
 
+Current implementation note:
+
+- Session-level switching over one websocket is implemented.
+- Retry-on-switch-failure is implemented.
+- The controller emits `preview_error` so recorder and test pages can surface temporary preview degradation without dropping the websocket.
+
 ### API Changes
 
 Add:
@@ -197,6 +229,11 @@ Websocket messages from screencast stream:
 - `tab_activated`
 - `tab_closed`
 - `ping`
+
+Current implementation note:
+
+- The current branch emits `frame`, `tabs_snapshot`, and `ping`.
+- Granular `tab_created`, `tab_updated`, `tab_activated`, and `tab_closed` websocket events are still deferred because the frontend currently derives tab state from repeated snapshots.
 
 ## Frontend Design
 
@@ -237,15 +274,14 @@ Frontend state:
 When websocket events arrive:
 
 - `tabs_snapshot` replaces local tab metadata state
-- `tab_created`, `tab_updated`, `tab_closed` patch local state
-- `tab_activated` updates `activeTabId`
 - `frame` redraws the canvas
+- `preview_error` updates the inline preview error state
 
 When the user clicks a tab:
 
 1. Frontend calls `POST /tabs/{tab_id}/activate`
 2. Backend activates the tab and switches screencast
-3. Frontend receives `tab_activated`
+3. Frontend receives the next `tabs_snapshot`
 4. New frames continue on the same canvas
 
 ## Execution Design
@@ -341,7 +377,7 @@ If the frontend requests activation for a closed or unknown tab:
 If the active tab closes during recording or execution:
 
 - auto-fallback to an open tab
-- emit `tab_closed` and `tab_activated`
+- emit a fresh `tabs_snapshot`
 
 ## Testing Strategy
 
@@ -361,7 +397,7 @@ If the active tab closes during recording or execution:
 
 - recorder tab strip renders snapshot data
 - clicking a tab issues activate API call
-- websocket tab events update the UI correctly
+- websocket snapshot updates the UI correctly
 - auto-created tabs become active visually
 - canvas continues rendering after tab switches
 
@@ -371,6 +407,8 @@ If the active tab closes during recording or execution:
 - switch back to the original tab manually and continue recording
 - run test playback for a multi-tab recording and verify preview follows execution
 - run assistant or agent commands that open a new tab and verify display and execution stay aligned
+- validate that plain link clicks without real navigation no longer generate `expect_navigation(...)`
+- validate that older recordings with later `tab_id` changes still replay as popup/tab-switch flows without requiring a full re-record
 
 ## Rollout Plan
 
@@ -387,6 +425,16 @@ If the active tab closes during recording or execution:
 - Session-level screencast switching is more stateful than the current fixed-page model, so lifecycle bugs are possible if cleanup is incomplete.
 - Automatically switching to a new tab matches browser expectations, but it means every popup-like page must be considered intentional unless future heuristics say otherwise.
 - Recording explicit tab steps adds complexity to the generator, but without them replay will remain fragile.
+
+## Remaining Gaps
+
+1. Screencast websocket updates still use full `tabs_snapshot` payloads rather than granular `tab_created`, `tab_updated`, `tab_activated`, and `tab_closed` events.
+   Impact:
+   The frontend stays simple and consistent, but the transport is more redundant than an event-delta model.
+
+2. The first version still does not expose a native close-tab control in the recorder or test UI.
+   Impact:
+   Users can switch among tabs like a normal browser, but closing tabs from the custom tab strip remains out of scope for now.
 
 ## Recommendation
 

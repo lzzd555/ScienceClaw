@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import asyncio
-from typing import Dict, List, Any, AsyncGenerator, Optional
+from typing import Dict, List, Any, AsyncGenerator, Optional, Callable
 
 from playwright.async_api import Page
 from backend.deepagent.engine import get_llm_model
@@ -99,6 +99,7 @@ class RPAAssistant:
         message: str,
         steps: List[Dict[str, Any]],
         model_config: Optional[Dict[str, Any]] = None,
+        page_provider: Optional[Callable[[], Optional[Page]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream AI assistant response. Yields SSE event dicts.
 
@@ -111,7 +112,12 @@ class RPAAssistant:
         """
         # 1. Get page elements directly via page.evaluate
         yield {"event": "message_chunk", "data": {"text": "正在分析当前页面...\n\n"}}
-        elements_json = await self._get_page_elements(page)
+        current_page = page_provider() if page_provider else page
+        if current_page is None:
+            yield {"event": "error", "data": {"message": "No active page available"}}
+            yield {"event": "done", "data": {}}
+            return
+        elements_json = await self._get_page_elements(current_page)
 
         # 2. Build prompt
         history = self._get_history(session_id)
@@ -137,7 +143,12 @@ class RPAAssistant:
 
         # 5. Execute directly on the page object
         yield {"event": "executing", "data": {}}
-        result = await self._execute_on_page(page, code)
+        current_page = page_provider() if page_provider else page
+        if current_page is None:
+            yield {"event": "error", "data": {"message": "No active page available"}}
+            yield {"event": "done", "data": {}}
+            return
+        result = await self._execute_on_page(current_page, code)
 
         if not result["success"]:
             # 6. Retry once with error context
@@ -155,7 +166,12 @@ class RPAAssistant:
             if retry_code:
                 yield {"event": "script", "data": {"code": retry_code}}
                 yield {"event": "executing", "data": {}}
-                result = await self._execute_on_page(page, retry_code)
+                current_page = page_provider() if page_provider else page
+                if current_page is None:
+                    yield {"event": "error", "data": {"message": "No active page available"}}
+                    yield {"event": "done", "data": {}}
+                    return
+                result = await self._execute_on_page(current_page, retry_code)
                 if result["success"]:
                     code = retry_code
                     full_response = retry_response
@@ -513,6 +529,7 @@ class RPAReActAgent:
         goal: str,
         existing_steps: List[Dict[str, Any]],
         model_config: Optional[Dict[str, Any]] = None,
+        page_provider: Optional[Callable[[], Optional[Page]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         self._aborted = False
         steps_done = 0
@@ -530,10 +547,14 @@ class RPAReActAgent:
                 return
 
             # Observe
-            elements_json = await _get_page_elements(page)
-            url = page.url
+            current_page = page_provider() if page_provider else page
+            if current_page is None:
+                yield {"event": "agent_aborted", "data": {"reason": "No active page available"}}
+                return
+            elements_json = await _get_page_elements(current_page)
+            url = current_page.url
             try:
-                title = await page.title()
+                title = await current_page.title()
             except Exception:
                 title = ""
 
@@ -593,7 +614,11 @@ class RPAReActAgent:
 
             # Act
             yield {"event": "agent_action", "data": {"description": description, "code": code}}
-            result = await _execute_on_page(page, executable)
+            current_page = page_provider() if page_provider else page
+            if current_page is None:
+                yield {"event": "agent_aborted", "data": {"reason": "No active page available"}}
+                return
+            result = await _execute_on_page(current_page, executable)
             if result["success"]:
                 steps_done += 1
                 step_data = {

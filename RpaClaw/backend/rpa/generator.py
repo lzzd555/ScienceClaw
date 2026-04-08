@@ -112,25 +112,29 @@ if __name__ == "__main__":
 
     def generate_script(self, steps: List[Dict[str, Any]], params: Dict[str, Any] = None, is_local: bool = False) -> str:
         params = params or {}
+        deduped = self._deduplicate_steps(steps)
+        deduped = self._infer_missing_tab_transitions(deduped)
+        root_tab_id = deduped[0].get("tab_id") if deduped else None
+        root_tab_id = root_tab_id or "tab-1"
 
         lines = [
             "",
             "async def execute_skill(page, **kwargs):",
             '    """Auto-generated skill from RPA recording."""',
             "    _results = {}",
+            f'    tabs = {{"{root_tab_id}": page}}',
+            "    current_page = page",
         ]
 
-        # Deduplicate consecutive identical actions
-        deduped = self._deduplicate_steps(steps)
-
+        current_tab_id = root_tab_id
         prev_url = None
         prev_action = None
         # Add initial navigation if first step isn't a navigate action
         if deduped and deduped[0].get("action") not in ("navigate", "goto"):
             first_url = deduped[0].get("url", "")
             if first_url:
-                lines.append(f'    await page.goto("{first_url}")')
-                lines.append('    await page.wait_for_load_state("domcontentloaded")')
+                lines.append(f'    await current_page.goto("{first_url}")')
+                lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
                 lines.append("")
                 prev_url = first_url
 
@@ -157,11 +161,39 @@ if __name__ == "__main__":
 
             # Navigation
             if action == "navigate" or (action == "goto" and url):
-                lines.append(f'    await page.goto("{url}")')
-                lines.append('    await page.wait_for_load_state("domcontentloaded")')
+                lines.append(f'    await current_page.goto("{url}")')
+                lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
                 prev_url = url
                 prev_action = "navigate"
                 lines.append("")
+                continue
+
+            if action == "switch_tab":
+                target_tab_id = step.get("target_tab_id") or step.get("tab_id") or root_tab_id
+                lines.append(f'    current_page = tabs["{target_tab_id}"]')
+                lines.append("    await current_page.bring_to_front()")
+                lines.append("")
+                current_tab_id = target_tab_id
+                prev_action = action
+                continue
+
+            if action == "close_tab":
+                closing_tab_id = step.get("tab_id") or step.get("source_tab_id")
+                fallback_tab_id = step.get("target_tab_id")
+                if closing_tab_id:
+                    lines.append(f'    closing_page = tabs.pop("{closing_tab_id}", current_page)')
+                else:
+                    lines.append("    closing_page = current_page")
+                lines.append("    await closing_page.close()")
+                if closing_tab_id == current_tab_id:
+                    if fallback_tab_id:
+                        lines.append(f'    current_page = tabs["{fallback_tab_id}"]')
+                        lines.append("    await current_page.bring_to_front()")
+                        current_tab_id = fallback_tab_id
+                    else:
+                        current_tab_id = closing_tab_id
+                lines.append("")
+                prev_action = action
                 continue
 
             # Standalone download step has no locator — handle before _build_locator
@@ -173,32 +205,32 @@ if __name__ == "__main__":
                 continue
 
             # Parse the locator object from target (stored as JSON string)
-            locator = self._build_locator(target)
+            locator = self._build_locator_for_page(target, "current_page")
 
-            if action == "click":
-                tag = step.get("tag", "")
-                # Check if this click is on a link (may trigger navigation)
-                is_link = tag.upper() == "A"
-                # Also check if the locator itself indicates a link
-                try:
-                    loc_obj = json.loads(target) if isinstance(target, str) else target
-                    if isinstance(loc_obj, dict) and loc_obj.get("role") == "link":
-                        is_link = True
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            if action == "open_tab_click":
+                target_tab_id = step.get("target_tab_id") or step.get("tab_id") or "tab-new"
+                lines.append("    async with current_page.expect_popup() as popup_info:")
+                lines.append(f"        await {locator}.click()")
+                lines.append("    new_page = await popup_info.value")
+                lines.append('    await new_page.wait_for_load_state("domcontentloaded")')
+                lines.append(f'    tabs["{target_tab_id}"] = new_page')
+                lines.append("    current_page = new_page")
+                lines.append("")
+                current_tab_id = target_tab_id
+                prev_action = action
+                continue
 
-                if is_link:
-                    # Use expect_navigation pattern for link clicks
-                    lines.append(f"    async with page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
-                    lines.append(f"        await {locator}.click()")
-                else:
-                    lines.append(f"    await {locator}.click()")
-                    # After non-navigation click, wait briefly for UI changes
-                    lines.append("    await page.wait_for_timeout(500)")
+            if action == "navigate_click":
+                lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
+                lines.append(f"        await {locator}.click()")
+            elif action == "click":
+                lines.append(f"    await {locator}.click()")
+                # After non-navigation click, wait briefly for UI changes
+                lines.append("    await current_page.wait_for_timeout(500)")
             elif action == "download_click":
                 # Click that triggers a file download — wrap with expect_download
                 safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', (value or "file").split('.')[0]) or "file"
-                lines.append(f"    async with page.expect_download() as _dl_info:")
+                lines.append(f"    async with current_page.expect_download() as _dl_info:")
                 lines.append(f"        await {locator}.click()")
                 lines.append(f"    _dl = await _dl_info.value")
                 lines.append(f"    _dl_dir = kwargs.get('_downloads_dir', '.')")
@@ -227,6 +259,55 @@ if __name__ == "__main__":
             default_timeout_ms=RPA_PLAYWRIGHT_TIMEOUT_MS,
             navigation_timeout_ms=RPA_NAVIGATION_TIMEOUT_MS,
         )
+
+    @staticmethod
+    def _infer_missing_tab_transitions(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Backfill tab open/switch semantics for older recordings that only carry tab_id."""
+        if not steps:
+            return steps
+
+        normalized: List[Dict[str, Any]] = []
+        current_tab_id = steps[0].get("tab_id") or "tab-1"
+        known_tabs = {current_tab_id}
+
+        for original_step in steps:
+            step = dict(original_step)
+            step_tab_id = step.get("tab_id") or current_tab_id
+
+            if step_tab_id != current_tab_id:
+                previous_step = normalized[-1] if normalized else None
+                if step_tab_id not in known_tabs and previous_step and previous_step.get("action") == "click":
+                    previous_step["action"] = "open_tab_click"
+                    previous_step["source_tab_id"] = current_tab_id
+                    previous_step["target_tab_id"] = step_tab_id
+                    known_tabs.add(step_tab_id)
+                elif step_tab_id in known_tabs:
+                    normalized.append(
+                        {
+                            "action": "switch_tab",
+                            "tab_id": current_tab_id,
+                            "target_tab_id": step_tab_id,
+                            "description": "Switch tab",
+                            "url": step.get("url", ""),
+                        }
+                    )
+                else:
+                    known_tabs.add(step_tab_id)
+
+                current_tab_id = step_tab_id
+
+            previous_step = normalized[-1] if normalized else None
+            if (
+                step.get("action") == "navigate"
+                and previous_step
+                and previous_step.get("action") == "open_tab_click"
+                and previous_step.get("target_tab_id") == step_tab_id
+            ):
+                continue
+
+            normalized.append(step)
+
+        return normalized
 
     @staticmethod
     def _deduplicate_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -324,6 +405,14 @@ if __name__ == "__main__":
         # css (default)
         val = self._escape(loc.get("value", "body"))
         return f'page.locator("{val}")'
+
+    def _build_locator_for_page(self, target: str, page_var: str) -> str:
+        locator = self._build_locator(target)
+        if page_var == "page":
+            return locator
+        if locator.startswith("page."):
+            return f"{page_var}.{locator[len('page.'):]}"
+        return locator
 
     @staticmethod
     def _escape(s: str) -> str:

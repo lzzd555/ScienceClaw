@@ -29,6 +29,19 @@ class RPAStep(BaseModel):
     source: str = "record"  # "record" or "ai"
     prompt: Optional[str] = None  # original user instruction for AI steps
     sensitive: bool = False
+    tab_id: Optional[str] = None
+    source_tab_id: Optional[str] = None
+    target_tab_id: Optional[str] = None
+
+
+class RPATab(BaseModel):
+    tab_id: str
+    title: str = ""
+    url: str = ""
+    opener_tab_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    last_seen_at: datetime = Field(default_factory=datetime.now)
+    status: str = "open"
 
 
 class RPASession(BaseModel):
@@ -39,6 +52,7 @@ class RPASession(BaseModel):
     steps: List[RPAStep] = []
     sandbox_session_id: str
     paused: bool = False  # pause event recording during AI execution
+    active_tab_id: Optional[str] = None
 
 
 # ── CAPTURE_JS: injected into pages to capture user events ──────────
@@ -499,6 +513,35 @@ class RPASessionManager:
         self.ws_connections: Dict[str, List] = {}
         self._contexts: Dict[str, BrowserContext] = {}
         self._pages: Dict[str, Page] = {}
+        self._tabs: Dict[str, Dict[str, Page]] = {}
+        self._tab_meta: Dict[str, Dict[str, RPATab]] = {}
+        self._page_tab_ids: Dict[str, Dict[int, str]] = {}
+
+    def attach_context(self, session_id: str, context: BrowserContext):
+        self._contexts[session_id] = context
+        self._pages.pop(session_id, None)
+        self._tabs[session_id] = {}
+        self._tab_meta[session_id] = {}
+        self._page_tab_ids[session_id] = {}
+
+        session = self.sessions.get(session_id)
+        if session:
+            session.active_tab_id = None
+
+    def detach_context(self, session_id: str, context: Optional[BrowserContext] = None):
+        current_context = self._contexts.get(session_id)
+        if context is not None and current_context is not context:
+            return
+
+        self._contexts.pop(session_id, None)
+        self._pages.pop(session_id, None)
+        self._tabs.pop(session_id, None)
+        self._tab_meta.pop(session_id, None)
+        self._page_tab_ids.pop(session_id, None)
+
+        session = self.sessions.get(session_id)
+        if session:
+            session.active_tab_id = None
 
     async def create_session(self, user_id: str, sandbox_session_id: str) -> RPASession:
         session_id = str(uuid.uuid4())
@@ -518,12 +561,221 @@ class RPASessionManager:
         page.set_default_timeout(RPA_PAGE_TIMEOUT_MS)
         page.set_default_navigation_timeout(RPA_PAGE_TIMEOUT_MS)
 
-        self._contexts[session_id] = context
+        self.attach_context(session_id, context)
+        await self.register_page(session_id, page, make_active=True)
+
+        def on_context_page(new_page):
+            asyncio.create_task(self.register_context_page(session_id, new_page, make_active=True))
+
+        context.on("page", on_context_page)
+        await page.goto("about:blank")
+
+        logger.info(f"[RPA] Session {session_id} started via CDP")
+        return session
+
+    async def register_page(
+        self,
+        session_id: str,
+        page: Page,
+        opener_tab_id: Optional[str] = None,
+        make_active: bool = False,
+    ) -> str:
+        if session_id not in self.sessions:
+            raise ValueError(f"Session {session_id} not found")
+
+        tab_id = str(uuid.uuid4())
+        self._tabs.setdefault(session_id, {})[tab_id] = page
+        self._page_tab_ids.setdefault(session_id, {})[id(page)] = tab_id
+        self._tab_meta.setdefault(session_id, {})[tab_id] = RPATab(
+            tab_id=tab_id,
+            title=await self._safe_page_title(page),
+            url=getattr(page, "url", "") or "",
+            opener_tab_id=opener_tab_id,
+        )
+
+        await self._bind_page(session_id, tab_id, page)
+
+        if make_active or not self.sessions[session_id].active_tab_id:
+            await self.activate_tab(session_id, tab_id, source="auto")
+
+        return tab_id
+
+    async def register_context_page(self, session_id: str, page: Page, make_active: bool = True) -> str:
+        session = self.sessions.get(session_id)
+        opener_tab_id = session.active_tab_id if session else None
+        tab_id = await self.register_page(
+            session_id,
+            page,
+            opener_tab_id=opener_tab_id,
+            make_active=make_active,
+        )
+        if opener_tab_id:
+            await self._upgrade_recent_click_to_open_tab(session_id, opener_tab_id, tab_id)
+        return tab_id
+
+    async def _upgrade_recent_click_to_open_tab(self, session_id: str, source_tab_id: str, target_tab_id: str):
+        session = self.sessions.get(session_id)
+        if not session or not session.steps:
+            return
+
+        now = datetime.now()
+        for step in reversed(session.steps):
+            age_s = (now - step.timestamp).total_seconds()
+            if age_s > 5:
+                return
+            if step.tab_id != source_tab_id:
+                continue
+            if step.action != "click":
+                return
+
+            step.action = "open_tab_click"
+            step.source_tab_id = source_tab_id
+            step.target_tab_id = target_tab_id
+            step.description = f"{step.description} 并在新标签页打开"
+            await self._broadcast_step(session_id, step)
+            logger.debug(f"[RPA] Upgraded click to open_tab_click: source={source_tab_id} target={target_tab_id}")
+            return
+
+    @staticmethod
+    def _describe_switch_tab(tab_id: str, title: str = "") -> str:
+        return f'切换到标签页 {title or tab_id}'
+
+    @staticmethod
+    def _describe_close_tab(title: str = "", has_fallback: bool = False) -> str:
+        label = title or "当前标签页"
+        suffix = " 并切换到其他标签页" if has_fallback else ""
+        return f"关闭标签页 {label}{suffix}"
+
+    async def activate_tab(self, session_id: str, tab_id: str, source: str = "auto"):
+        page = self._tabs.get(session_id, {}).get(tab_id)
+        if page is None:
+            raise ValueError(f"Tab {tab_id} not found for session {session_id}")
+
+        session = self.sessions[session_id]
+        previous_tab_id = session.active_tab_id
+        session.active_tab_id = tab_id
         self._pages[session_id] = page
 
+        tab = self._tab_meta.get(session_id, {}).get(tab_id)
+        if tab:
+            tab.last_seen_at = datetime.now()
+            tab.url = getattr(page, "url", tab.url) or tab.url
+            title = await self._safe_page_title(page)
+            if title:
+                tab.title = title
+
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
+
+        if (
+            previous_tab_id
+            and previous_tab_id != tab_id
+            and source in {"user", "fallback"}
+            and session.status == "recording"
+            and not session.paused
+        ):
+            await self.add_step(
+                session_id,
+                {
+                    "action": "switch_tab",
+                    "target": "",
+                    "value": "",
+                    "label": "",
+                    "tag": "",
+                    "url": tab.url if tab else getattr(page, "url", ""),
+                    "description": self._describe_switch_tab(tab_id, tab.title if tab else ""),
+                    "sensitive": False,
+                    "tab_id": previous_tab_id,
+                    "source_tab_id": previous_tab_id,
+                    "target_tab_id": tab_id,
+                },
+            )
+
+        return {"tab_id": tab_id, "source": source}
+
+    async def close_tab(self, session_id: str, tab_id: str, close_page: bool = True):
+        page = self._tabs.get(session_id, {}).get(tab_id)
+        tab = self._tab_meta.get(session_id, {}).get(tab_id)
+        if page is None or tab is None:
+            raise ValueError(f"Tab {tab_id} not found for session {session_id}")
+
+        session = self.sessions[session_id]
+        fallback_tab_id = None
+        if session.active_tab_id == tab_id:
+            if tab.opener_tab_id and tab.opener_tab_id in self._tabs.get(session_id, {}):
+                fallback_tab_id = tab.opener_tab_id
+            elif self._tabs.get(session_id):
+                remaining_tab_ids = [existing_tab_id for existing_tab_id in self._tabs[session_id] if existing_tab_id != tab_id]
+                if remaining_tab_ids:
+                    fallback_tab_id = remaining_tab_ids[-1]
+
+        tab.status = "closed"
+        tab.last_seen_at = datetime.now()
+
+        if session.status == "recording" and not session.paused:
+            await self.add_step(
+                session_id,
+                {
+                    "action": "close_tab",
+                    "target": "",
+                    "value": "",
+                    "label": "",
+                    "tag": "",
+                    "url": tab.url,
+                    "description": self._describe_close_tab(tab.title, fallback_tab_id is not None),
+                    "sensitive": False,
+                    "tab_id": tab_id,
+                    "source_tab_id": tab_id,
+                    "target_tab_id": fallback_tab_id,
+                },
+            )
+
+        if close_page:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+        self._tabs.get(session_id, {}).pop(tab_id, None)
+        self._page_tab_ids.get(session_id, {}).pop(id(page), None)
+
+        if session.active_tab_id == tab_id:
+            if fallback_tab_id:
+                await self.activate_tab(session_id, fallback_tab_id, source="fallback")
+            else:
+                session.active_tab_id = None
+                self._pages.pop(session_id, None)
+
+    def list_tabs(self, session_id: str) -> List[Dict[str, Any]]:
+        active_tab_id = None
+        if session_id in self.sessions:
+            active_tab_id = self.sessions[session_id].active_tab_id
+
+        return [
+            {
+                "tab_id": tab.tab_id,
+                "title": tab.title,
+                "url": tab.url,
+                "opener_tab_id": tab.opener_tab_id,
+                "status": tab.status,
+                "active": tab.tab_id == active_tab_id,
+            }
+            for tab in self._tab_meta.get(session_id, {}).values()
+        ]
+
+    def get_active_page(self, session_id: str) -> Optional[Page]:
+        active_tab_id = self.sessions.get(session_id).active_tab_id if session_id in self.sessions else None
+        if not active_tab_id:
+            return None
+        return self._tabs.get(session_id, {}).get(active_tab_id)
+
+    async def _bind_page(self, session_id: str, tab_id: str, page: Page):
         async def rpa_emit(event_json: str):
             try:
                 evt = json.loads(event_json)
+                evt.setdefault("tab_id", tab_id)
                 await self._handle_event(session_id, evt)
             except Exception as e:
                 logger.error(f"[RPA] emit error: {e}")
@@ -539,10 +791,15 @@ class RPASessionManager:
             new_url = frame.url
             if new_url and new_url != last_url["value"] and new_url != "about:blank":
                 last_url["value"] = new_url
+                tab = self._tab_meta.get(session_id, {}).get(tab_id)
+                if tab:
+                    tab.url = new_url
+                    tab.last_seen_at = datetime.now()
                 evt = {
                     "action": "navigate",
                     "url": new_url,
                     "timestamp": int(datetime.now().timestamp() * 1000),
+                    "tab_id": tab_id,
                 }
                 asyncio.create_task(self._handle_event(session_id, evt))
 
@@ -553,6 +810,11 @@ class RPASessionManager:
                 await loaded_page.evaluate(CAPTURE_JS)
             except Exception:
                 pass
+            tab = self._tab_meta.get(session_id, {}).get(tab_id)
+            if tab:
+                tab.url = getattr(page, "url", tab.url) or tab.url
+                tab.title = await self._safe_page_title(page)
+                tab.last_seen_at = datetime.now()
 
         page.on("load", on_load)
 
@@ -564,7 +826,7 @@ class RPASessionManager:
             if session and session.steps:
                 # Upgrade the most recent click step to a download_click
                 for step in reversed(session.steps):
-                    if step.action == "click":
+                    if step.action == "click" and step.tab_id == tab_id:
                         step.action = "download_click"
                         step.value = suggested
                         step.description = f"下载文件 {suggested}"
@@ -574,25 +836,32 @@ class RPASessionManager:
             evt = {
                 "action": "download",
                 "value": suggested,
-                "url": page.url,
+                "url": getattr(page, "url", ""),
                 "timestamp": int(datetime.now().timestamp() * 1000),
+                "tab_id": tab_id,
             }
             await self._handle_event(session_id, evt)
 
         page.on("download", on_download)
 
-        await page.goto("about:blank")
-        await page.bring_to_front()
+        def on_close():
+            if session_id in self.sessions and tab_id in self._tab_meta.get(session_id, {}):
+                asyncio.create_task(self.close_tab(session_id, tab_id, close_page=False))
 
-        logger.info(f"[RPA] Session {session_id} started via CDP")
-        return session
+        page.on("close", on_close)
+
+    async def _safe_page_title(self, page: Page) -> str:
+        try:
+            return await page.title()
+        except Exception:
+            return ""
 
     async def stop_session(self, session_id: str):
         if session_id in self.sessions:
             self.sessions[session_id].status = "stopped"
 
         context = self._contexts.pop(session_id, None)
-        self._pages.pop(session_id, None)
+        self.detach_context(session_id)
         if context:
             try:
                 await context.close()
@@ -623,6 +892,9 @@ class RPASessionManager:
             self.sessions[session_id].paused = False
 
     def get_page(self, session_id: str) -> Optional[Page]:
+        active_page = self.get_active_page(session_id)
+        if active_page is not None:
+            return active_page
         return self._pages.get(session_id)
 
     def owns_sandbox_session(self, user_id: str, sandbox_session_id: str) -> bool:
@@ -638,16 +910,34 @@ class RPASessionManager:
         if session.status != "recording" or session.paused:
             return
 
+        event_tab_id = evt.get("tab_id")
+        if event_tab_id and event_tab_id != session.active_tab_id:
+            if event_tab_id in self._tabs.get(session_id, {}):
+                await self.activate_tab(session_id, event_tab_id, source="event")
+
         if evt.get("action") == "navigate":
             nav_ts = evt.get("timestamp", 0)
             steps = self.sessions[session_id].steps
             if steps:
                 last_step = steps[-1]
+                if (
+                    last_step.action == "open_tab_click"
+                    and last_step.target_tab_id == evt.get("tab_id")
+                ):
+                    logger.debug(f"[RPA] Skipping nav after popup open: {evt.get('url', '')[:60]}")
+                    return
                 if last_step.action in ("click", "press", "fill"):
                     last_ts = last_step.timestamp.timestamp() * 1000
-                    if nav_ts - last_ts < 5000:
-                        logger.debug(f"[RPA] Skipping nav (side-effect): {evt.get('url', '')[:60]}")
-                        return
+                    same_tab = last_step.tab_id == evt.get("tab_id")
+                    if nav_ts - last_ts < 5000 and same_tab:
+                        if last_step.action == "click":
+                            last_step.action = "navigate_click"
+                            last_step.url = evt.get("url", last_step.url)
+                            last_step.description = f"{last_step.description} 并跳转页面"
+                            await self._broadcast_step(session_id, last_step)
+                            logger.debug(f"[RPA] Upgraded click to navigate_click: {evt.get('url', '')[:60]}")
+                            return
+                        logger.debug(f"[RPA] Preserving nav after {last_step.action}: {evt.get('url', '')[:60]}")
 
         locator_info = evt.get("locator", {})
         is_sensitive = evt.get("sensitive", False)
@@ -660,6 +950,9 @@ class RPASessionManager:
             "url": evt.get("url", ""),
             "description": self._make_description(evt),
             "sensitive": is_sensitive,
+            "tab_id": evt.get("tab_id"),
+            "source_tab_id": evt.get("source_tab_id"),
+            "target_tab_id": evt.get("target_tab_id"),
         }
         await self.add_step(session_id, step_data)
         logger.debug(f"[RPA] Step: {step_data['description'][:60]}")

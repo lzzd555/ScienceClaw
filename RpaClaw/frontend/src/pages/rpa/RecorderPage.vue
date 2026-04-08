@@ -19,6 +19,17 @@ const error = ref<string | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let screencastWs: WebSocket | null = null;
 let lastMoveTime = 0;
+interface BrowserTab {
+  tab_id: string;
+  title: string;
+  url: string;
+  opener_tab_id?: string | null;
+  status: string;
+  active: boolean;
+}
+
+const tabs = ref<BrowserTab[]>([]);
+const activeTabId = ref<string | null>(null);
 const MOVE_THROTTLE = 50; // 50ms 节流
 
 const steps = ref<any[]>([
@@ -49,6 +60,19 @@ interface PendingConfirm {
 }
 const pendingConfirm = ref<PendingConfirm | null>(null);
 let pollInterval: any = null;
+
+const syncTabs = (nextTabs: BrowserTab[]) => {
+  tabs.value = nextTabs;
+  const active = nextTabs.find((tab) => tab.active);
+  activeTabId.value = active?.tab_id || null;
+};
+
+const browserLabel = () => {
+  const active = tabs.value.find((tab) => tab.tab_id === activeTabId.value);
+  return active?.title || active?.url || 'Playwright Chromium CDP';
+};
+
+const codeActionIndex = (part: string) => Number(part.match(/\[\[CODE_(\d+)\]\]/)?.[1] ?? -1);
 
 const cleanupAssistantText = (text: string, script = '') => {
   let next = text;
@@ -177,7 +201,12 @@ const connectScreencast = (sid: string) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'frame') {
+        error.value = null;
         drawFrame(msg.data, msg.metadata);
+      } else if (msg.type === 'tabs_snapshot') {
+        syncTabs(msg.tabs || []);
+      } else if (msg.type === 'preview_error') {
+        error.value = msg.message || '预览切换失败';
       }
     } catch { /* ignore parse errors */ }
   };
@@ -189,6 +218,16 @@ const connectScreencast = (sid: string) => {
   screencastWs.onerror = () => {
     error.value = '无法连接录制画面流，请检查后端 screencast 服务。';
   };
+};
+
+const activateTab = async (tabId: string) => {
+  if (!sessionId.value || activeTabId.value === tabId) return;
+  try {
+    const resp = await apiClient.post(`/rpa/session/${sessionId.value}/tabs/${tabId}/activate`);
+    syncTabs(resp.data.tabs || []);
+  } catch (err) {
+    console.error('Failed to activate RPA tab:', err);
+  }
 };
 
 const focusCanvas = () => {
@@ -527,7 +566,19 @@ const sendMessage = async () => {
       <!-- Center: Screencast Viewport -->
       <main class="flex-1 bg-[#f5f6f7] p-8 flex flex-col min-w-0">
         <div class="flex-1 bg-[#1e1e1e] rounded-2xl shadow-2xl relative overflow-hidden flex flex-col border border-gray-800">
-          <div class="h-10 bg-[#dadddf] flex items-center px-4 gap-2 flex-shrink-0">
+          <div class="h-11 bg-[#cfd3d8] flex items-end px-3 gap-2 flex-shrink-0 overflow-x-auto">
+            <button
+              v-for="tab in tabs"
+              :key="tab.tab_id"
+              type="button"
+              @click="activateTab(tab.tab_id)"
+              class="max-w-[220px] min-w-[120px] h-8 px-3 rounded-t-xl text-[11px] border border-b-0 transition-colors truncate"
+              :class="tab.active ? 'bg-[#f5f6f7] text-gray-900 border-gray-300' : 'bg-white/60 text-gray-600 border-transparent hover:bg-white/80'"
+            >
+              {{ tab.title || tab.url || 'New Tab' }}
+            </button>
+          </div>
+          <div class="h-10 bg-[#dadddf] flex items-center px-4 gap-2 flex-shrink-0 border-t border-white/40">
             <div class="flex gap-1.5">
               <div class="w-2.5 h-2.5 rounded-full bg-red-400"></div>
               <div class="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
@@ -535,7 +586,7 @@ const sendMessage = async () => {
             </div>
             <div class="flex-1 bg-white rounded-md h-6 mx-4 flex items-center px-3 shadow-inner">
               <Terminal class="text-gray-400" :size="12" />
-              <span class="text-[10px] text-gray-600 ml-2 truncate">Playwright Chromium — VNC 实时串流</span>
+              <span class="text-[10px] text-gray-600 ml-2 truncate">{{ browserLabel() }}</span>
             </div>
           </div>
 
@@ -560,6 +611,9 @@ const sendMessage = async () => {
               <p v-else-if="error" class="text-sm font-medium text-red-400">{{ error }}</p>
             </div>
 
+            <div v-if="error && sessionId" class="absolute top-4 right-4 max-w-xs bg-red-500/90 text-white text-[11px] px-3 py-2 rounded-lg shadow-lg">
+              {{ error }}
+            </div>
             <div v-if="sessionId" class="absolute bottom-6 left-1/2 -translate-x-1/2 bg-white/10 backdrop-blur-md border border-white/20 px-4 py-2 rounded-full flex items-center gap-3">
               <Radio class="text-red-400 animate-pulse" :size="14" />
               <span class="text-white text-[10px] font-bold tracking-wider uppercase">实时 CDP 串流</span>
@@ -634,13 +688,13 @@ const sendMessage = async () => {
                   <span v-if="!part.match(/\[\[CODE_(\d+)\]\]/)">{{ part }}</span>
                   <div v-else class="inline-block ml-2">
                     <button
-                      @click="msg.actions[parseInt(part.match(/\[\[CODE_(\d+)\]\]/)[1])].showCode = !msg.actions[parseInt(part.match(/\[\[CODE_(\d+)\]\]/)[1])].showCode"
+                      @click="msg.actions[codeActionIndex(part)].showCode = !msg.actions[codeActionIndex(part)].showCode"
                       class="inline-flex items-center gap-1 text-[10px] text-[#831bd7] hover:underline font-medium"
                     >
                       <Code :size="10" />
-                      {{ msg.actions[parseInt(part.match(/\[\[CODE_(\d+)\]\]/)[1])].showCode ? '收起' : '查看代码' }}
+                      {{ msg.actions[codeActionIndex(part)].showCode ? '收起' : '查看代码' }}
                     </button>
-                    <pre v-if="msg.actions[parseInt(part.match(/\[\[CODE_(\d+)\]\]/)[1])].showCode" class="mt-1 bg-gray-900 text-green-300 text-[10px] p-2 rounded-lg overflow-x-auto max-h-32 overflow-y-auto"><code>{{ msg.actions[parseInt(part.match(/\[\[CODE_(\d+)\]\]/)[1])].code }}</code></pre>
+                    <pre v-if="msg.actions[codeActionIndex(part)].showCode" class="mt-1 bg-gray-900 text-green-300 text-[10px] p-2 rounded-lg overflow-x-auto max-h-32 overflow-y-auto"><code>{{ msg.actions[codeActionIndex(part)].code }}</code></pre>
                   </div>
                 </template>
               </div>

@@ -21,6 +21,7 @@ class ScriptExecutor:
         timeout: float = 90.0,
         session_id: Optional[str] = None,
         page_registry: Optional[Any] = None,
+        session_manager: Optional[Any] = None,
         kwargs: Optional[Dict[str, Any]] = None,
         downloads_dir: Optional[str] = None,
         pw_loop_runner: Optional[Callable] = None,
@@ -53,6 +54,20 @@ class ScriptExecutor:
 
                 if session_id and page_registry:
                     page_registry[session_id] = page
+                if session_id and session_manager:
+                    session_manager.attach_context(session_id, context)
+                    await session_manager.register_page(session_id, page, make_active=True)
+
+                    def on_context_page(new_page):
+                        asyncio.create_task(
+                            session_manager.register_context_page(
+                                session_id,
+                                new_page,
+                                make_active=True,
+                            )
+                        )
+
+                    context.on("page", on_context_page)
 
                 if on_log:
                     on_log("Executing script...")
@@ -86,6 +101,8 @@ class ScriptExecutor:
             finally:
                 if session_id and page_registry and session_id in page_registry:
                     page_registry.pop(session_id, None)
+                if session_id and session_manager:
+                    session_manager.detach_context(session_id, context)
                 if context:
                     try:
                         await context.close()

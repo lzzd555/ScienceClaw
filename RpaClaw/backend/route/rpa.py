@@ -18,7 +18,7 @@ from backend.rpa.executor import ScriptExecutor
 from backend.rpa.skill_exporter import SkillExporter
 from backend.rpa.assistant import RPAAssistant, RPAReActAgent, _active_agents
 from backend.rpa.cdp_connector import get_cdp_connector
-from backend.rpa.screencast import ScreencastService
+from backend.rpa.screencast import SessionScreencastController
 from backend.user.dependencies import get_current_user, User
 from backend.config import settings
 from backend.storage import get_repository
@@ -278,6 +278,46 @@ async def get_rpa_session(
     return {"status": "success", "session": session}
 
 
+@router.get("/session/{session_id}/tabs")
+async def list_rpa_tabs(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = await rpa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {
+        "status": "success",
+        "tabs": rpa_manager.list_tabs(session_id),
+        "active_tab_id": session.active_tab_id,
+    }
+
+
+@router.post("/session/{session_id}/tabs/{tab_id}/activate")
+async def activate_rpa_tab(
+    session_id: str,
+    tab_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = await rpa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    try:
+        result = await rpa_manager.activate_tab(session_id, tab_id, source="user")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "status": "success",
+        "result": result,
+        "tabs": rpa_manager.list_tabs(session_id),
+        "active_tab_id": session.active_tab_id,
+    }
+
+
 @router.post("/session/{session_id}/stop")
 async def stop_rpa_session(
     session_id: str,
@@ -358,6 +398,7 @@ async def test_script(
             on_log=lambda msg: logs.append(msg),
             session_id=session_id,
             page_registry=rpa_manager._pages,
+            session_manager=rpa_manager,
             kwargs=test_kwargs,
             downloads_dir=downloads_dir,
             pw_loop_runner=pw_loop_runner,
@@ -375,6 +416,7 @@ async def test_script(
             on_log=lambda msg: logs.append(msg),
             session_id=session_id,
             page_registry=rpa_manager._pages,
+            session_manager=rpa_manager,
             kwargs=docker_kwargs,
             downloads_dir=downloads_dir,
         )
@@ -446,6 +488,7 @@ async def chat_with_assistant(
                         goal=request.message,
                         existing_steps=steps,
                         model_config=model_config,
+                        page_provider=lambda: rpa_manager.get_page(session_id),
                     ):
                         evt_type = event.get("event", "message")
                         evt_data = event.get("data", {})
@@ -467,6 +510,7 @@ async def chat_with_assistant(
                     message=request.message,
                     steps=steps,
                     model_config=model_config,
+                    page_provider=lambda: rpa_manager.get_page(session_id),
                 ):
                     evt_type = event.get("event", "message")
                     evt_data = event.get("data", {})
@@ -535,9 +579,7 @@ async def steps_stream(websocket: WebSocket, session_id: str):
 
 @router.websocket("/screencast/{session_id}")
 async def rpa_screencast(websocket: WebSocket, session_id: str):
-    """CDP screencast: push browser frames + receive input events.
-    Only used in local mode (STORAGE_BACKEND=local).
-    """
+    """Session-scoped CDP screencast with active-tab switching."""
     user = await _get_ws_user(websocket)
     await websocket.accept()
     if not user:
@@ -552,19 +594,14 @@ async def rpa_screencast(websocket: WebSocket, session_id: str):
         await websocket.close(code=1008, reason="Not authorized")
         return
 
-    page = rpa_manager.get_page(session_id)
-    if not page:
+    if not rpa_manager.get_page(session_id):
         await websocket.close(code=1008, reason="No active page")
         return
 
-    try:
-        cdp_session = await page.context.new_cdp_session(page)
-    except Exception as e:
-        logger.error(f"Failed to create CDP session: {e}")
-        await websocket.close(code=1011, reason="CDP session failed")
-        return
-
-    screencast = ScreencastService(cdp_session)
+    screencast = SessionScreencastController(
+        page_provider=lambda: rpa_manager.get_page(session_id),
+        tabs_provider=lambda: rpa_manager.list_tabs(session_id),
+    )
     try:
         await screencast.start(websocket)
     except WebSocketDisconnect:
@@ -573,10 +610,6 @@ async def rpa_screencast(websocket: WebSocket, session_id: str):
         logger.error(f"Screencast error: {e}")
     finally:
         await screencast.stop()
-        try:
-            await cdp_session.detach()
-        except Exception:
-            pass
 
 
 @router.get("/vnc/page/{session_id}")

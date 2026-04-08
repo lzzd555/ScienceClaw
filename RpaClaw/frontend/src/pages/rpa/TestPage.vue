@@ -3,7 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { Play, Save, CheckCircle, XCircle, Loader2, Terminal, Code, ArrowLeft, RotateCcw, House, FolderOpen } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
-import { getBackendVncPageUrl, getBackendWsUrl, isLocalMode } from '@/utils/sandbox';
+import { getBackendWsUrl } from '@/utils/sandbox';
 
 const router = useRouter();
 const route = useRoute();
@@ -19,11 +19,22 @@ const params = computed(() => {
   }
 });
 
-const vncPageUrl = computed(() => getBackendVncPageUrl(sessionId.value || 'sandbox', false));
-const localMode = ref(isLocalMode());
 const canvasRef = ref<HTMLCanvasElement | null>(null);
-const previewTitle = computed(() => (localMode.value ? '测试执行画面 — 本地实时画面' : '测试执行画面 — VNC 实时串流'));
 let screencastWs: WebSocket | null = null;
+interface BrowserTab {
+  tab_id: string;
+  title: string;
+  url: string;
+  opener_tab_id?: string | null;
+  status: string;
+  active: boolean;
+}
+const tabs = ref<BrowserTab[]>([]);
+const activeTabId = ref<string | null>(null);
+const previewTitle = computed(() => {
+  const active = tabs.value.find((tab) => tab.tab_id === activeTabId.value);
+  return active?.title || active?.url || 'Test execution preview';
+});
 
 const TEST_REQUEST_TIMEOUT_MS = 210000;
 
@@ -67,7 +78,14 @@ const connectScreencast = (sid: string) => {
       const msg = JSON.parse(ev.data);
       console.log('[TestPage] Screencast message:', msg.type);
       if (msg.type === 'frame') {
+        error.value = null;
         drawFrame(msg.data, msg.metadata);
+      } else if (msg.type === 'tabs_snapshot') {
+        tabs.value = msg.tabs || [];
+        const active = tabs.value.find((tab) => tab.active);
+        activeTabId.value = active?.tab_id || null;
+      } else if (msg.type === 'preview_error') {
+        error.value = msg.message || 'Preview switch failed';
       }
     } catch (e) {
       console.error('[TestPage] Parse error:', e);
@@ -82,6 +100,18 @@ const connectScreencast = (sid: string) => {
     console.log('[TestPage] Screencast closed:', e.code, e.reason);
     screencastWs = null;
   };
+};
+
+const activateTab = async (tabId: string) => {
+  if (!sessionId.value || activeTabId.value === tabId) return;
+  try {
+    const resp = await apiClient.post(`/rpa/session/${sessionId.value}/tabs/${tabId}/activate`);
+    tabs.value = resp.data.tabs || [];
+    const active = tabs.value.find((tab) => tab.active);
+    activeTabId.value = active?.tab_id || null;
+  } catch (err) {
+    console.error('[TestPage] Failed to activate tab:', err);
+  }
 };
 
 const runTest = async () => {
@@ -102,10 +132,8 @@ const runTest = async () => {
     });
 
     // Connect screencast after a short delay to let backend create page
-    if (localMode.value) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      connectScreencast(sessionId.value);
-    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+    connectScreencast(sessionId.value);
 
     const resp = await testPromise;
 
@@ -218,6 +246,18 @@ onBeforeUnmount(() => {
       <!-- Left: VNC viewport (fills available space like RecorderPage) -->
       <main class="flex-1 p-6 flex flex-col min-w-0">
         <div class="flex-1 bg-[#1e1e1e] rounded-2xl shadow-2xl relative overflow-hidden flex flex-col border border-gray-800">
+          <div class="h-11 bg-[#cfd3d8] flex items-end px-3 gap-2 flex-shrink-0 overflow-x-auto">
+            <button
+              v-for="tab in tabs"
+              :key="tab.tab_id"
+              type="button"
+              @click="activateTab(tab.tab_id)"
+              class="max-w-[220px] min-w-[120px] h-8 px-3 rounded-t-xl text-[11px] border border-b-0 transition-colors truncate"
+              :class="tab.active ? 'bg-[#f5f6f7] text-gray-900 border-gray-300' : 'bg-white/60 text-gray-600 border-transparent hover:bg-white/80'"
+            >
+              {{ tab.title || tab.url || 'New Tab' }}
+            </button>
+          </div>
           <div class="h-10 bg-[#dadddf] flex items-center px-4 gap-2 flex-shrink-0">
             <div class="flex gap-1.5">
               <div class="w-2.5 h-2.5 rounded-full bg-red-400"></div>
@@ -230,17 +270,13 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="flex-1 relative bg-black overflow-hidden">
-            <iframe
-              v-if="!localMode"
-              :src="vncPageUrl"
-              class="w-full h-full border-0 bg-black"
-              allow="clipboard-read; clipboard-write"
-            />
             <canvas
-              v-else
               ref="canvasRef"
               class="w-full h-full object-contain"
             />
+            <div v-if="error" class="absolute top-4 right-4 max-w-xs bg-red-500/90 text-white text-[11px] px-3 py-2 rounded-lg shadow-lg">
+              {{ error }}
+            </div>
           </div>
         </div>
       </main>
