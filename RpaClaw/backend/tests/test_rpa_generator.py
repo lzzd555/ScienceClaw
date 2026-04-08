@@ -13,6 +13,29 @@ PlaywrightGenerator = GENERATOR_MODULE.PlaywrightGenerator
 
 
 class PlaywrightGeneratorTests(unittest.TestCase):
+    def test_generate_script_keeps_locator_assignments_sync_for_ai_steps(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_script",
+                "value": "\n".join(
+                    [
+                        'first_repo_link = page.locator("article h2 a").first',
+                        'await first_repo_link.click()',
+                    ]
+                ),
+                "description": "打开最流行项目",
+                "url": "https://github.com/trending",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('first_repo_link = page.locator("article h2 a").first', script)
+        self.assertNotIn('first_repo_link = await page.locator("article h2 a").first', script)
+        self.assertIn('await first_repo_link.click()', script)
+        self.assertNotIn('_results["first_repo_link"] = first_repo_link', script)
+
     def test_build_locator_nested_role_chains_get_by_role(self):
         generator = PlaywrightGenerator()
         target = json.dumps(

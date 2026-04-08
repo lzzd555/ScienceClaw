@@ -362,13 +362,23 @@ if __name__ == "__main__":
                             # If already has await, keep as-is; otherwise add await
                             if assign_match.group(2):  # already has await
                                 result.append(line)
-                            else:
+                            elif PlaywrightGenerator._page_expression_needs_await(assign_match.group(3)):
                                 result.append(f"{indent}{assign_match.group(1)}await {assign_match.group(3)}")
+                            else:
+                                result.append(line)
                             continue
-                        result.append(f"{indent}await {stripped}")
-                        continue
+                        if PlaywrightGenerator._page_expression_needs_await(stripped):
+                            result.append(f"{indent}await {stripped}")
+                            continue
             result.append(line)
         return "\n".join(result)
+
+    # Playwright builder methods/properties that return locators or similar handles.
+    _LOCATOR_BUILDER_METHODS = frozenset({
+        'locator', 'get_by_role', 'get_by_test_id', 'get_by_label',
+        'get_by_placeholder', 'get_by_alt_text', 'get_by_title',
+        'get_by_text', 'filter', 'nth', 'first', 'last', 'frame_locator',
+    })
 
     # Methods whose return value is not data (actions, not queries)
     _ACTION_METHODS = frozenset({
@@ -383,7 +393,25 @@ if __name__ == "__main__":
         'add_init_script', 'expose_function', 'route', 'unroute',
     })
 
-    _ASSIGN_RE = re.compile(r'^(\w+)\s*=\s*(?:await\s+)?page\.')
+    _ASSIGN_RE = re.compile(r'^(\w+)\s*=\s*((?:await\s+)?page\..+)$')
+
+    @classmethod
+    def _page_expression_needs_await(cls, expr: str) -> bool:
+        """Return True when a page expression is an awaitable Playwright call."""
+        expr = expr.strip()
+        expr = re.sub(r'^await\s+', '', expr)
+        if not re.search(r'\bpage\.', expr):
+            return False
+
+        # Property-based locator chains like `.first` / `.last` are not awaitable.
+        property_match = re.search(r'\.(\w+)\s*$', expr)
+        if property_match and property_match.group(1) in cls._LOCATOR_BUILDER_METHODS:
+            return False
+
+        last_call = re.search(r'\.(\w+)\([^)]*\)\s*$', expr)
+        if not last_call:
+            return False
+        return last_call.group(1) not in cls._LOCATOR_BUILDER_METHODS
 
     @classmethod
     def _inject_result_capture(cls, code: str) -> str:
@@ -397,6 +425,10 @@ if __name__ == "__main__":
             if not m:
                 continue
             var_name = m.group(1)
+            expr = re.sub(r'^await\s+', '', m.group(2).strip())
+            # Skip locator-building assignments; only capture extracted data.
+            if not cls._page_expression_needs_await(expr):
+                continue
             # Find the last method call in the line
             last_call = re.search(r'\.(\w+)\([^)]*\)\s*$', stripped)
             if last_call and last_call.group(1) in cls._ACTION_METHODS:
