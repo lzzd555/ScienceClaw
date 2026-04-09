@@ -147,6 +147,11 @@ async def _extract_frame_elements(frame) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def _is_detached_frame_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return "frame has been detached" in text or "frame was detached" in text
+
+
 def _detect_collections(elements: List[Dict[str, Any]], frame_path: List[str]) -> List[Dict[str, Any]]:
     collections: List[Dict[str, Any]] = []
     grouped: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
@@ -245,8 +250,13 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
     frames: List[Dict[str, Any]] = []
 
     async def walk(frame) -> None:
-        frame_path = await _resolve_frame_path(frame, frame_path_builder)
-        elements = await _extract_frame_elements(frame)
+        try:
+            frame_path = await _resolve_frame_path(frame, frame_path_builder)
+            elements = await _extract_frame_elements(frame)
+        except Exception as exc:
+            if _is_detached_frame_error(exc):
+                return
+            raise
         frames.append(
             {
                 "frame_path": frame_path,

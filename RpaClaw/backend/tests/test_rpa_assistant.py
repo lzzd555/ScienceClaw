@@ -383,6 +383,35 @@ class RPAAssistantFrameAwareSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["frames"][1]["elements"][0]["name"], "Quarterly Report")
         self.assertEqual(snapshot["frames"][1]["collections"][0]["item_count"], 2)
 
+    async def test_build_page_snapshot_skips_detached_child_frame(self):
+        detached = _FakeSnapshotFrame(
+            name="detached",
+            url="https://example.com/detached",
+            frame_path=["iframe[title='detached']"],
+            elements=[{"index": 1, "tag": "a", "role": "link", "name": "Detached Link"}],
+        )
+        main = _FakeSnapshotFrame(
+            name="main",
+            url="https://example.com",
+            frame_path=[],
+            elements=[{"index": 1, "tag": "button", "role": "button", "name": "Search"}],
+            child_frames=[detached],
+        )
+        page = _FakeSnapshotPage(main)
+
+        async def flaky_frame_path_builder(frame):
+            if frame is detached:
+                raise RuntimeError("Frame.frame_element: Frame has been detached.")
+            return frame._frame_path
+
+        snapshot = await ASSISTANT_MODULE.build_page_snapshot(
+            page,
+            frame_path_builder=flaky_frame_path_builder,
+        )
+
+        self.assertEqual(len(snapshot["frames"]), 1)
+        self.assertEqual(snapshot["frames"][0]["frame_path"], [])
+
     async def test_detect_collections_builds_structured_template_from_repeated_context(self):
         collections = ASSISTANT_RUNTIME_MODULE._detect_collections(
             [
