@@ -62,7 +62,7 @@ services:
       - ./workspace:/home/rpaclaw
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      SANDBOX_REST_URL: http://sandbox:8080
+      SANDBOX_BASE_URL: http://sandbox:8080
       WORKSPACE_DIR: /home/rpaclaw
       DS_API_KEY: ${API_KEY:-}
       DS_URL: ${API_BASE-https://api.deepseek.com/v1}
@@ -111,7 +111,6 @@ services:
       K8S_RUNTIME_WORKSPACE_PVC_CLAIM: ${K8S_RUNTIME_WORKSPACE_PVC_CLAIM:-}
       K8S_RUNTIME_EXTRA_VOLUMES_JSON: ${K8S_RUNTIME_EXTRA_VOLUMES_JSON:-}
       K8S_RUNTIME_EXTRA_VOLUME_MOUNTS_JSON: ${K8S_RUNTIME_EXTRA_VOLUME_MOUNTS_JSON:-}
-      SHARED_SANDBOX_REST_URL: http://sandbox:8080
       # 诊断模式：记录每步 LLM 调用的完整上下文，用于质量分析（设为空或删除此行关闭）
       DIAGNOSTIC_MODE: "1"
       IM_ENABLED: "true"

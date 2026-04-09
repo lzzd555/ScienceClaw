@@ -3,6 +3,15 @@ from backend.runtime.docker_runtime_provider import DockerRuntimeProvider
 from backend.runtime.k8s_runtime_provider import K8sRuntimeProvider
 from backend.runtime.provider import build_runtime_provider
 from backend.runtime.shared_runtime_provider import SharedRuntimeProvider
+from backend.config import (
+    _derive_sandbox_vnc_ws_url,
+    _resolve_sandbox_base_url,
+    _resolve_sandbox_mcp_url,
+    _resolve_sandbox_public_url,
+    _resolve_sandbox_rest_url,
+    _resolve_shared_sandbox_rest_url,
+    _resolve_sandbox_vnc_ws_url,
+)
 from backend.runtime.session_runtime_manager import (
     SessionRuntimeManager,
     get_session_runtime_manager,
@@ -52,6 +61,63 @@ def test_provider_factory_returns_docker_provider_when_requested():
 def test_provider_factory_returns_k8s_provider_when_requested():
     provider = build_runtime_provider(_Settings("session_pod"))
     assert provider.__class__.__name__ == "K8sRuntimeProvider"
+
+
+def test_sandbox_urls_are_derived_from_base_url(monkeypatch):
+    monkeypatch.setenv("SANDBOX_BASE_URL", "http://sandbox:8080")
+    monkeypatch.delenv("SANDBOX_REST_URL", raising=False)
+    monkeypatch.delenv("SANDBOX_MCP_URL", raising=False)
+    monkeypatch.delenv("SHARED_SANDBOX_REST_URL", raising=False)
+    monkeypatch.delenv("SANDBOX_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("SANDBOX_VNC_WS_URL", raising=False)
+
+    assert _resolve_sandbox_base_url() == "http://sandbox:8080"
+    assert _resolve_sandbox_rest_url() == "http://sandbox:8080"
+    assert _resolve_sandbox_mcp_url() == "http://sandbox:8080/mcp"
+    assert _resolve_shared_sandbox_rest_url() == "http://sandbox:8080"
+    assert _resolve_sandbox_public_url() == "http://sandbox:8080"
+    assert _resolve_sandbox_vnc_ws_url() == "ws://sandbox:6080"
+
+
+def test_sandbox_specific_overrides_take_precedence(monkeypatch):
+    monkeypatch.setenv("SANDBOX_BASE_URL", "http://sandbox:8080")
+    monkeypatch.setenv("SANDBOX_REST_URL", "http://sandbox-rest:8080")
+    monkeypatch.setenv("SANDBOX_MCP_URL", "http://sandbox-mcp:8080/mcp")
+    monkeypatch.setenv("SHARED_SANDBOX_REST_URL", "http://shared-sandbox:8080")
+    monkeypatch.setenv("SANDBOX_PUBLIC_URL", "https://sandbox-public.example.com")
+    monkeypatch.setenv("SANDBOX_VNC_WS_URL", "wss://sandbox-vnc.example.com/socket")
+
+    assert _resolve_sandbox_base_url() == "http://sandbox:8080"
+    assert _resolve_sandbox_rest_url() == "http://sandbox-rest:8080"
+    assert _resolve_sandbox_mcp_url() == "http://sandbox-mcp:8080/mcp"
+    assert _resolve_shared_sandbox_rest_url() == "http://shared-sandbox:8080"
+    assert _resolve_sandbox_public_url() == "https://sandbox-public.example.com"
+    assert _resolve_sandbox_vnc_ws_url() == "wss://sandbox-vnc.example.com/socket"
+
+
+def test_sandbox_base_url_falls_back_to_rest_or_mcp(monkeypatch):
+    monkeypatch.delenv("SANDBOX_BASE_URL", raising=False)
+    monkeypatch.delenv("SANDBOX_REST_URL", raising=False)
+    monkeypatch.delenv("SANDBOX_MCP_URL", raising=False)
+
+    monkeypatch.setenv("SANDBOX_REST_URL", "http://sandbox-rest:8080")
+    assert _resolve_sandbox_base_url() == "http://sandbox-rest:8080"
+
+    monkeypatch.delenv("SANDBOX_REST_URL", raising=False)
+    monkeypatch.setenv("SANDBOX_MCP_URL", "http://sandbox-mcp:8080/mcp")
+    assert _resolve_sandbox_base_url() == "http://sandbox-mcp:8080"
+
+
+def test_vnc_ws_url_is_derived_from_public_url(monkeypatch):
+    monkeypatch.delenv("SANDBOX_VNC_WS_URL", raising=False)
+    monkeypatch.setenv("SANDBOX_PUBLIC_URL", "https://sandbox.example.com")
+
+    assert _resolve_sandbox_vnc_ws_url() == "wss://sandbox.example.com/vnc/websockify"
+
+
+def test_vnc_ws_helper_handles_known_ports():
+    assert _derive_sandbox_vnc_ws_url("http://sandbox:8080") == "ws://sandbox:6080"
+    assert _derive_sandbox_vnc_ws_url("https://sandbox.example.com:18080") == "wss://sandbox.example.com:16080"
 
 
 @pytest.mark.asyncio

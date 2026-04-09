@@ -144,8 +144,9 @@ MONGODB_PORT=27017
 MONGODB_USER=
 MONGODB_PASSWORD=
 
-# 沙箱（用于 Docker 模式 RPA）
-SANDBOX_MCP_URL=http://localhost:18080/mcp
+# 沙箱（当 STORAGE_BACKEND 不是 local 时使用）
+SANDBOX_BASE_URL=http://localhost:18080
+SANDBOX_MCP_URL=http://localhost:18080/mcp  # 可选覆盖
 
 # 统一根目录：workspace、external_skills、builtin_skills、data 自动派生为子目录
 RPA_CLAW_HOME=

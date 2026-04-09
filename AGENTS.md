@@ -179,8 +179,10 @@ MONGODB_USER=scienceone
 MONGODB_PASSWORD=
 
 # Sandbox
-SANDBOX_MCP_URL=http://localhost:18080/mcp
-STORAGE_BACKEND=docker  # 'docker' or 'local' (affects RPA mode)
+SANDBOX_BASE_URL=http://localhost:18080
+SANDBOX_MCP_URL=http://localhost:18080/mcp  # Optional override
+STORAGE_BACKEND=docker  # 'local' = local mode; non-local = sandbox mode
+RUNTIME_MODE=shared     # Only effective when STORAGE_BACKEND != local
 
 # Search
 WEBSEARCH_BASE_URL=http://localhost:8068

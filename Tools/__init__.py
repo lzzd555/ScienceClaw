@@ -28,7 +28,11 @@ _package_dir = str(Path(__file__).resolve().parent)
 _lock = threading.Lock()
 _cached_tools: list[StructuredTool] = []
 
-_SANDBOX_REST_URL = os.environ.get("SANDBOX_REST_URL", "http://sandbox:8080")
+_SANDBOX_REST_URL = (
+    (os.environ.get("SANDBOX_REST_URL") or "").strip()
+    or (os.environ.get("SANDBOX_BASE_URL") or "").strip()
+    or "http://sandbox:8080"
+)
 _TOOL_RUNNER_PATH = "/app/_tool_runner.py"
 _TOOLS_DIR_IN_SANDBOX = "/app/Tools"
 _EXECUTE_TIMEOUT = 120

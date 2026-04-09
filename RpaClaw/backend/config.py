@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
@@ -23,6 +24,96 @@ def _sub(env_key: str, home: str, sub_dir: str, fallback: str) -> str:
     if home:
         return str(Path(home) / sub_dir)
     return fallback
+
+
+def _env_or_default(env_key: str, default: str) -> str:
+    explicit = (os.environ.get(env_key) or "").strip()
+    return explicit or default
+
+
+def _resolve_sandbox_base_url() -> str:
+    explicit_base = (os.environ.get("SANDBOX_BASE_URL") or "").strip()
+    if explicit_base:
+        return explicit_base.rstrip("/")
+
+    explicit_rest = (os.environ.get("SANDBOX_REST_URL") or "").strip()
+    if explicit_rest:
+        return explicit_rest.rstrip("/")
+
+    explicit_mcp = (os.environ.get("SANDBOX_MCP_URL") or "").strip()
+    if explicit_mcp:
+        parsed = urlparse(explicit_mcp)
+        derived_path = parsed.path[:-4] if parsed.path.endswith("/mcp") else parsed.path
+        return parsed._replace(
+            path=derived_path.rstrip("/"),
+            params="",
+            query="",
+            fragment="",
+        ).geturl().rstrip("/")
+
+    return "http://sandbox:8080"
+
+
+def _resolve_sandbox_rest_url() -> str:
+    return _env_or_default("SANDBOX_REST_URL", _resolve_sandbox_base_url()).rstrip("/")
+
+
+def _resolve_sandbox_mcp_url() -> str:
+    return _env_or_default(
+        "SANDBOX_MCP_URL",
+        f"{_resolve_sandbox_base_url()}/mcp",
+    ).rstrip("/")
+
+
+def _resolve_shared_sandbox_rest_url() -> str:
+    return _env_or_default(
+        "SHARED_SANDBOX_REST_URL",
+        _resolve_sandbox_base_url(),
+    ).rstrip("/")
+
+
+def _resolve_sandbox_public_url() -> str:
+    return _env_or_default(
+        "SANDBOX_PUBLIC_URL",
+        _resolve_sandbox_base_url(),
+    ).rstrip("/")
+
+
+def _derive_sandbox_vnc_ws_url(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+
+    port = parsed.port
+    if port == 8080:
+        return parsed._replace(
+            scheme=ws_scheme,
+            netloc=f"{parsed.hostname}:6080",
+            path="",
+            query="",
+            fragment="",
+        ).geturl()
+    if port == 18080:
+        return parsed._replace(
+            scheme=ws_scheme,
+            netloc=f"{parsed.hostname}:16080",
+            path="",
+            query="",
+            fragment="",
+        ).geturl()
+
+    return parsed._replace(
+        scheme=ws_scheme,
+        path="/vnc/websockify",
+        query="",
+        fragment="",
+    ).geturl()
+
+
+def _resolve_sandbox_vnc_ws_url() -> str:
+    return _env_or_default(
+        "SANDBOX_VNC_WS_URL",
+        _derive_sandbox_vnc_ws_url(_resolve_sandbox_public_url()),
+    ).rstrip("/")
 
 
 class Settings(BaseSettings):
@@ -75,15 +166,20 @@ class Settings(BaseSettings):
     xelatex_cmd: str = os.environ.get("XELATEX_CMD", "/usr/local/texlive/2025/bin/universal-darwin/xelatex")
     pandoc_cmd: str = os.environ.get("PANDOC_CMD", "/usr/local/bin/pandoc")
 
+    # 沙盒服务主配置。未设置细项时，各类 URL 会从这里派生。
+    sandbox_base_url: str = _resolve_sandbox_base_url()
+
     # 沙盒服务（MCP 协议）
-    sandbox_mcp_url: str = os.environ.get("SANDBOX_MCP_URL", "http://sandbox:8080/mcp")
+    sandbox_mcp_url: str = _resolve_sandbox_mcp_url()
 
-    # 前端可访问的沙盒地址（分离部署时需配置，默认空表示与前端同 host）
-    sandbox_public_url: str = os.environ.get("SANDBOX_PUBLIC_URL", "")
+    # 沙盒服务（REST 协议）
+    sandbox_rest_url: str = _resolve_sandbox_rest_url()
 
-    # 后端代理 VNC 时使用的 WebSocket 地址（可选）。
-    # 未配置时会根据 SANDBOX_MCP_URL 自动推导。
-    sandbox_vnc_ws_url: str = os.environ.get("SANDBOX_VNC_WS_URL", "")
+    # 前端可访问的沙盒地址。默认从 SANDBOX_BASE_URL 派生，可单独覆盖。
+    sandbox_public_url: str = _resolve_sandbox_public_url()
+
+    # 后端代理 VNC 时使用的 WebSocket 地址。默认从 SANDBOX_PUBLIC_URL 派生，可单独覆盖。
+    sandbox_vnc_ws_url: str = _resolve_sandbox_vnc_ws_url()
 
     # 后端代理到沙盒/浏览器时附带的额外请求头，JSON 对象格式
     # 例如: {"Authorization":"Bearer xxx","X-API-Key":"yyy"}
@@ -121,7 +217,7 @@ class Settings(BaseSettings):
     k8s_runtime_workspace_pvc_claim: str = os.environ.get("K8S_RUNTIME_WORKSPACE_PVC_CLAIM", "")
     k8s_runtime_extra_volumes_json: str = os.environ.get("K8S_RUNTIME_EXTRA_VOLUMES_JSON", "")
     k8s_runtime_extra_volume_mounts_json: str = os.environ.get("K8S_RUNTIME_EXTRA_VOLUME_MOUNTS_JSON", "")
-    shared_sandbox_rest_url: str = os.environ.get("SHARED_SANDBOX_REST_URL", "http://sandbox:8080")
+    shared_sandbox_rest_url: str = _resolve_shared_sandbox_rest_url()
 
     # class Config:
     #     env_prefix = 'APP_'

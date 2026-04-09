@@ -397,9 +397,8 @@ _OPEN_WRITE_RE = re.compile(
 
 
 def _get_sandbox_rest_base() -> str:
-    """Derive sandbox REST base URL from SANDBOX_MCP_URL."""
-    mcp_url = os.environ.get("SANDBOX_MCP_URL", "http://sandbox:8080/mcp")
-    return mcp_url.rsplit("/", 1)[0]
+    """Return the configured sandbox REST base URL."""
+    return settings.sandbox_rest_url.rstrip("/")
 
 
 def _extract_sandbox_file_paths(events: List[Dict[str, Any]]) -> Set[str]:

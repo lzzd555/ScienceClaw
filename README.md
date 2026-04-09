@@ -144,8 +144,9 @@ MONGODB_PORT=27017
 MONGODB_USER=
 MONGODB_PASSWORD=
 
-# Sandbox (for Docker mode RPA)
-SANDBOX_MCP_URL=http://localhost:18080/mcp
+# Sandbox (used when STORAGE_BACKEND is not local)
+SANDBOX_BASE_URL=http://localhost:18080
+SANDBOX_MCP_URL=http://localhost:18080/mcp  # Optional override
 
 # 统一根目录：workspace、external_skills、builtin_skills、data 自动派生为子目录
 RPA_CLAW_HOME=
@@ -405,4 +406,3 @@ RpaClaw is built on the shoulders of excellent open-source projects. We would li
 - **[Crawl4AI](https://github.com/unclecode/crawl4ai)** — An open-source, LLM-friendly web crawler. RpaClaw's `web_crawl` tool is powered by Crawl4AI, enabling intelligent content extraction from web pages for research and analysis.
 
 ---
-

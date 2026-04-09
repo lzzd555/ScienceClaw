@@ -141,38 +141,17 @@ async def _get_http_user(request: Request) -> User | None:
 
 
 def _get_sandbox_vnc_ws_url() -> str:
-    """Build the upstream sandbox VNC WebSocket URL for backend proxying.
-
-    Priority:
-      1. SANDBOX_VNC_WS_URL explicit override
-      2. Derive raw VNC websocket from SANDBOX_MCP_URL
-      3. Fallback to nginx/noVNC websockify path
-    """
-    explicit = (getattr(settings, "sandbox_vnc_ws_url", "") or "").strip()
-    if explicit:
-        return explicit
-
-    sandbox_base = settings.sandbox_mcp_url.replace("/mcp", "")
-    parsed = urlparse(sandbox_base)
-    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-
-    port = parsed.port
-    if port == 8080:
-        return parsed._replace(scheme=ws_scheme, netloc=f"{parsed.hostname}:6080", path="", query="", fragment="").geturl()
-    if port == 18080:
-        return parsed._replace(scheme=ws_scheme, netloc=f"{parsed.hostname}:16080", path="", query="", fragment="").geturl()
-
-    # Fallback for custom deployments that expose websockify behind the HTTP server.
-    return parsed._replace(scheme=ws_scheme, path="/vnc/websockify", query="", fragment="").geturl()
+    """Return the configured upstream sandbox VNC WebSocket URL."""
+    return settings.sandbox_vnc_ws_url.rstrip("/")
 
 
 def _get_sandbox_vnc_http_url(path: str) -> str:
-    sandbox_base = settings.sandbox_mcp_url.replace("/mcp", "").rstrip("/")
+    sandbox_base = settings.sandbox_public_url.rstrip("/")
     return f"{sandbox_base}/vnc/{path.lstrip('/')}"
 
 
 def _get_sandbox_novnc_ws_url() -> str:
-    sandbox_base = settings.sandbox_mcp_url.replace("/mcp", "").rstrip("/")
+    sandbox_base = settings.sandbox_public_url.rstrip("/")
     parsed = urlparse(sandbox_base)
     ws_scheme = "wss" if parsed.scheme == "https" else "ws"
     return parsed._replace(scheme=ws_scheme, path="/websockify", query="", fragment="").geturl()

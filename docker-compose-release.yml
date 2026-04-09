@@ -10,6 +10,9 @@ services:
     cpus: ${SANDBOX_CPUS:-4}
     environment:
       TZ: Asia/Shanghai
+      # 浏览器代理（通过 Lima VM 网关访问宿主机代理）
+      BROWSER_EXTRA_ARGS: >-
+        --proxy-server=http://192.168.5.2:7897
     volumes:
     - ./Skills:/skills:ro
     - ./Tools:/app/Tools:ro
@@ -41,7 +44,7 @@ services:
     - ./Tools:/app/Tools
     - ./workspace:/home/rpaclaw
     environment:
-      SANDBOX_REST_URL: http://sandbox:8080
+      SANDBOX_BASE_URL: http://sandbox:8080
       WORKSPACE_DIR: /home/rpaclaw
       DS_API_KEY: ${API_KEY:-}
       DS_URL: ${API_BASE-https://api.deepseek.com/v1}

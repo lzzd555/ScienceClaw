@@ -14,7 +14,6 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-import os
 import time
 from typing import Any, List, Optional, cast
 
@@ -32,9 +31,8 @@ from deepagents.backends.protocol import (
 
 logger = logging.getLogger(__name__)
 
-_SANDBOX_URL = os.environ.get("SANDBOX_REST_URL", "http://localhost:18080").rstrip("/")
-
 from backend.config import settings
+_SANDBOX_URL = settings.sandbox_rest_url.rstrip("/")
 _BASE_WORKSPACE = settings.workspace_dir
 _SANDBOX_WORKSPACE = settings.sandbox_workspace_dir
 _EXECUTE_TIMEOUT = 600
