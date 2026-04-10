@@ -1276,18 +1276,43 @@ class RPASessionManager:
 
         if evt.get("action") == "navigate":
             nav_ts = evt.get("timestamp", 0)
+            nav_sequence = evt.get("sequence")
+            nav_tab_id = evt.get("tab_id")
             steps = self.sessions[session_id].steps
-            if steps:
-                last_step = steps[-1]
+            predecessor = None
+            if steps and nav_sequence is not None:
+                sequence_candidates = [
+                    step
+                    for step in steps
+                    if step.sequence is not None
+                    and step.sequence < nav_sequence
+                    and (
+                        step.tab_id == nav_tab_id
+                        or (step.action == "open_tab_click" and step.target_tab_id == nav_tab_id)
+                    )
+                ]
+                if sequence_candidates:
+                    predecessor = max(sequence_candidates, key=lambda step: step.sequence)
+
+            if steps and predecessor is None:
+                for step in reversed(steps):
+                    if step.tab_id == nav_tab_id or (
+                        step.action == "open_tab_click" and step.target_tab_id == nav_tab_id
+                    ):
+                        predecessor = step
+                        break
+
+            if predecessor:
+                last_step = predecessor
                 if (
                     last_step.action == "open_tab_click"
-                    and last_step.target_tab_id == evt.get("tab_id")
+                    and last_step.target_tab_id == nav_tab_id
                 ):
                     logger.debug(f"[RPA] Skipping nav after popup open: {evt.get('url', '')[:60]}")
                     return
                 if last_step.action in ("click", "press", "fill"):
                     last_ts = last_step.timestamp.timestamp() * 1000
-                    same_tab = last_step.tab_id == evt.get("tab_id")
+                    same_tab = last_step.tab_id == nav_tab_id
                     if nav_ts - last_ts < 5000 and same_tab:
                         if last_step.action == "click":
                             last_step.action = "navigate_click"

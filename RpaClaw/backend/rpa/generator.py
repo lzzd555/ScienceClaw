@@ -239,6 +239,9 @@ if __name__ == "__main__":
             if action == "navigate_click":
                 lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
                 lines.append(f"        await {locator}.click()")
+            elif action == "navigate_press":
+                lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
+                lines.append(f'        await {locator}.press("{value}")')
             elif action == "click":
                 lines.append(f"    await {locator}.click()")
                 # After non-navigation click, wait briefly for UI changes
