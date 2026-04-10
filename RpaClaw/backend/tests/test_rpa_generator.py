@@ -222,7 +222,7 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn("await current_page.wait_for_timeout(500)", script)
         self.assertNotIn("expect_navigation", script)
 
-    def test_generate_script_uses_expect_navigation_for_navigate_click(self):
+    def test_generate_script_waits_for_navigation_without_expect_navigation(self):
         generator = PlaywrightGenerator()
         steps = [
             {
@@ -236,8 +236,29 @@ class PlaywrightGeneratorTests(unittest.TestCase):
 
         script = generator.generate_script(steps, is_local=True)
 
-        self.assertIn("async with current_page.expect_navigation", script)
+        self.assertIn("_nav_before_url = current_page.url", script)
+        self.assertIn("await current_page.wait_for_load_state('domcontentloaded', timeout=30000)", script)
+        self.assertIn("await current_page.wait_for_load_state('networkidle', timeout=15000)", script)
         self.assertIn('await current_page.get_by_role("link", name="Search", exact=True).click()', script)
+        self.assertNotIn("expect_navigation", script)
+
+    def test_generate_script_waits_for_locator_visibility_before_clicking(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "README.md"}),
+                "description": "点击 README 文件",
+                "tag": "A",
+                "url": "https://example.com/files",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.get_by_role("link", name="README.md", exact=True).wait_for(state="visible", timeout=30000)', script)
+        self.assertIn('await current_page.get_by_role("link", name="README.md", exact=True).scroll_into_view_if_needed()', script)
+        self.assertIn('await current_page.get_by_role("link", name="README.md", exact=True).click()', script)
 
     def test_generate_script_infers_open_tab_click_from_tab_id_change(self):
         generator = PlaywrightGenerator()

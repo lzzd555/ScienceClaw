@@ -229,6 +229,7 @@ if __name__ == "__main__":
 
             if action == "open_tab_click":
                 target_tab_id = step.get("target_tab_id") or step.get("tab_id") or "tab-new"
+                lines.extend(self._build_locator_ready_steps(locator))
                 lines.append("    async with current_page.expect_popup() as popup_info:")
                 lines.append(f"        await {locator}.click()")
                 lines.append("    new_page = await popup_info.value")
@@ -244,6 +245,7 @@ if __name__ == "__main__":
                 # TTI-like layered waiting with navigation verification.
                 # NOTE: avoid expect_navigation — it can capture spurious navigation events
                 # (e.g. iframe reloads, pushState) and never resolve for the real one.
+                lines.extend(self._build_locator_ready_steps(locator))
                 lines.append(f"    _nav_before_url = current_page.url")
                 lines.append(f"    await {locator}.click()")
                 lines.append(f"    await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
@@ -253,15 +255,18 @@ if __name__ == "__main__":
                 lines.append("        pass  # best-effort TTI: some pages never reach networkidle")
                 # Verify navigation actually happened; retry once if URL unchanged
                 lines.append("    if current_page.url == _nav_before_url:")
+                lines.extend([f"        {line.strip()}" for line in self._build_locator_ready_steps(locator)])
                 lines.append(f"        await {locator}.click()")
                 lines.append(f"        await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
             elif action == "click":
+                lines.extend(self._build_locator_ready_steps(locator))
                 lines.append(f"    await {locator}.click()")
                 # After non-navigation click, wait briefly for UI changes
                 lines.append("    await current_page.wait_for_timeout(500)")
             elif action == "download_click":
                 # Click that triggers a file download — wrap with expect_download
                 safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', (value or "file").split('.')[0]) or "file"
+                lines.extend(self._build_locator_ready_steps(locator))
                 lines.append(f"    async with current_page.expect_download() as _dl_info:")
                 lines.append(f"        await {locator}.click()")
                 lines.append(f"    _dl = await _dl_info.value")
@@ -309,6 +314,13 @@ if __name__ == "__main__":
         if count == 1:
             return key
         return f"{key}_{count}"
+
+    @staticmethod
+    def _build_locator_ready_steps(locator: str) -> List[str]:
+        return [
+            f'    await {locator}.wait_for(state="visible", timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})',
+            f"    await {locator}.scroll_into_view_if_needed()",
+        ]
 
     def _normalize_result_key(self, raw_key: Any) -> str:
         text = str(raw_key or "").strip().lower()
