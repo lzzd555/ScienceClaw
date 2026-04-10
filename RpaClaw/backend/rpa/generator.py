@@ -241,8 +241,14 @@ if __name__ == "__main__":
                 continue
 
             if action == "navigate_click":
-                lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
+                # TTI-like layered waiting: commit → domcontentloaded → networkidle (best-effort)
+                lines.append(f"    async with current_page.expect_navigation(wait_until='commit', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
                 lines.append(f"        await {locator}.click()")
+                lines.append(f"    await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
+                lines.append("    try:")
+                lines.append(f"        await current_page.wait_for_load_state('networkidle', timeout=15000)")
+                lines.append("    except Exception:")
+                lines.append("        pass  # best-effort TTI: some pages never reach networkidle")
             elif action == "click":
                 lines.append(f"    await {locator}.click()")
                 # After non-navigation click, wait briefly for UI changes
