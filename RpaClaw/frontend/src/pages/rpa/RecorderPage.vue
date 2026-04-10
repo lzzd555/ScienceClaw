@@ -241,7 +241,9 @@ const connectScreencast = (sid: string) => {
       return;
     }
     if (event.phase === 'reconnecting') {
-      error.value = `录制画面流已断开，正在重连（第 ${event.attempt} 次）...`;
+      if ((event.attempt ?? 0) >= 2) {
+        error.value = `录制画面流连接不稳定，正在重连（第 ${event.attempt} 次）...`;
+      }
       return;
     }
     if (event.phase === 'failed') {
@@ -255,9 +257,7 @@ const connectScreencast = (sid: string) => {
     debugLabel: 'RecorderPage',
     getUrl: () => getBackendWsUrl(`/rpa/screencast/${sid}`),
     onStatusChange: updateScreencastStatus,
-    onError: () => {
-      error.value = '录制画面流连接异常，正在尝试恢复...';
-    },
+    onError: () => {},
     onMessage: (ev) => {
       try {
         const msg = JSON.parse(ev.data);
