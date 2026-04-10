@@ -343,6 +343,85 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(updated.locator_candidates[0]["selected"])
         self.assertTrue(updated.locator_candidates[1]["selected"])
 
+    async def test_select_step_locator_candidate_supports_legacy_selector_payload(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Save"}),
+                "frame_path": [],
+                "locator_candidates": [
+                    {
+                        "kind": "role",
+                        "selected": True,
+                        "locator": {"method": "role", "role": "button", "name": "Save"},
+                    },
+                    {
+                        "kind": "css",
+                        "selected": False,
+                        "selector": "button.save",
+                        "playwright_locator": 'page.locator("button.save")',
+                    },
+                ],
+                "validation": {"status": "ok"},
+                "value": "",
+                "label": "",
+                "tag": "BUTTON",
+                "url": "https://example.com",
+                "description": "Click Save",
+                "sensitive": False,
+                "tab_id": "tab-1",
+            },
+        )
+
+        updated = await self.manager.select_step_locator_candidate(self.session.id, 0, 1)
+
+        self.assertEqual(json.loads(updated.target), {"method": "css", "value": "button.save"})
+        self.assertFalse(updated.locator_candidates[0]["selected"])
+        self.assertTrue(updated.locator_candidates[1]["selected"])
+
+    async def test_select_step_locator_candidate_validation_failure_does_not_mutate_selected_flags(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Save"}),
+                "frame_path": [],
+                "locator_candidates": [
+                    {
+                        "kind": "role",
+                        "selected": True,
+                        "locator": {"method": "role", "role": "button", "name": "Save"},
+                    },
+                    {
+                        "kind": "legacy",
+                        "selected": False,
+                        "selector": "",
+                        "playwright_locator": "",
+                    },
+                ],
+                "validation": {"status": "ok"},
+                "value": "",
+                "label": "",
+                "tag": "BUTTON",
+                "url": "https://example.com",
+                "description": "Click Save",
+                "sensitive": False,
+                "tab_id": "tab-1",
+            },
+        )
+
+        step = self.session.steps[0]
+        original_target = step.target
+        before_selected = [candidate.get("selected", False) for candidate in step.locator_candidates]
+
+        with self.assertRaises(ValueError):
+            await self.manager.select_step_locator_candidate(self.session.id, 0, 1)
+
+        after_selected = [candidate.get("selected", False) for candidate in step.locator_candidates]
+        self.assertEqual(after_selected, before_selected)
+        self.assertEqual(step.target, original_target)
+
     def test_capture_js_includes_frame_path_collection(self):
         self.assertIn("frame_path", MANAGER_MODULE.CAPTURE_JS)
         self.assertIn("window.frameElement", MANAGER_MODULE.CAPTURE_JS)

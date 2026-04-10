@@ -75,6 +75,48 @@ class PlaywrightGeneratorTests(unittest.TestCase):
             'page.locator("#hero").get_by_role("button", name="Sign up for GitHub", exact=True)',
         )
 
+    def test_build_locator_supports_nth_locator_payload(self):
+        generator = PlaywrightGenerator()
+        target = json.dumps(
+            {
+                "method": "nth",
+                "locator": {"method": "role", "role": "button", "name": "Save"},
+                "index": 2,
+            }
+        )
+
+        locator = generator._build_locator(target)
+
+        self.assertEqual(
+            locator,
+            'page.get_by_role("button", name="Save", exact=True).nth(2)',
+        )
+
+    def test_generate_script_click_with_nth_locator_uses_nth_chain(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps(
+                    {
+                        "method": "nth",
+                        "locator": {"method": "role", "role": "button", "name": "Save"},
+                        "index": 1,
+                    }
+                ),
+                "description": "Click second Save button",
+                "tag": "BUTTON",
+                "url": "https://example.com",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn(
+            'await current_page.get_by_role("button", name="Save", exact=True).nth(1).click()',
+            script,
+        )
+
     def test_generate_script_tracks_current_page_for_open_tab_click(self):
         generator = PlaywrightGenerator()
         steps = [

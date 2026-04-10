@@ -2,6 +2,7 @@ import json
 import logging
 import uuid
 import asyncio
+import re
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
@@ -1344,6 +1345,90 @@ class RPASessionManager:
         session.steps.pop(step_index)
         return True
 
+    @staticmethod
+    def _unescape_playwright_literal(value: str) -> str:
+        return value.replace('\\"', '"').replace("\\\\", "\\")
+
+    @classmethod
+    def _parse_playwright_locator_expression(cls, expression: str) -> Optional[Dict[str, Any]]:
+        if not expression:
+            return None
+        text = expression.strip()
+        locator_match = re.fullmatch(r'page\.locator\("((?:\\.|[^"\\])*)"\)', text)
+        if locator_match:
+            return {"method": "css", "value": cls._unescape_playwright_literal(locator_match.group(1))}
+
+        role_match = re.fullmatch(
+            r'page\.get_by_role\("((?:\\.|[^"\\])*)"(?:,\s*name="((?:\\.|[^"\\])*)"(?:,\s*exact=True)?)?\)',
+            text,
+        )
+        if role_match:
+            role = cls._unescape_playwright_literal(role_match.group(1))
+            name = cls._unescape_playwright_literal(role_match.group(2)) if role_match.group(2) is not None else ""
+            return {"method": "role", "role": role, "name": name}
+
+        one_arg_patterns = (
+            ("testid", r'page\.get_by_test_id\("((?:\\.|[^"\\])*)"\)'),
+            ("label", r'page\.get_by_label\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("placeholder", r'page\.get_by_placeholder\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("alt", r'page\.get_by_alt_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("title", r'page\.get_by_title\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("text", r'page\.get_by_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+        )
+        for method, pattern in one_arg_patterns:
+            match = re.fullmatch(pattern, text)
+            if match:
+                return {"method": method, "value": cls._unescape_playwright_literal(match.group(1))}
+
+        return None
+
+    @classmethod
+    def _resolve_candidate_locator(cls, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        locator_payload = candidate.get("locator")
+        locator: Optional[Dict[str, Any]] = None
+
+        if isinstance(locator_payload, dict):
+            locator = dict(locator_payload)
+        elif isinstance(locator_payload, str) and locator_payload.strip():
+            raw_payload = locator_payload.strip()
+            try:
+                parsed = json.loads(raw_payload)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                locator = parsed
+            else:
+                locator = {"method": "css", "value": raw_payload}
+
+        if locator is None:
+            playwright_locator = candidate.get("playwright_locator")
+            if isinstance(playwright_locator, str):
+                locator = cls._parse_playwright_locator_expression(playwright_locator)
+
+        if locator is None:
+            selector = candidate.get("selector")
+            if isinstance(selector, str) and selector.strip():
+                locator = {"method": "css", "value": selector.strip()}
+
+        if not isinstance(locator, dict):
+            raise ValueError("Locator candidate is missing locator payload")
+
+        nth_value = candidate.get("nth")
+        if nth_value is not None and locator.get("method") != "nth":
+            try:
+                nth_index = int(nth_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Locator candidate nth index is invalid") from exc
+            if nth_index < 0:
+                raise ValueError("Locator candidate nth index is invalid")
+            locator = {"method": "nth", "locator": locator, "index": nth_index}
+        elif locator.get("method") == "nth" and "locator" not in locator and "base" in locator:
+            normalized_locator = dict(locator)
+            normalized_locator["locator"] = normalized_locator.pop("base")
+            locator = normalized_locator
+
+        return locator
+
     async def select_step_locator_candidate(self, session_id: str, step_index: int, candidate_index: int) -> RPAStep:
         session = self.sessions.get(session_id)
         if not session or step_index < 0 or step_index >= len(session.steps):
@@ -1353,29 +1438,13 @@ class RPASessionManager:
         if candidate_index < 0 or candidate_index >= len(step.locator_candidates):
             raise ValueError("Invalid locator candidate index")
 
+        selected_candidate = step.locator_candidates[candidate_index]
+        locator = self._resolve_candidate_locator(selected_candidate)
+
         for index, candidate in enumerate(step.locator_candidates):
             candidate["selected"] = index == candidate_index
 
-        selected_candidate = step.locator_candidates[candidate_index]
-        locator = selected_candidate.get("locator")
-        if not isinstance(locator, dict):
-            raise ValueError("Locator candidate is missing locator payload")
-
-        nth_value = selected_candidate.get("nth")
-        if nth_value is not None and locator.get("method") != "nth":
-            try:
-                nth_index = int(nth_value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("Locator candidate nth index is invalid") from exc
-            if nth_index < 0:
-                raise ValueError("Locator candidate nth index is invalid")
-            locator = {"method": "nth", "locator": locator, "index": nth_index}
-            selected_candidate["locator"] = locator
-        elif locator.get("method") == "nth" and "locator" not in locator and "base" in locator:
-            normalized_locator = dict(locator)
-            normalized_locator["locator"] = normalized_locator.pop("base")
-            locator = normalized_locator
-            selected_candidate["locator"] = locator
+        selected_candidate["locator"] = locator
 
         step.target = json.dumps(locator)
         if step.validation:

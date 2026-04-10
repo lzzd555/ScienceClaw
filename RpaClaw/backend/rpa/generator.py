@@ -462,6 +462,15 @@ if __name__ == "__main__":
                 return f'{parent_loc}{child_loc[len("page"):]}'
             return f'{parent_loc}.locator("{self._escape(str(child))}")'
 
+        if method == "nth":
+            base = loc.get("locator", loc.get("base", {"method": "css", "value": "body"}))
+            base_loc = self._build_locator(json.dumps(base) if isinstance(base, dict) else str(base))
+            try:
+                index = max(int(loc.get("index", 0)), 0)
+            except Exception:
+                index = 0
+            return f"{base_loc}.nth({index})"
+
         # css (default)
         val = self._escape(loc.get("value", "body"))
         return f'page.locator("{val}")'
