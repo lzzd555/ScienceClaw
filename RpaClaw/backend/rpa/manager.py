@@ -760,10 +760,15 @@ CAPTURE_JS = r"""
     var _lastAction = null;  // {action, time}
     var _eventSequence = 0;
     var _activeTarget = null;
+    var _activeLocatorBundle = null;
 
     function rememberActiveTarget(el) {
         if (!el) return null;
-        _activeTarget = retarget(el);
+        var target = retarget(el);
+        if (_activeTarget !== target) {
+            _activeTarget = target;
+            _activeLocatorBundle = null;
+        }
         return _activeTarget;
     }
 
@@ -773,6 +778,13 @@ CAPTURE_JS = r"""
             return rememberActiveTarget(document.activeElement);
         }
         return null;
+    }
+
+    function ensureActiveLocatorBundle(el) {
+        var target = el ? rememberActiveTarget(el) : resolveActiveTarget();
+        if (!target) return null;
+        if (!_activeLocatorBundle) _activeLocatorBundle = buildLocatorBundle(target);
+        return _activeLocatorBundle;
     }
 
     function emit(evt) {
@@ -806,11 +818,16 @@ CAPTURE_JS = r"""
 
     document.addEventListener('focusin', function(e) {
         if (window.__rpa_paused) return;
-        rememberActiveTarget(e.target);
+        var el = rememberActiveTarget(e.target);
+        if (!el) return;
+        ensureActiveLocatorBundle(el);
     }, true);
 
     document.addEventListener('focusout', function(e) {
-        if (_activeTarget === e.target) _activeTarget = null;
+        if (_activeTarget === e.target) {
+            _activeTarget = null;
+            _activeLocatorBundle = null;
+        }
     }, true);
 
     document.addEventListener('input', function(e) {
@@ -820,7 +837,8 @@ CAPTURE_JS = r"""
         if (!el) return;
         var isPassword = (el.tagName === 'INPUT' && el.type === 'password');
         var rawValue = (typeof el.value === 'string') ? el.value : (el.textContent || '');
-        var locatorBundle = buildLocatorBundle(el);
+        var locatorBundle = ensureActiveLocatorBundle(el);
+        if (!locatorBundle) return;
         emit({action:'fill', locator:locatorBundle.primary,
               locator_candidates:locatorBundle.candidates,
               validation:locatorBundle.validation,
@@ -850,7 +868,8 @@ CAPTURE_JS = r"""
         if (e.key === 'Enter') {
             var el = resolveActiveTarget();
             if (!el) return;
-            var locatorBundle = buildLocatorBundle(el);
+            var locatorBundle = ensureActiveLocatorBundle(el);
+            if (!locatorBundle) return;
             emit({action:'press', locator:locatorBundle.primary,
                   locator_candidates:locatorBundle.candidates,
                   validation:locatorBundle.validation,

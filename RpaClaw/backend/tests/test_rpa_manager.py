@@ -537,7 +537,19 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
             "document.addEventListener('change'", 1
         )[0]
         self.assertIn("var el = rememberActiveTarget(e.target);", input_block)
+        self.assertIn("var locatorBundle = ensureActiveLocatorBundle(el);", input_block)
+        self.assertNotIn("var locatorBundle = buildLocatorBundle(el);", input_block)
         self.assertNotIn("resolveActiveTarget(e.target)", input_block)
+
+    def test_capture_js_reuses_active_locator_bundle_for_press(self):
+        js = MANAGER_MODULE.CAPTURE_JS
+        self.assertIn("var _activeLocatorBundle = null;", js)
+        self.assertIn("function ensureActiveLocatorBundle(el)", js)
+        keydown_block = js.split("document.addEventListener('keydown'", 1)[1].split(
+            "console.log('[RPA] Event capture injected');", 1
+        )[0]
+        self.assertIn("var locatorBundle = ensureActiveLocatorBundle(el);", keydown_block)
+        self.assertNotIn("var locatorBundle = buildLocatorBundle(el);", keydown_block)
 
     def test_capture_js_builds_nth_locator_payload_for_ambiguous_candidates(self):
         js = MANAGER_MODULE.CAPTURE_JS
