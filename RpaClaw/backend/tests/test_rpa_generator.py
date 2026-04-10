@@ -260,6 +260,55 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn('await current_page.get_by_role("link", name="README.md", exact=True).scroll_into_view_if_needed()', script)
         self.assertIn('await current_page.get_by_role("link", name="README.md", exact=True).click()', script)
 
+    def test_generate_script_inferrs_navigation_click_from_next_step_url_on_same_tab(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "README.md"}),
+                "description": "点击 README 文件",
+                "tag": "A",
+                "url": "https://example.com/files?ref=master",
+                "tab_id": "tab-1",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Raw"}),
+                "description": "点击 Raw 按钮",
+                "tag": "BUTTON",
+                "url": "https://example.com/blob/master/README.md",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.wait_for_url("https://example.com/blob/master/README.md", timeout=30000)', script)
+        self.assertIn('if current_page.url == _nav_before_url:', script)
+
+    def test_generate_script_uses_anchor_href_as_navigation_expectation_for_plain_click(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "README.md"}),
+                "description": "点击 README 文件",
+                "tag": "A",
+                "url": "https://example.com/files?ref=master",
+                "tab_id": "tab-1",
+                "element_snapshot": {
+                    "tag": "a",
+                    "href": "https://example.com/blob/master/README.md",
+                    "target_attr": "",
+                },
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.wait_for_url("https://example.com/blob/master/README.md", timeout=30000)', script)
+        self.assertIn('raise RuntimeError("Click did not reach expected URL: https://example.com/blob/master/README.md")', script)
+
     def test_generate_script_infers_open_tab_click_from_tab_id_change(self):
         generator = PlaywrightGenerator()
         steps = [

@@ -114,6 +114,7 @@ if __name__ == "__main__":
         params = params or {}
         deduped = self._deduplicate_steps(steps)
         deduped = self._infer_missing_tab_transitions(deduped)
+        deduped = self._infer_missing_navigation_clicks(deduped)
         root_tab_id = deduped[0].get("tab_id") if deduped else None
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
@@ -245,10 +246,17 @@ if __name__ == "__main__":
                 # TTI-like layered waiting with navigation verification.
                 # NOTE: avoid expect_navigation — it can capture spurious navigation events
                 # (e.g. iframe reloads, pushState) and never resolve for the real one.
+                expected_url = self._escape(step.get("expected_url") or step.get("url") or "")
                 lines.extend(self._build_locator_ready_steps(locator))
                 lines.append(f"    _nav_before_url = current_page.url")
                 lines.append(f"    await {locator}.click()")
-                lines.append(f"    await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
+                if expected_url:
+                    lines.append("    try:")
+                    lines.append(f'        await current_page.wait_for_url("{expected_url}", timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})')
+                    lines.append("    except Exception:")
+                    lines.append(f"        await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
+                else:
+                    lines.append(f"    await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
                 lines.append("    try:")
                 lines.append(f"        await current_page.wait_for_load_state('networkidle', timeout=15000)")
                 lines.append("    except Exception:")
@@ -257,7 +265,15 @@ if __name__ == "__main__":
                 lines.append("    if current_page.url == _nav_before_url:")
                 lines.extend([f"        {line.strip()}" for line in self._build_locator_ready_steps(locator)])
                 lines.append(f"        await {locator}.click()")
-                lines.append(f"        await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
+                if expected_url:
+                    lines.append("        try:")
+                    lines.append(f'            await current_page.wait_for_url("{expected_url}", timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})')
+                    lines.append("        except Exception:")
+                    lines.append(f"            await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
+                    lines.append(f'        if current_page.url != "{expected_url}":')
+                    lines.append(f'            raise RuntimeError("Click did not reach expected URL: {expected_url}")')
+                else:
+                    lines.append(f"        await current_page.wait_for_load_state('domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS // 2})")
             elif action == "click":
                 lines.extend(self._build_locator_ready_steps(locator))
                 lines.append(f"    await {locator}.click()")
@@ -384,6 +400,44 @@ if __name__ == "__main__":
         return normalized
 
     @staticmethod
+    def _infer_missing_navigation_clicks(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Upgrade plain clicks to navigate_click when later evidence shows same-tab navigation."""
+        if not steps:
+            return steps
+
+        normalized: List[Dict[str, Any]] = []
+        total = len(steps)
+        for index, original_step in enumerate(steps):
+            step = dict(original_step)
+            if step.get("action") != "click":
+                normalized.append(step)
+                continue
+
+            current_url = str(step.get("url") or "").strip()
+            expected_url = PlaywrightGenerator._expected_url_for_click(step)
+
+            if not expected_url and index + 1 < total:
+                next_step = steps[index + 1]
+                same_tab = (next_step.get("tab_id") or step.get("tab_id")) == step.get("tab_id")
+                next_action = next_step.get("action")
+                next_url = str(next_step.get("url") or "").strip()
+                if (
+                    same_tab
+                    and next_url
+                    and next_url != current_url
+                    and next_action not in ("navigate", "goto", "switch_tab", "close_tab")
+                ):
+                    expected_url = next_url
+
+            if expected_url and expected_url != current_url:
+                step["action"] = "navigate_click"
+                step["expected_url"] = expected_url
+
+            normalized.append(step)
+
+        return normalized
+
+    @staticmethod
     def _deduplicate_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove consecutive duplicate actions (same action + same target).
 
@@ -490,6 +544,20 @@ if __name__ == "__main__":
         # css (default)
         val = self._escape(loc.get("value", "body"))
         return f'page.locator("{val}")'
+
+    @staticmethod
+    def _expected_url_for_click(step: Dict[str, Any]) -> str:
+        snapshot = step.get("element_snapshot") or {}
+        tag = str((snapshot.get("tag") or step.get("tag") or "")).strip().lower()
+        href = str(snapshot.get("href") or "").strip()
+        target_attr = str(snapshot.get("target_attr") or "").strip().lower()
+        if tag != "a" or not href:
+            return ""
+        if href.startswith("#") or href.startswith("javascript:"):
+            return ""
+        if target_attr == "_blank":
+            return ""
+        return href
 
     def _parse_locator_payload(self, target: Any) -> Dict[str, Any]:
         try:
