@@ -341,7 +341,7 @@ if __name__ == "__main__":
                 lines.append("        except Exception:")
                 lines.append("            pass  # best-effort TTI: some pages never reach networkidle")
                 lines.append("        if current_page.url == _nav_before_url:")
-                lines.extend([f"        {line}" for line in self._build_locator_ready_steps(locator, indent_level=2)])
+                lines.extend(self._build_locator_ready_steps(locator, indent_level=3))
                 lines.append(f"            await {locator}.click()")
                 if expected_url:
                     lines.append("            try:")

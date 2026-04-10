@@ -241,6 +241,7 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn("await current_page.wait_for_load_state('networkidle', timeout=15000)", script)
         self.assertIn('await current_page.get_by_role("link", name="Search", exact=True).click()', script)
         self.assertNotIn("expect_navigation", script)
+        compile(script, "<generated>", "exec")
 
     def test_generate_script_waits_for_locator_visibility_before_clicking(self):
         generator = PlaywrightGenerator()
