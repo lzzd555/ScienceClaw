@@ -1844,12 +1844,17 @@ class RPASessionManager:
     def _is_same_fill_target(existing_step: Optional[RPAStep], incoming_step: RPAStep) -> bool:
         if existing_step is None:
             return False
+        existing_sequence = existing_step.sequence
+        incoming_sequence = incoming_step.sequence
         return (
             existing_step.action == "fill"
             and existing_step.source == incoming_step.source
             and existing_step.target == incoming_step.target
             and existing_step.frame_path == incoming_step.frame_path
             and existing_step.tab_id == incoming_step.tab_id
+            and existing_sequence is not None
+            and incoming_sequence is not None
+            and abs(existing_sequence - incoming_sequence) == 1
         )
 
     @staticmethod

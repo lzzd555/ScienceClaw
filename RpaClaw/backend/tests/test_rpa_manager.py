@@ -912,6 +912,41 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.steps[0].sequence, 44)
         self.assertEqual(self.session.steps[0].event_timestamp_ms, 3004)
 
+    async def test_non_consecutive_fill_events_do_not_collapse_when_same_target_arrives_out_of_order(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+        locator = {"method": "role", "role": "textbox", "name": "Search"}
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "fill",
+                "tab_id": tab_id,
+                "tag": "INPUT",
+                "timestamp": 3004,
+                "sequence": 44,
+                "value": "fast",
+                "locator": locator,
+            },
+        )
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "fill",
+                "tab_id": tab_id,
+                "tag": "INPUT",
+                "timestamp": 3001,
+                "sequence": 41,
+                "value": "tes",
+                "locator": locator,
+            },
+        )
+
+        self.assertEqual(len(self.session.steps), 2)
+        self.assertEqual([step.action for step in self.session.steps], ["fill", "fill"])
+        self.assertEqual([step.value for step in self.session.steps], ["tes", "fast"])
+        self.assertEqual([step.sequence for step in self.session.steps], [41, 44])
+
     async def test_consecutive_ai_fill_steps_do_not_collapse(self):
         step_one = await self.manager.add_step(
             self.session.id,
