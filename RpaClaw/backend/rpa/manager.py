@@ -79,6 +79,7 @@ class RPASession(BaseModel):
 # blob inline in Python.
 RPA_VENDOR_DIR = Path(__file__).with_name("vendor")
 PLAYWRIGHT_RECORDER_RUNTIME_PATH = RPA_VENDOR_DIR / "playwright_recorder_runtime.js"
+PLAYWRIGHT_RECORDER_ACTIONS_PATH = RPA_VENDOR_DIR / "playwright_recorder_actions.js"
 CAPTURE_SCRIPT_PATH = RPA_VENDOR_DIR / "playwright_recorder_capture.js"
 CAPTURE_JS = CAPTURE_SCRIPT_PATH.read_text(encoding="utf-8")
 
@@ -480,6 +481,7 @@ class RPASessionManager:
 
         await context.expose_binding("__rpa_emit", rpa_emit, handle=False)
         await context.add_init_script(path=str(PLAYWRIGHT_RECORDER_RUNTIME_PATH))
+        await context.add_init_script(path=str(PLAYWRIGHT_RECORDER_ACTIONS_PATH))
         await context.add_init_script(script=CAPTURE_JS)
         bridged_context_ids.add(context_key)
 
@@ -1103,10 +1105,16 @@ class RPASessionManager:
             return f'输入 {display_value} 到 {target}'
         if action == "click":
             return f"点击 {target}"
+        if action == "check":
+            return f"勾选 {target}"
+        if action == "uncheck":
+            return f"取消勾选 {target}"
         if action == "press":
             return f"按下 {value} 在 {target}"
         if action == "select":
             return f"选择 {value} 在 {target}"
+        if action == "set_input_files":
+            return f'上传文件 "{value}" 到 {target}'
         if action == "navigate":
             return f"导航到 {evt.get('url', '')}"
         if action == "download":

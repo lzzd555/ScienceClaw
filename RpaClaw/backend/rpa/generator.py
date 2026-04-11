@@ -285,6 +285,13 @@ if __name__ == "__main__":
             elif action == "fill":
                 fill_value = self._maybe_parameterize(value, params)
                 lines.append(f"    await {locator}.fill({fill_value})")
+            elif action == "check":
+                lines.append(f"    await {locator}.check()")
+            elif action == "uncheck":
+                lines.append(f"    await {locator}.uncheck()")
+            elif action == "set_input_files":
+                input_files_value = self._build_input_files_value(step, value, params)
+                lines.append(f"    await {locator}.set_input_files({input_files_value})")
             elif action == "extract_text":
                 result_var = f"extract_text_value_{step_index}"
                 result_key = self._build_extract_result_key(step, used_result_keys)
@@ -686,6 +693,21 @@ if __name__ == "__main__":
                 return f"kwargs.get('{param_name}', '{value}')"
         safe = value.replace("'", "\\'")
         return f"'{safe}'"
+
+    def _build_input_files_value(self, step: Dict[str, Any], value: str, params: Dict[str, Any]) -> str:
+        signals = step.get("signals")
+        files = None
+        if isinstance(signals, dict):
+            payload = signals.get("set_input_files")
+            if isinstance(payload, dict) and isinstance(payload.get("files"), list):
+                files = [str(item) for item in payload.get("files") if str(item)]
+
+        if files and len(files) > 1:
+            escaped = [item.replace("\\", "\\\\").replace("'", "\\'") for item in files]
+            return "[" + ", ".join(f"'{item}'" for item in escaped) + "]"
+
+        effective_value = files[0] if files else value
+        return self._maybe_parameterize(str(effective_value or ""), params)
 
     @staticmethod
     def _sync_to_async(code: str) -> str:

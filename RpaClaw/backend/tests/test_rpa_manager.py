@@ -157,6 +157,18 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.manager.get_active_page(self.session.id), page)
         self.assertEqual(page.bring_to_front_calls, 1)
 
+    async def test_register_page_injects_action_runtime_before_capture_script(self):
+        context = _FakeContext()
+        page = _FakePage("https://example.com", "Example", context=context)
+
+        await self.manager.register_page(self.session.id, page, make_active=True)
+
+        injected_paths = [entry["path"] for entry in context.init_scripts if entry.get("path")]
+        self.assertEqual(len(injected_paths), 2)
+        self.assertTrue(injected_paths[0].endswith("playwright_recorder_runtime.js"))
+        self.assertTrue(injected_paths[1].endswith("playwright_recorder_actions.js"))
+        self.assertEqual(context.init_scripts[-1]["script"], MANAGER_MODULE.CAPTURE_JS)
+
     async def test_activate_tab_switches_active_page(self):
         first_page = _FakePage("https://example.com", "Example")
         second_page = _FakePage("https://example.org", "Example Org")
@@ -628,32 +640,29 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("setTimeout(function()", MANAGER_MODULE.CAPTURE_JS)
         self.assertNotIn("}, 1500);", MANAGER_MODULE.CAPTURE_JS)
 
-    def test_capture_js_keydown_resolves_from_remembered_active_target(self):
+    def test_capture_js_installs_vendor_action_runtime(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        keydown_block = js.split("document.addEventListener('keydown'", 1)[1]
-        self.assertIn("var el = resolveActiveTarget();", keydown_block)
-        self.assertNotIn("var el = resolveActiveTarget(e.target);", keydown_block)
-        self.assertNotIn("var el = e.target;", keydown_block)
+        self.assertIn("window.__rpaPlaywrightActions.install({", js)
+        self.assertIn("retarget: retarget", js)
+        self.assertIn("emitAction: emitAction", js)
+        self.assertIn("isPaused: function() { return !!window.__rpa_paused; }", js)
 
-    def test_capture_js_input_updates_remembered_active_target(self):
+    def test_capture_js_uses_emit_action_bridge_for_runtime_callbacks(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        input_block = js.split("document.addEventListener('input'", 1)[1].split(
-            "document.addEventListener('change'", 1
+        bridge_block = js.split("function emitAction(action, el, extra)", 1)[1].split(
+            "if (!window.__rpaPlaywrightActions", 1
         )[0]
-        self.assertIn("var el = rememberActiveTarget(e.target);", input_block)
-        self.assertIn("var locatorBundle = ensureActiveLocatorBundle(el);", input_block)
-        self.assertNotIn("var locatorBundle = buildLocatorBundle(el);", input_block)
-        self.assertNotIn("resolveActiveTarget(e.target)", input_block)
+        self.assertIn("var locatorBundle = buildLocatorBundle(el);", bridge_block)
+        self.assertIn("element_snapshot: buildElementSnapshot(el)", bridge_block)
+        self.assertIn("locator: locatorBundle.primary", bridge_block)
+        self.assertIn("locator_candidates: locatorBundle.candidates", bridge_block)
 
-    def test_capture_js_reuses_active_locator_bundle_for_press(self):
+    def test_capture_js_no_longer_implements_raw_dom_listeners_inline(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        self.assertIn("var _activeLocatorBundle = null;", js)
-        self.assertIn("function ensureActiveLocatorBundle(el)", js)
-        keydown_block = js.split("document.addEventListener('keydown'", 1)[1].split(
-            "console.log('[RPA] Event capture injected');", 1
-        )[0]
-        self.assertIn("var locatorBundle = ensureActiveLocatorBundle(el);", keydown_block)
-        self.assertNotIn("var locatorBundle = buildLocatorBundle(el);", keydown_block)
+        self.assertNotIn("document.addEventListener('click'", js)
+        self.assertNotIn("document.addEventListener('input'", js)
+        self.assertNotIn("document.addEventListener('keydown'", js)
+        self.assertIn("window.__rpaPlaywrightActions.install({", js)
 
     def test_capture_js_delegates_locator_bundle_generation_to_vendor_runtime(self):
         js = MANAGER_MODULE.CAPTURE_JS
@@ -673,18 +682,42 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
 
     def test_capture_js_click_listener_does_not_dedupe_same_locator_clicks(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        click_block = js.split("document.addEventListener('click'", 1)[1].split(
-            "document.addEventListener('focusin'", 1
-        )[0]
         self.assertNotIn("_lastClick", js)
-        self.assertNotIn("now-_lastClick.time<1000", click_block)
-        self.assertNotIn("Deduplicate rapid clicks on the same element", click_block)
+        self.assertNotIn("Deduplicate rapid clicks on the same element", js)
 
     def test_capture_js_uses_vendor_playwright_adapter_for_locator_generation(self):
         js = MANAGER_MODULE.CAPTURE_JS
         self.assertIn("__rpaPlaywrightRecorder", js)
         self.assertNotIn("var ROLE_MAP =", js)
         self.assertNotIn("function testUnique(", js)
+
+    def test_action_runtime_does_not_immediately_toggle_label_associated_checkbox_clicks(self):
+        js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
+        click_block = js.split("addListener('click'", 1)[1].split("addListener('input'", 1)[0]
+        self.assertIn("var associated = associatedControl(target);", click_block)
+        self.assertIn("if (associated && asCheckbox(associated)) {", click_block)
+        self.assertIn("emitLogicalAction('click', target, {});", click_block)
+        logical_toggle_block = js.split("function logicalToggleTarget(node)", 1)[1].split(
+            "function logicalActionTarget", 1
+        )[0]
+        self.assertNotIn("associatedControl(node)", logical_toggle_block)
+
+    def test_action_runtime_uses_change_event_for_checkbox_state_commit(self):
+        js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
+        change_block = js.split("addListener('change'", 1)[1].split("addListener('keydown'", 1)[0]
+        self.assertIn("if (asCheckbox(target)) {", change_block)
+        self.assertIn("emitLogicalAction(toggleState(target) ? 'check' : 'uncheck', target, {});", change_block)
+
+    def test_action_runtime_preserves_label_clicks_for_associated_checkbox_targets(self):
+        js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
+        click_block = js.split("addListener('click'", 1)[1].split("addListener('input'", 1)[0]
+        self.assertIn("var associated = associatedControl(target);", click_block)
+        self.assertIn("emitLogicalAction('click', target, {});", click_block)
+        suppress_block = js.split("function shouldSuppress(action, target)", 1)[1].split(
+            "function wrongTarget", 1
+        )[0]
+        self.assertIn("if (recentAction.action === 'click') {", suppress_block)
+        self.assertIn("return action === 'check' || action === 'uncheck';", suppress_block)
 
     async def test_register_page_bootstraps_context_recorder_once(self):
         context = _FakeContext()
@@ -696,10 +729,12 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(context.exposed_bindings), 1)
         self.assertEqual(context.exposed_bindings[0][0], "__rpa_emit")
-        self.assertEqual(len(context.init_scripts), 2)
+        self.assertEqual(len(context.init_scripts), 3)
         self.assertEqual(context.init_scripts[0]["path"], str(MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_PATH))
         self.assertIsNone(context.init_scripts[0]["script"])
-        self.assertEqual(context.init_scripts[1]["script"], MANAGER_MODULE.CAPTURE_JS)
+        self.assertEqual(context.init_scripts[1]["path"], str(MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH))
+        self.assertIsNone(context.init_scripts[1]["script"])
+        self.assertEqual(context.init_scripts[2]["script"], MANAGER_MODULE.CAPTURE_JS)
         self.assertEqual(first_page.expose_function_calls, [])
         self.assertEqual(first_page.evaluate_calls, [])
         self.assertEqual(second_page.expose_function_calls, [])
@@ -929,6 +964,23 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("nth=1", description)
         self.assertIn('button("Save")', description)
+
+    def test_make_description_formats_check_and_uncheck_actions(self):
+        checked = self.manager._make_description(
+            {
+                "action": "check",
+                "locator": {"method": "role", "role": "checkbox", "name": "Subscribe"},
+            }
+        )
+        unchecked = self.manager._make_description(
+            {
+                "action": "uncheck",
+                "locator": {"method": "role", "role": "checkbox", "name": "Subscribe"},
+            }
+        )
+
+        self.assertEqual(checked, '勾选 checkbox("Subscribe")')
+        self.assertEqual(unchecked, '取消勾选 checkbox("Subscribe")')
 
     async def test_handle_event_orders_steps_by_sequence_when_events_arrive_out_of_order(self):
         page = _FakePage("https://example.com", "Example")

@@ -155,35 +155,7 @@
         };
     }
 
-    var _lastAction = null;
     var _eventSequence = 0;
-    var _activeTarget = null;
-    var _activeLocatorBundle = null;
-
-    function rememberActiveTarget(el) {
-        if (!el) return null;
-        var target = retarget(el);
-        if (_activeTarget !== target) {
-            _activeTarget = target;
-            _activeLocatorBundle = null;
-        }
-        return _activeTarget;
-    }
-
-    function resolveActiveTarget() {
-        if (_activeTarget && _activeTarget.isConnected) return _activeTarget;
-        if (document.activeElement && document.activeElement !== document.body) {
-            return rememberActiveTarget(document.activeElement);
-        }
-        return null;
-    }
-
-    function ensureActiveLocatorBundle(el) {
-        var target = el ? rememberActiveTarget(el) : resolveActiveTarget();
-        if (!target) return null;
-        if (!_activeLocatorBundle) _activeLocatorBundle = buildLocatorBundle(target);
-        return _activeLocatorBundle;
-    }
 
     function emit(evt) {
         evt.timestamp = Date.now();
@@ -191,98 +163,33 @@
         evt.sequence = _eventSequence;
         evt.url = location.href;
         evt.frame_path = getFramePath();
-        _lastAction = { action: evt.action, time: evt.timestamp };
         window.__rpa_emit(JSON.stringify(evt));
     }
 
-    document.addEventListener('click', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = e.target;
-        rememberActiveTarget(el);
-        if (!el || el.tagName === 'SELECT' || el.tagName === 'OPTION') return;
+    function emitAction(action, el, extra) {
         var locatorBundle = buildLocatorBundle(el);
-        emit({
-            action: 'click',
+        var payload = extra && typeof extra === 'object' ? extra : {};
+        emit(Object.assign({
+            action: action,
             locator: locatorBundle.primary,
             locator_candidates: locatorBundle.candidates,
             validation: locatorBundle.validation,
             element_snapshot: buildElementSnapshot(el),
-            tag: retarget(el).tagName
-        });
-    }, true);
+            tag: el && el.tagName ? el.tagName : ''
+        }, payload));
+    }
 
-    document.addEventListener('focusin', function(e) {
-        if (window.__rpa_paused) return;
-        var el = rememberActiveTarget(e.target);
-        if (!el) return;
-        ensureActiveLocatorBundle(el);
-    }, true);
+    if (!window.__rpaPlaywrightActions || !window.__rpaPlaywrightActions.install) {
+        console.warn('[RPA] Recorder action runtime is unavailable');
+        return;
+    }
 
-    document.addEventListener('focusout', function(e) {
-        if (_activeTarget === e.target) {
-            _activeTarget = null;
-            _activeLocatorBundle = null;
-        }
-    }, true);
-
-    document.addEventListener('input', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = rememberActiveTarget(e.target);
-        if (!el) return;
-        var isPassword = el.tagName === 'INPUT' && el.type === 'password';
-        var rawValue = typeof el.value === 'string' ? el.value : (el.textContent || '');
-        var locatorBundle = ensureActiveLocatorBundle(el);
-        if (!locatorBundle) return;
-        emit({
-            action: 'fill',
-            locator: locatorBundle.primary,
-            locator_candidates: locatorBundle.candidates,
-            validation: locatorBundle.validation,
-            element_snapshot: buildElementSnapshot(el),
-            value: isPassword ? '{{credential}}' : rawValue,
-            tag: el.tagName,
-            sensitive: isPassword
-        });
-    }, true);
-
-    document.addEventListener('change', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = e.target;
-        if (!el || el.tagName !== 'SELECT') return;
-        var locatorBundle = buildLocatorBundle(el);
-        emit({
-            action: 'select',
-            locator: locatorBundle.primary,
-            locator_candidates: locatorBundle.candidates,
-            validation: locatorBundle.validation,
-            element_snapshot: buildElementSnapshot(el),
-            value: el.value || '',
-            tag: el.tagName
-        });
-    }, true);
-
-    document.addEventListener('keydown', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        if (e.key === 'Enter') {
-            var el = resolveActiveTarget();
-            if (!el) return;
-            var locatorBundle = ensureActiveLocatorBundle(el);
-            if (!locatorBundle) return;
-            emit({
-                action: 'press',
-                locator: locatorBundle.primary,
-                locator_candidates: locatorBundle.candidates,
-                validation: locatorBundle.validation,
-                element_snapshot: buildElementSnapshot(el),
-                value: 'Enter',
-                tag: el.tagName
-            });
-        }
-    }, true);
+    window.__rpaPlaywrightActions.install({
+        document: document,
+        isPaused: function() { return !!window.__rpa_paused; },
+        retarget: retarget,
+        emitAction: emitAction,
+    });
 
     console.log('[RPA] Event capture injected');
 })();

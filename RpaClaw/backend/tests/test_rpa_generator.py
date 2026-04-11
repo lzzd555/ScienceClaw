@@ -327,6 +327,55 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn("async with current_page.expect_navigation", script)
         self.assertIn('await current_page.get_by_role("textbox", name="Search", exact=True).press("Enter")', script)
 
+    def test_generate_script_uses_check_for_check_action(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "check",
+                "target": json.dumps({"method": "role", "role": "checkbox", "name": "Subscribe"}),
+                "description": "勾选订阅",
+                "tag": "INPUT",
+                "url": "https://example.com/settings",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.get_by_role("checkbox", name="Subscribe", exact=True).check()', script)
+
+    def test_generate_script_uses_uncheck_for_uncheck_action(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "uncheck",
+                "target": json.dumps({"method": "role", "role": "checkbox", "name": "Subscribe"}),
+                "description": "取消勾选订阅",
+                "tag": "INPUT",
+                "url": "https://example.com/settings",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.get_by_role("checkbox", name="Subscribe", exact=True).uncheck()', script)
+
+    def test_generate_script_uses_set_input_files_for_file_action(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "set_input_files",
+                "target": json.dumps({"method": "label", "value": "Upload file"}),
+                "description": "上传文件",
+                "tag": "INPUT",
+                "url": "https://example.com/upload",
+                "value": "report.xlsx",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.get_by_label("Upload file", exact=True).set_input_files(', script)
+
     def test_generate_script_infers_open_tab_click_from_tab_id_change(self):
         generator = PlaywrightGenerator()
         steps = [
