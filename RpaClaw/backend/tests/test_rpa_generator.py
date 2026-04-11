@@ -148,6 +148,85 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn("current_page = new_page", script)
         self.assertIn('await current_page.get_by_role("button", name="Confirm", exact=True).click()', script)
 
+    def test_generate_script_combines_popup_and_download_signals_for_click(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "css", "value": "a.link-special"}),
+                "description": "Click first download link",
+                "tag": "A",
+                "url": "https://example.com",
+                "tab_id": "tab-1",
+                "signals": {
+                    "popup": {"target_tab_id": "tab-2"},
+                    "download": {"filename": "ContractList20260411111546.xlsx"},
+                },
+                "source": "ai",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn("async with current_page.expect_download() as _dl_info:", script)
+        self.assertIn("async with current_page.expect_popup() as popup_info:", script)
+        self.assertIn('await current_page.locator("a.link-special").click()', script)
+        self.assertIn('tabs["tab-2"] = new_page', script)
+        self.assertIn("_dl = await _dl_info.value", script)
+        self.assertIn("_dl_dest = _os.path.join(_dl_dir, _dl.suggested_filename)", script)
+        self.assertIn('_results["download_ContractList20260411111546"]', script)
+        self.assertNotIn("manually wrap the triggering click with expect_download()", script)
+        self.assertNotIn('await new_page.wait_for_load_state("domcontentloaded")', script)
+
+    def test_generate_script_merges_legacy_popup_then_download_steps(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "open_tab_click",
+                "target": json.dumps({"method": "css", "value": "a.link-special"}),
+                "description": "Open first download link in a new tab",
+                "tag": "A",
+                "url": "https://example.com",
+                "tab_id": "tab-1",
+                "target_tab_id": "tab-2",
+            },
+            {
+                "action": "download",
+                "value": "ContractList20260411111546.xlsx",
+                "description": "Download file",
+                "url": "https://example.com/export",
+                "tab_id": "tab-2",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn("async with current_page.expect_download() as _dl_info:", script)
+        self.assertIn("async with current_page.expect_popup() as popup_info:", script)
+        self.assertIn('tabs["tab-2"] = new_page', script)
+        self.assertNotIn('NOTE: download of "ContractList20260411111546.xlsx" was triggered by a previous action', script)
+
+    def test_generate_script_does_not_assume_ai_click_download_without_signal(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "css", "value": "a.link-special"}),
+                "description": "Click first file link",
+                "tag": "A",
+                "url": "https://example.com",
+                "tab_id": "tab-1",
+                "source": "ai",
+                "signals": {},
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.locator("a.link-special").click()', script)
+        self.assertNotIn("expect_download", script)
+        self.assertNotIn("expect_popup", script)
+
     def test_generate_script_switches_back_to_existing_tab(self):
         generator = PlaywrightGenerator()
         steps = [

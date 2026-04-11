@@ -192,28 +192,83 @@ class RPASessionManager:
             await self._upgrade_recent_click_to_open_tab(session_id, opener_tab_id, tab_id)
         return tab_id
 
-    async def _upgrade_recent_click_to_open_tab(self, session_id: str, source_tab_id: str, target_tab_id: str):
+    @classmethod
+    def _step_popup_target_tab_id(cls, step: RPAStep) -> Optional[str]:
+        signals = step.signals if isinstance(step.signals, dict) else {}
+        popup_signal = signals.get("popup")
+        if isinstance(popup_signal, dict):
+            target_tab_id = popup_signal.get("target_tab_id")
+            if isinstance(target_tab_id, str) and target_tab_id:
+                return target_tab_id
+        if step.action == "open_tab_click":
+            return step.target_tab_id
+        return None
+
+    @classmethod
+    def _step_targets_popup_tab(cls, step: RPAStep, tab_id: Optional[str]) -> bool:
+        if not tab_id:
+            return False
+        return cls._step_popup_target_tab_id(step) == tab_id
+
+    @staticmethod
+    def _merge_step_signal(step: RPAStep, signal_name: str, payload: Dict[str, Any]) -> None:
+        signals = dict(step.signals) if isinstance(step.signals, dict) else {}
+        existing = signals.get(signal_name)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        for key, value in payload.items():
+            if value is not None:
+                merged[key] = value
+        signals[signal_name] = merged
+        step.signals = signals
+
+    @staticmethod
+    def _append_step_description(step: RPAStep, suffix: str) -> None:
+        description = step.description or ""
+        if suffix and suffix not in description:
+            step.description = f"{description}{suffix}" if description else suffix.strip()
+
+    def _find_recent_action_step(
+        self,
+        session_id: str,
+        *,
+        tab_id: Optional[str] = None,
+        popup_target_tab_id: Optional[str] = None,
+    ) -> Optional[RPAStep]:
         session = self.sessions.get(session_id)
-        if not session or not session.steps:
-            return
+        if not session:
+            return None
 
         now = datetime.now()
         for step in reversed(session.steps):
             age_s = (now - step.timestamp).total_seconds()
             if age_s > 5:
-                return
-            if step.tab_id != source_tab_id:
+                break
+            if step.action not in {"click", "press", "open_tab_click", "download_click"}:
                 continue
-            if step.action != "click":
-                return
+            if tab_id and step.tab_id == tab_id:
+                return step
+            if popup_target_tab_id and self._step_targets_popup_tab(step, popup_target_tab_id):
+                return step
+        return None
 
-            step.action = "open_tab_click"
-            step.source_tab_id = source_tab_id
-            step.target_tab_id = target_tab_id
-            step.description = f"{step.description} 并在新标签页打开"
-            await self._broadcast_step(session_id, step)
-            logger.debug(f"[RPA] Upgraded click to open_tab_click: source={source_tab_id} target={target_tab_id}")
+    async def _upgrade_recent_click_to_open_tab(self, session_id: str, source_tab_id: str, target_tab_id: str):
+        step = self._find_recent_action_step(session_id, tab_id=source_tab_id)
+        if not step:
             return
+
+        step.source_tab_id = source_tab_id
+        step.target_tab_id = target_tab_id
+        self._merge_step_signal(
+            step,
+            "popup",
+            {
+                "source_tab_id": source_tab_id,
+                "target_tab_id": target_tab_id,
+            },
+        )
+        self._append_step_description(step, " 并在新标签页打开")
+        await self._broadcast_step(session_id, step)
+        logger.debug(f"[RPA] Attached popup signal: source={source_tab_id} target={target_tab_id}")
 
     @staticmethod
     def _describe_switch_tab(tab_id: str, title: str = "") -> str:
@@ -470,16 +525,25 @@ class RPASessionManager:
             suggested = download.suggested_filename
             # Wait briefly for the click step to be recorded before upgrading it
             await asyncio.sleep(0.3)
-            session = self.sessions.get(session_id)
-            if session and session.steps:
-                # Upgrade the most recent click step to a download_click
-                for step in reversed(session.steps):
-                    if step.action == "click" and step.tab_id == tab_id:
-                        step.action = "download_click"
-                        step.value = suggested
-                        step.description = f"下载文件 {suggested}"
-                        await self._broadcast_step(session_id, step)
-                        return
+            tab_meta = self._tab_meta.get(session_id, {}).get(tab_id)
+            opener_tab_id = tab_meta.opener_tab_id if tab_meta else None
+            step = self._find_recent_action_step(session_id, tab_id=tab_id)
+            if not step and opener_tab_id:
+                step = self._find_recent_action_step(session_id, popup_target_tab_id=tab_id)
+            if step:
+                step.value = suggested
+                self._merge_step_signal(
+                    step,
+                    "download",
+                    {
+                        "filename": suggested,
+                        "tab_id": tab_id,
+                        "opener_tab_id": opener_tab_id,
+                    },
+                )
+                self._append_step_description(step, f" 并下载文件 {suggested}")
+                await self._broadcast_step(session_id, step)
+                return
             # Fallback: no preceding click found, record standalone
             evt = {
                 "action": "download",
@@ -926,7 +990,7 @@ class RPASessionManager:
                     and step.sequence < nav_sequence
                     and (
                         step.tab_id == nav_tab_id
-                        or (step.action == "open_tab_click" and step.target_tab_id == nav_tab_id)
+                        or self._step_targets_popup_tab(step, nav_tab_id)
                     )
                 ]
                 if sequence_candidates:
@@ -939,7 +1003,7 @@ class RPASessionManager:
                     if _step_event_ts_ms(step) <= nav_ts
                     and (
                         step.tab_id == nav_tab_id
-                        or (step.action == "open_tab_click" and step.target_tab_id == nav_tab_id)
+                        or self._step_targets_popup_tab(step, nav_tab_id)
                     )
                 ]
                 if timestamp_candidates:
@@ -947,17 +1011,14 @@ class RPASessionManager:
 
             if steps and predecessor is None:
                 for step in reversed(steps):
-                    if step.tab_id == nav_tab_id or (
-                        step.action == "open_tab_click" and step.target_tab_id == nav_tab_id
-                    ):
+                    if step.tab_id == nav_tab_id or self._step_targets_popup_tab(step, nav_tab_id):
                         predecessor = step
                         break
 
             if predecessor:
                 last_step = predecessor
                 if (
-                    last_step.action == "open_tab_click"
-                    and last_step.target_tab_id == nav_tab_id
+                    self._step_targets_popup_tab(last_step, nav_tab_id)
                 ):
                     logger.debug(f"[RPA] Skipping nav after popup open: {evt.get('url', '')[:60]}")
                     return

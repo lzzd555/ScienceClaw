@@ -415,6 +415,42 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step.validation["status"], "ok")
         self.assertEqual(step.validation["details"], "strict unique Playwright text match")
 
+    async def test_popup_download_attaches_signals_to_original_click_step(self):
+        source_page = _FakePage("https://example.com", "Example")
+        source_tab_id = await self.manager.register_page(self.session.id, source_page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": source_tab_id,
+                "tag": "A",
+                "timestamp": 1234567893,
+                "locator": {"method": "css", "value": "a.link-special"},
+            },
+        )
+
+        popup_page = _FakePage("https://example.com/export", "Export", context=source_page.context)
+        popup_tab_id = await self.manager.register_context_page(self.session.id, popup_page, make_active=True)
+
+        step = self.session.steps[-1]
+        self.assertEqual(len(self.session.steps), 1)
+        self.assertEqual(step.action, "click")
+        self.assertEqual(step.tab_id, source_tab_id)
+        self.assertEqual(step.signals["popup"]["target_tab_id"], popup_tab_id)
+
+        await popup_page.handlers["download"](SimpleNamespace(suggested_filename="ContractList20260411111546.xlsx"))
+
+        step = self.session.steps[-1]
+        self.assertEqual(len(self.session.steps), 1)
+        self.assertEqual(step.action, "click")
+        self.assertEqual(step.signals["popup"]["target_tab_id"], popup_tab_id)
+        self.assertEqual(step.signals["download"]["filename"], "ContractList20260411111546.xlsx")
+        self.assertEqual(step.signals["download"]["tab_id"], popup_tab_id)
+        self.assertEqual(step.value, "ContractList20260411111546.xlsx")
+        self.assertNotEqual(step.action, "open_tab_click")
+        self.assertNotEqual(step.action, "download_click")
+
     async def test_select_step_locator_candidate_promotes_target_and_selection(self):
         await self.manager.add_step(
             self.session.id,
@@ -1240,7 +1276,7 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([step.source for step in self.session.steps], ["ai", "record"])
         self.assertEqual([step.value for step in self.session.steps], ["assistant", "user"])
 
-    async def test_register_context_page_upgrades_recent_click_to_open_tab_click(self):
+    async def test_register_context_page_attaches_popup_signal_to_recent_click(self):
         source_page = _FakePage("https://example.com", "Example")
         target_page = _FakePage("https://example.com/new", "Popup", context=source_page.context)
         source_tab_id = await self.manager.register_page(self.session.id, source_page, make_active=True)
@@ -1262,11 +1298,12 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         target_tab_id = await self.manager.register_context_page(self.session.id, target_page, make_active=True)
 
         self.assertEqual(len(self.session.steps), 1)
-        self.assertEqual(self.session.steps[-1].action, "open_tab_click")
+        self.assertEqual(self.session.steps[-1].action, "click")
         self.assertEqual(self.session.steps[-1].source_tab_id, source_tab_id)
         self.assertEqual(self.session.steps[-1].target_tab_id, target_tab_id)
+        self.assertEqual(self.session.steps[-1].signals["popup"]["target_tab_id"], target_tab_id)
 
-    async def test_navigation_after_open_tab_click_is_skipped(self):
+    async def test_navigation_after_popup_signal_click_is_skipped(self):
         source_page = _FakePage("https://example.com", "Example")
         target_page = _FakePage("https://example.com/new", "Popup", context=source_page.context)
         source_tab_id = await self.manager.register_page(self.session.id, source_page, make_active=True)
@@ -1297,7 +1334,8 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(self.session.steps), 1)
-        self.assertEqual(self.session.steps[-1].action, "open_tab_click")
+        self.assertEqual(self.session.steps[-1].action, "click")
+        self.assertEqual(self.session.steps[-1].signals["popup"]["target_tab_id"], target_tab_id)
 
     async def test_navigate_active_tab_normalizes_url_and_updates_metadata(self):
         page = _FakePage("about:blank", "Blank")

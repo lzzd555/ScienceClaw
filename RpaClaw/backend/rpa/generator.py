@@ -114,6 +114,7 @@ if __name__ == "__main__":
         params = params or {}
         deduped = self._deduplicate_steps(steps)
         deduped = self._infer_missing_tab_transitions(deduped)
+        deduped = self._normalize_step_signals(deduped)
         root_tab_id = deduped[0].get("tab_id") if deduped else None
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
@@ -223,16 +224,38 @@ if __name__ == "__main__":
                 # Parse the locator object from target (stored as JSON string)
                 locator = self._build_locator_for_page(target, scope_var)
 
-            if action == "open_tab_click":
-                target_tab_id = step.get("target_tab_id") or step.get("tab_id") or "tab-new"
-                lines.append("    async with current_page.expect_popup() as popup_info:")
-                lines.append(f"        await {locator}.click()")
-                lines.append("    new_page = await popup_info.value")
-                lines.append('    await new_page.wait_for_load_state("domcontentloaded")')
-                lines.append(f'    tabs["{target_tab_id}"] = new_page')
-                lines.append("    current_page = new_page")
+            popup_signal = self._popup_signal(step)
+            download_signal = self._download_signal(step)
+            if action in {"click", "press"} and (popup_signal or download_signal):
+                interaction = f'await {locator}.click()' if action == "click" else f'await {locator}.press("{value}")'
+                outer_indent = "    "
+                if download_signal:
+                    lines.append(f"{outer_indent}async with current_page.expect_download() as _dl_info:")
+                    outer_indent += "    "
+                if popup_signal:
+                    lines.append(f"{outer_indent}async with current_page.expect_popup() as popup_info:")
+                    outer_indent += "    "
+                lines.append(f"{outer_indent}{interaction}")
+
+                if popup_signal:
+                    popup_indent = "    " + ("    " if download_signal else "")
+                    target_tab_id = popup_signal.get("target_tab_id") or step.get("target_tab_id") or "tab-new"
+                    lines.append(f"{popup_indent}new_page = await popup_info.value")
+                    lines.append(f'{popup_indent}tabs["{target_tab_id}"] = new_page')
+                    lines.append(f"{popup_indent}current_page = new_page")
+                    current_tab_id = target_tab_id
+
+                if download_signal:
+                    download_name = download_signal.get("filename") or value or "file"
+                    safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', str(download_name).split('.')[0]) or "file"
+                    lines.append("    _dl = await _dl_info.value")
+                    lines.append("    _dl_dir = kwargs.get('_downloads_dir', '.')")
+                    lines.append("    import os as _os; _os.makedirs(_dl_dir, exist_ok=True)")
+                    lines.append("    _dl_dest = _os.path.join(_dl_dir, _dl.suggested_filename)")
+                    lines.append("    await _dl.save_as(_dl_dest)")
+                    lines.append(f'    _results["download_{safe_name}"] = {{"filename": _dl.suggested_filename, "path": _dl_dest}}')
+
                 lines.append("")
-                current_tab_id = target_tab_id
                 prev_action = action
                 continue
 
@@ -309,8 +332,8 @@ if __name__ == "__main__":
             text = f"extract_{text}"
         return text[:64]
 
-    @staticmethod
-    def _infer_missing_tab_transitions(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @classmethod
+    def _infer_missing_tab_transitions(cls, steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Backfill tab open/switch semantics for older recordings that only carry tab_id."""
         if not steps:
             return steps
@@ -325,8 +348,13 @@ if __name__ == "__main__":
 
             if step_tab_id != current_tab_id:
                 previous_step = normalized[-1] if normalized else None
-                if step_tab_id not in known_tabs and previous_step and previous_step.get("action") == "click":
-                    previous_step["action"] = "open_tab_click"
+                if step_tab_id not in known_tabs and previous_step and previous_step.get("action") in {"click", "press", "open_tab_click"}:
+                    signals = dict(previous_step.get("signals") or {})
+                    popup_signal = dict(signals.get("popup") or {})
+                    popup_signal.setdefault("source_tab_id", current_tab_id)
+                    popup_signal["target_tab_id"] = step_tab_id
+                    signals["popup"] = popup_signal
+                    previous_step["signals"] = signals
                     previous_step["source_tab_id"] = current_tab_id
                     previous_step["target_tab_id"] = step_tab_id
                     known_tabs.add(step_tab_id)
@@ -349,14 +377,102 @@ if __name__ == "__main__":
             if (
                 step.get("action") == "navigate"
                 and previous_step
-                and previous_step.get("action") == "open_tab_click"
-                and previous_step.get("target_tab_id") == step_tab_id
+                and cls._popup_target_tab_id(previous_step) == step_tab_id
             ):
                 continue
 
             normalized.append(step)
 
         return normalized
+
+    @classmethod
+    def _popup_target_tab_id(cls, step: Dict[str, Any]) -> str:
+        signals = step.get("signals") or {}
+        popup_signal = signals.get("popup") if isinstance(signals, dict) else None
+        if isinstance(popup_signal, dict) and popup_signal.get("target_tab_id"):
+            return str(popup_signal.get("target_tab_id"))
+        return str(step.get("target_tab_id") or "")
+
+    @staticmethod
+    def _popup_signal(step: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        signals = step.get("signals")
+        if not isinstance(signals, dict):
+            return None
+        popup_signal = signals.get("popup")
+        if isinstance(popup_signal, dict):
+            return popup_signal
+        return None
+
+    @staticmethod
+    def _download_signal(step: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        signals = step.get("signals")
+        if not isinstance(signals, dict):
+            return None
+        download_signal = signals.get("download")
+        if isinstance(download_signal, dict):
+            return download_signal
+        return None
+
+    @classmethod
+    def _normalize_step_signals(cls, steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for original_step in steps:
+            step = dict(original_step)
+            signals = dict(step.get("signals") or {})
+            action = step.get("action")
+
+            if action == "open_tab_click":
+                popup_signal = dict(signals.get("popup") or {})
+                popup_signal.setdefault("source_tab_id", step.get("source_tab_id") or step.get("tab_id"))
+                if step.get("target_tab_id"):
+                    popup_signal.setdefault("target_tab_id", step.get("target_tab_id"))
+                signals["popup"] = popup_signal
+                step["action"] = "click"
+
+            if action == "download_click":
+                download_signal = dict(signals.get("download") or {})
+                if step.get("value"):
+                    download_signal.setdefault("filename", step.get("value"))
+                if step.get("tab_id"):
+                    download_signal.setdefault("tab_id", step.get("tab_id"))
+                signals["download"] = download_signal
+                step["action"] = "click"
+
+            step["signals"] = signals
+
+            if step.get("action") == "download" and cls._merge_standalone_download_step(normalized, step):
+                continue
+
+            normalized.append(step)
+
+        return normalized
+
+    @classmethod
+    def _merge_standalone_download_step(cls, normalized_steps: List[Dict[str, Any]], download_step: Dict[str, Any]) -> bool:
+        download_tab_id = str(download_step.get("tab_id") or "")
+        download_name = str(download_step.get("value") or "file")
+
+        for previous_step in reversed(normalized_steps):
+            if previous_step.get("action") not in {"click", "press"}:
+                continue
+            previous_tab_id = str(previous_step.get("tab_id") or "")
+            popup_target_tab_id = cls._popup_target_tab_id(previous_step)
+            if download_tab_id and download_tab_id not in {previous_tab_id, popup_target_tab_id}:
+                continue
+
+            signals = dict(previous_step.get("signals") or {})
+            download_signal = dict(signals.get("download") or {})
+            if download_name:
+                download_signal.setdefault("filename", download_name)
+            if download_tab_id:
+                download_signal.setdefault("tab_id", download_tab_id)
+            signals["download"] = download_signal
+            previous_step["signals"] = signals
+            if download_name and not previous_step.get("value"):
+                previous_step["value"] = download_name
+            return True
+
+        return False
 
     @staticmethod
     def _deduplicate_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
