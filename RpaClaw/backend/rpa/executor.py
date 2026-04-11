@@ -90,13 +90,33 @@ class ScriptExecutor:
                 output = f"SKILL_ERROR: Script did not complete within {timeout}s"
                 if on_log:
                     on_log(output)
-                return {"success": False, "output": output, "error": f"Timeout after {timeout}s"}
+                return {"success": False, "output": output, "error": f"Timeout after {timeout}s", "failed_step_index": None}
 
             except Exception as e:
-                output = f"SKILL_ERROR: {e}"
+                failed_step_index = None
+                original_error = str(e)
+
+                error_str = str(e)
+                if "STEP_FAILED:" in error_str:
+                    try:
+                        parts = error_str.split("STEP_FAILED:", 1)[1].split(":", 1)
+                        failed_step_index = int(parts[0])
+                        original_error = parts[1] if len(parts) > 1 else error_str
+                    except (ValueError, IndexError):
+                        pass
+
+                output = f"SKILL_ERROR: {original_error}"
                 if on_log:
-                    on_log(f"Execution failed: {e}")
-                return {"success": False, "output": output, "error": str(e)}
+                    if failed_step_index is not None:
+                        on_log(f"Step {failed_step_index + 1} failed: {original_error}")
+                    else:
+                        on_log(f"Execution failed: {original_error}")
+                return {
+                    "success": False,
+                    "output": output,
+                    "error": original_error,
+                    "failed_step_index": failed_step_index,
+                }
 
             finally:
                 if session_id and page_registry and session_id in page_registry:

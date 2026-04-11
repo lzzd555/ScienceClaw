@@ -131,5 +131,52 @@ async def execute_skill(page, **kwargs):
         self.assertTrue(browser.contexts[0].closed)
 
 
+class StepExecutionErrorTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for STEP_FAILED: parsing in the except Exception block."""
+
+    async def test_execute_returns_failed_step_index_on_step_error(self):
+        executor = EXECUTOR_MODULE.ScriptExecutor()
+        script = '''
+class StepExecutionError(Exception):
+    def __init__(self, step_index, original_error):
+        self.step_index = step_index
+        self.original_error = original_error
+        super().__init__(f"STEP_FAILED:{step_index}:{original_error}")
+
+async def execute_skill(page, **kwargs):
+    raise StepExecutionError(step_index=2, original_error="Timeout 30000ms exceeded")
+'''
+        browser = _FakeBrowser()
+        result = await executor.execute(browser, script)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["failed_step_index"], 2)
+        self.assertEqual(result["error"], "Timeout 30000ms exceeded")
+
+    async def test_execute_returns_none_failed_step_index_on_generic_error(self):
+        executor = EXECUTOR_MODULE.ScriptExecutor()
+        script = '''
+async def execute_skill(page, **kwargs):
+    raise RuntimeError("something broke")
+'''
+        browser = _FakeBrowser()
+        result = await executor.execute(browser, script)
+
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["failed_step_index"])
+
+    async def test_execute_returns_none_failed_step_index_on_success(self):
+        executor = EXECUTOR_MODULE.ScriptExecutor()
+        script = '''
+async def execute_skill(page, **kwargs):
+    return {"ok": True}
+'''
+        browser = _FakeBrowser()
+        result = await executor.execute(browser, script)
+
+        self.assertTrue(result["success"])
+        self.assertIsNone(result.get("failed_step_index"))
+
+
 if __name__ == "__main__":
     unittest.main()

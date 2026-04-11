@@ -685,5 +685,132 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn('_results["extract_text_1"] = extract_text_value_1', script)
 
 
+    def test_generate_script_test_mode_wraps_click_in_try_except(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Submit"}),
+                "description": "点击提交按钮",
+                "url": "https://example.com",
+            }
+        ]
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+        self.assertIn("class StepExecutionError(Exception):", script)
+        self.assertIn("except StepExecutionError:", script)
+        self.assertIn("raise StepExecutionError(step_index=0,", script)
+        self.assertIn('.get_by_role("button", name="Submit", exact=True).click()', script)
+
+    def test_generate_script_test_mode_wraps_navigate_step(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.com",
+                "description": "打开首页",
+            }
+        ]
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+        self.assertIn("raise StepExecutionError(step_index=0,", script)
+        self.assertIn('await current_page.goto("https://example.com")', script)
+
+    def test_generate_script_test_mode_false_produces_unchanged_output(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Go"}),
+                "description": "Click go",
+                "url": "https://example.com",
+            }
+        ]
+        script_normal = generator.generate_script(steps, is_local=True)
+        script_explicit = generator.generate_script(steps, is_local=True, test_mode=False)
+        self.assertEqual(script_normal, script_explicit)
+        self.assertNotIn("StepExecutionError", script_normal)
+
+    def test_generate_script_test_mode_step_index_aligns_after_dedup(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "A"}),
+                "description": "first click",
+                "url": "https://example.com",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "A"}),
+                "description": "duplicate click",
+                "url": "https://example.com",
+            },
+            {
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Search"}),
+                "value": "hello",
+                "description": "fill search",
+                "url": "https://example.com",
+            },
+        ]
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+        self.assertIn("raise StepExecutionError(step_index=0,", script)
+        self.assertIn("raise StepExecutionError(step_index=1,", script)
+        self.assertNotIn("step_index=2", script)
+
+    def test_generate_script_test_mode_reraises_step_execution_error(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "X"}),
+                "description": "click",
+                "url": "https://example.com",
+            }
+        ]
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+        step_error_pos = script.index("except StepExecutionError:")
+        raise_pos = script.index("raise\n", step_error_pos)
+        generic_except_pos = script.index("except Exception as _e:", step_error_pos)
+        self.assertLess(raise_pos, generic_except_pos)
+
+
+    def test_test_mode_script_raises_parseable_step_error_on_missing_locator(self):
+        """Integration: generate a test_mode script, exec it, verify the error carries step_index."""
+        import asyncio
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.com",
+                "description": "打开首页",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Nonexistent"}),
+                "description": "点击不存在的按钮",
+                "url": "https://example.com",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+
+        # Extract execute_skill and StepExecutionError from the generated script
+        namespace = {}
+        exec(compile(script, "<test>", "exec"), namespace)
+        self.assertIn("execute_skill", namespace)
+        self.assertIn("StepExecutionError", namespace)
+
+        StepError = namespace["StepExecutionError"]
+
+        # Verify StepExecutionError message format is parseable
+        err = StepError(step_index=1, original_error="Timeout 30000ms")
+        self.assertIn("STEP_FAILED:1:", str(err))
+        parts = str(err).split("STEP_FAILED:", 1)[1].split(":", 1)
+        self.assertEqual(int(parts[0]), 1)
+        self.assertEqual(parts[1], "Timeout 30000ms")
+
+
 if __name__ == "__main__":
     unittest.main()
