@@ -247,6 +247,7 @@ const runTest = async () => {
   testSuccess.value = false;
   error.value = null;
   testLogs.value = ['正在生成并执行 Playwright 脚本...'];
+  const previousFailedIndex = failedStepIndex.value;
   failedStepIndex.value = null;
   failedStepCandidates.value = [];
   failedStepError.value = '';
@@ -268,7 +269,7 @@ const runTest = async () => {
     generatedScript.value = resp.data.script || '';
     testSuccess.value = result.success !== false;
     const newFailedIndex = resp.data.failed_step_index ?? null;
-    if (newFailedIndex !== failedStepIndex.value) {
+    if (newFailedIndex !== previousFailedIndex) {
       triedCandidateIndices.value = new Set();
     }
     failedStepIndex.value = newFailedIndex;

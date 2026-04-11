@@ -90,7 +90,7 @@ class ScriptExecutor:
                 output = f"SKILL_ERROR: Script did not complete within {timeout}s"
                 if on_log:
                     on_log(output)
-                return {"success": False, "output": output, "error": f"Timeout after {timeout}s"}
+                return {"success": False, "output": output, "error": f"Timeout after {timeout}s", "failed_step_index": None}
 
             except Exception as e:
                 failed_step_index = None

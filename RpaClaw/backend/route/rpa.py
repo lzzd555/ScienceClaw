@@ -457,14 +457,24 @@ async def test_script(
         )
 
     # Extract failed step candidates for locator retry
-    failed_step_index = result.get("failed_step_index")
+    deduped_failed_index = result.get("failed_step_index")
+    failed_step_index = None
     failed_step_candidates = []
-    if failed_step_index is not None:
+    if deduped_failed_index is not None:
         deduped = generator._deduplicate_steps(steps)
         deduped = generator._infer_missing_tab_transitions(deduped)
         deduped = generator._normalize_step_signals(deduped)
-        if 0 <= failed_step_index < len(deduped):
-            failed_step = deduped[failed_step_index]
+        if 0 <= deduped_failed_index < len(deduped):
+            failed_step = deduped[deduped_failed_index]
+            # Map deduped index back to original steps index via step id
+            failed_step_id = failed_step.get("id")
+            if failed_step_id:
+                for orig_i, orig_step in enumerate(steps):
+                    if orig_step.get("id") == failed_step_id:
+                        failed_step_index = orig_i
+                        break
+            if failed_step_index is None:
+                failed_step_index = min(deduped_failed_index, len(steps) - 1)
             candidates = failed_step.get("locator_candidates", [])
             filtered = []
             for orig_idx, c in enumerate(candidates):
