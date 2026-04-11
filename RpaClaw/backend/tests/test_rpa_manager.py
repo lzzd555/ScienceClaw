@@ -373,6 +373,48 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step.validation["status"], "ok")
         self.assertEqual(step.validation["details"], "strict unique css match")
 
+    async def test_handle_event_recovers_target_from_playwright_candidate_when_top_level_locator_missing(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1234567892,
+                "locator_candidates": [
+                    {
+                        "kind": "role",
+                        "score": 0,
+                        "strict_match_count": 0,
+                        "visible_match_count": 0,
+                        "selected": True,
+                        "playwright_locator": 'page.get_by_role("link", name="操作")',
+                        "reason": "selected by stale recorder heuristic",
+                    },
+                    {
+                        "kind": "text",
+                        "score": 1,
+                        "strict_match_count": 1,
+                        "visible_match_count": 1,
+                        "selected": False,
+                        "playwright_locator": 'page.get_by_text("操作", exact=True)',
+                        "reason": "strict unique Playwright text match",
+                    },
+                ],
+                "validation": {"status": "fallback", "details": "selected candidate no longer resolves"},
+            },
+        )
+
+        step = self.session.steps[-1]
+        self.assertEqual(json.loads(step.target), {"method": "text", "value": "操作"})
+        self.assertFalse(step.locator_candidates[0]["selected"])
+        self.assertTrue(step.locator_candidates[1]["selected"])
+        self.assertEqual(step.validation["status"], "ok")
+        self.assertEqual(step.validation["details"], "strict unique Playwright text match")
+
     async def test_select_step_locator_candidate_promotes_target_and_selection(self):
         await self.manager.add_step(
             self.session.id,
@@ -577,18 +619,21 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("var locatorBundle = ensureActiveLocatorBundle(el);", keydown_block)
         self.assertNotIn("var locatorBundle = buildLocatorBundle(el);", keydown_block)
 
-    def test_capture_js_builds_nth_locator_payload_for_ambiguous_candidates(self):
+    def test_capture_js_delegates_locator_bundle_generation_to_vendor_runtime(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        self.assertIn("function buildNthLocator(c, nthIndex)", js)
-        self.assertIn("method:'nth'", js)
-        self.assertIn("index:nthIndex", js)
+        build_locator_block = js.split("function buildLocatorBundle(el)", 1)[1].split(
+            "function buildElementSnapshot", 1
+        )[0]
+        self.assertIn("window.__rpaPlaywrightRecorder.buildLocatorBundle(target)", build_locator_block)
+        self.assertIn("Playwright recorder runtime is unavailable", build_locator_block)
 
-    def test_capture_js_fallback_candidate_uses_real_match_count(self):
+    def test_capture_js_uses_vendor_runtime_for_element_semantics(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        self.assertIn("var primaryMatchCount = countLocatorMatches(primary);", js)
-        fallback_block = js.split("if (!selectedPayload)", 1)[1].split("candidatePayloads.push", 1)[0]
-        self.assertIn("strict_match_count: primaryMatchCount", fallback_block)
-        self.assertNotIn("strict_match_count: 1", fallback_block)
+        snapshot_block = js.split("function buildElementSnapshot(el)", 1)[1].split(
+            "var _lastAction = null;", 1
+        )[0]
+        self.assertIn("window.__rpaPlaywrightRecorder.getRole(el)", snapshot_block)
+        self.assertIn("window.__rpaPlaywrightRecorder.getAccessibleName(el)", snapshot_block)
 
     def test_capture_js_click_listener_does_not_dedupe_same_locator_clicks(self):
         js = MANAGER_MODULE.CAPTURE_JS
@@ -599,15 +644,11 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("now-_lastClick.time<1000", click_block)
         self.assertNotIn("Deduplicate rapid clicks on the same element", click_block)
 
-    def test_capture_js_prefers_strict_candidate_primary_when_generated_locator_is_ambiguous(self):
+    def test_capture_js_uses_vendor_playwright_adapter_for_locator_generation(self):
         js = MANAGER_MODULE.CAPTURE_JS
-        build_locator_block = js.split("function buildLocatorBundle(el)", 1)[1].split(
-            "function buildElementSnapshot", 1
-        )[0]
-        self.assertIn("if (primaryMatchCount !== 1)", build_locator_block)
-        self.assertIn("candidate.strict_match_count !== 1 || !candidate.locator", build_locator_block)
-        self.assertIn("if (candidateScore < strictScore)", build_locator_block)
-        self.assertIn("primary = strictCandidate.locator;", build_locator_block)
+        self.assertIn("__rpaPlaywrightRecorder", js)
+        self.assertNotIn("var ROLE_MAP =", js)
+        self.assertNotIn("function testUnique(", js)
 
     async def test_register_page_bootstraps_context_recorder_once(self):
         context = _FakeContext()
@@ -619,7 +660,10 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(context.exposed_bindings), 1)
         self.assertEqual(context.exposed_bindings[0][0], "__rpa_emit")
-        self.assertEqual(len(context.init_scripts), 1)
+        self.assertEqual(len(context.init_scripts), 2)
+        self.assertEqual(context.init_scripts[0]["path"], str(MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_PATH))
+        self.assertIsNone(context.init_scripts[0]["script"])
+        self.assertEqual(context.init_scripts[1]["script"], MANAGER_MODULE.CAPTURE_JS)
         self.assertEqual(first_page.expose_function_calls, [])
         self.assertEqual(first_page.evaluate_calls, [])
         self.assertEqual(second_page.expose_function_calls, [])

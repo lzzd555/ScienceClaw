@@ -1,8 +1,9 @@
-import json
+﻿import json
 import logging
 import uuid
 import asyncio
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
@@ -73,816 +74,13 @@ class RPASession(BaseModel):
 # ── CAPTURE_JS: injected into pages to capture user events ──────────
 # Calls window.__rpa_emit(JSON.stringify(evt)) which is bridged to
 # Python via page.expose_function().
-CAPTURE_JS = r"""
-(() => {
-    if (window.__rpa_injected) return;
-    window.__rpa_injected = true;
-    window.__rpa_paused = false;
-
-    // ── Score constants (lower = better, mirrors Playwright codegen) ──
-    var S_TESTID=1, S_ROLE_NAME=100, S_PLACEHOLDER=120, S_LABEL=140,
-        S_ALT=160, S_TEXT=180, S_TITLE=200, S_CSS_ID=500,
-        S_ROLE_ONLY=510, S_CSS_ATTR=520, S_CSS_TAG=530,
-        S_NTH=10000, S_FALLBACK=10000000;
-
-    // ── Helpers ─────────────────────────────────────────────────────
-    function norm(s) { return (s||'').replace(/\s+/g,' ').trim(); }
-    function cssEsc(s) {
-        try { return CSS.escape(s); } catch(e) {
-            return s.replace(/([\\"'\[\](){}|^$.*+?])/g,'\\$1');
-        }
-    }
-    function isUnique(sel) {
-        try { return document.querySelectorAll(sel).length===1; }
-        catch(e) { return false; }
-    }
-    // Reject GUID-like IDs (framework-generated)
-    function isGuidLike(id) {
-        var transitions=0;
-        for(var i=1;i<id.length;i++){
-            var a=charType(id[i-1]), b=charType(id[i]);
-            if(a!==b) transitions++;
-        }
-        return transitions >= id.length/4;
-    }
-    function charType(c){
-        if(c>='a'&&c<='z') return 1;
-        if(c>='A'&&c<='Z') return 2;
-        if(c>='0'&&c<='9') return 3;
-        return 4;
-    }
-
-    // ── Element retargeting (walk up to interactive ancestor) ───────
-    var INTERACTIVE = ['BUTTON','A','SELECT','TEXTAREA'];
-    var INTERACTIVE_ROLES = ['button','link','checkbox','radio','tab','menuitem',
-                             'option','switch','combobox'];
-    function retarget(el) {
-        if (['INPUT','TEXTAREA','SELECT'].indexOf(el.tagName)>=0) return el;
-        if (el.isContentEditable) return el;
-        var cur = el;
-        while(cur && cur !== document.body) {
-            if (INTERACTIVE.indexOf(cur.tagName)>=0) return cur;
-            var r = cur.getAttribute('role');
-            if (r && INTERACTIVE_ROLES.indexOf(r)>=0) return cur;
-            cur = cur.parentElement;
-        }
-        return el;  // no interactive ancestor, keep original
-    }
-
-    // ── Accessible name computation ─────────────────────────────────
-    function accessibleName(el) {
-        var a = el.getAttribute('aria-label');
-        if (a) return norm(a);
-        var lblBy = el.getAttribute('aria-labelledby');
-        if (lblBy) {
-            var parts = lblBy.split(/\s+/).map(function(id){
-                var ref = document.getElementById(id);
-                return ref ? norm(ref.textContent) : '';
-            }).filter(Boolean);
-            if (parts.length) return parts.join(' ').substring(0,80);
-        }
-        // For form elements, check associated label
-        if (['INPUT','TEXTAREA','SELECT'].indexOf(el.tagName)>=0) {
-            if (el.id) {
-                var lbl = document.querySelector('label[for="'+cssEsc(el.id)+'"]');
-                if (lbl) return norm(lbl.textContent).substring(0,80);
-            }
-            if (el.closest && el.closest('label'))
-                return norm(el.closest('label').textContent).substring(0,80);
-        }
-        // For buttons/links: inner text
-        if (['BUTTON','A'].indexOf(el.tagName)>=0 || el.getAttribute('role')) {
-            var t = norm(el.textContent);
-            return t.length<=80 ? t : t.substring(0,80);
-        }
-        return '';
-    }
-
-    // ── Role mapping ────────────────────────────────────────────────
-    var ROLE_MAP = {
-        BUTTON:'button', A:'link', H1:'heading', H2:'heading',
-        H3:'heading', H4:'heading', H5:'heading', H6:'heading',
-        SELECT:'combobox', TEXTAREA:'textbox', IMG:'img',
-        NAV:'navigation', MAIN:'main', FORM:'form', TABLE:'table',
-        DIALOG:'dialog'
-    };
-    function getRole(el) {
-        var explicit = el.getAttribute('role');
-        if (explicit) return explicit;
-        if (el.tagName==='INPUT') {
-            var t=(el.getAttribute('type')||'text').toLowerCase();
-            if(t==='checkbox') return 'checkbox';
-            if(t==='radio') return 'radio';
-            if(t==='submit'||t==='button'||t==='reset') return 'button';
-            return 'textbox';
-        }
-        return ROLE_MAP[el.tagName]||null;
-    }
-
-    // ── Score-based locator generator ───────────────────────────────
-    function generateLocator(el) {
-        el = retarget(el);
-        var candidates = [];
-        var tag = el.tagName;
-        var role = getRole(el);
-        var name = accessibleName(el);
-
-        // 1. data-testid / data-test-id / data-test / data-cy
-        var tid = el.getAttribute('data-testid')||el.getAttribute('data-test-id')
-                ||el.getAttribute('data-test')||el.getAttribute('data-cy');
-        if (tid) {
-            var tsel = '[data-testid="'+cssEsc(tid)+'"]';
-            if (!isUnique(tsel)) tsel = '[data-test-id="'+cssEsc(tid)+'"]';
-            candidates.push({s:S_TESTID, m:'testid', v:tid, sel:tsel});
-        }
-
-        // 2. Role + accessible name
-        if (role && name) {
-            candidates.push({s:S_ROLE_NAME, m:'role', role:role, name:name});
-        }
-
-        // 3. Placeholder (for inputs/textareas)
-        var ph = el.getAttribute('placeholder');
-        if (ph) candidates.push({s:S_PLACEHOLDER, m:'placeholder', v:norm(ph).substring(0,80)});
-
-        // 4. Label (for form elements)
-        if (['INPUT','TEXTAREA','SELECT'].indexOf(tag)>=0) {
-            var labelText = '';
-            if (el.id) {
-                var lbl = document.querySelector('label[for="'+cssEsc(el.id)+'"]');
-                if (lbl) labelText = norm(lbl.textContent);
-            }
-            if (!labelText && el.closest && el.closest('label'))
-                labelText = norm(el.closest('label').textContent);
-            if (labelText)
-                candidates.push({s:S_LABEL, m:'label', v:labelText.substring(0,80)});
-        }
-
-        // 5. Alt text (for images)
-        var alt = el.getAttribute('alt');
-        if (alt) candidates.push({s:S_ALT, m:'alt', v:norm(alt).substring(0,80)});
-
-        // 6. Text content (only for short, non-generic elements)
-        if (name && name.length<=50 && ['BUTTON','A','LABEL','OPTION'].indexOf(tag)>=0) {
-            candidates.push({s:S_TEXT, m:'text', v:name});
-        }
-
-        // 7. Title attribute
-        var title = el.getAttribute('title');
-        if (title) candidates.push({s:S_TITLE, m:'title', v:norm(title).substring(0,80)});
-
-        // 8. CSS #id (skip GUID-like)
-        if (el.id && !isGuidLike(el.id)) {
-            candidates.push({s:S_CSS_ID, m:'css', v:'#'+cssEsc(el.id),
-                             sel:'#'+cssEsc(el.id)});
-        }
-
-        // 9. Role without name
-        if (role && !name) {
-            candidates.push({s:S_ROLE_ONLY, m:'role_only', role:role});
-        }
-
-        // 10. CSS [name=...] for form elements
-        var nameAttr = el.getAttribute('name');
-        if (nameAttr) {
-            var nsel = tag.toLowerCase()+'[name="'+cssEsc(nameAttr)+'"]';
-            candidates.push({s:S_CSS_ATTR, m:'css', v:nsel, sel:nsel});
-        }
-
-        // 11. CSS input[type=...]
-        if (tag==='INPUT') {
-            var itype = el.getAttribute('type')||'text';
-            var tsel2 = 'input[type="'+itype+'"]';
-            candidates.push({s:S_CSS_ATTR, m:'css', v:tsel2, sel:tsel2});
-        }
-
-        // 12. CSS tag.class combos
-        if (el.className && typeof el.className==='string') {
-            var classes = el.className.trim().split(/\s+/).filter(function(c){
-                return c && !isGuidLike(c);
-            });
-            for (var ci=1; ci<=Math.min(classes.length,3); ci++) {
-                var csel = tag.toLowerCase()+'.'+classes.slice(0,ci).map(cssEsc).join('.');
-                candidates.push({s:S_CSS_TAG, m:'css', v:csel, sel:csel});
-            }
-        }
-
-        // Sort by score
-        candidates.sort(function(a,b){ return a.s - b.s; });
-
-        // Test uniqueness, pick first unique candidate
-        for (var i=0; i<candidates.length; i++) {
-            var c = candidates[i];
-            if (testUnique(el, c)) return formatCandidate(c);
-        }
-
-        // No unique candidate found — try nesting with parent
-        for (var i=0; i<candidates.length; i++) {
-            var c = candidates[i];
-            var nested = tryNested(el, c);
-            if (nested) return nested;
-        }
-
-        // Absolute fallback: CSS path
-        return {method:'css', value:cssFallback(el)};
-    }
-
-    function collectLocatorCandidates(el) {
-        el = retarget(el);
-        var candidates = [];
-        var candidatePayloads = [];
-        var tag = el.tagName;
-        var role = getRole(el);
-        var name = accessibleName(el);
-
-        var tid = el.getAttribute('data-testid')||el.getAttribute('data-test-id')
-                ||el.getAttribute('data-test')||el.getAttribute('data-cy');
-        if (tid) {
-            var tsel = '[data-testid="'+cssEsc(tid)+'"]';
-            if (!isUnique(tsel)) tsel = '[data-test-id="'+cssEsc(tid)+'"]';
-            candidates.push({s:S_TESTID, m:'testid', v:tid, sel:tsel});
-        }
-        if (role && name) candidates.push({s:S_ROLE_NAME, m:'role', role:role, name:name});
-
-        var ph = el.getAttribute('placeholder');
-        if (ph) candidates.push({s:S_PLACEHOLDER, m:'placeholder', v:norm(ph).substring(0,80)});
-
-        if (['INPUT','TEXTAREA','SELECT'].indexOf(tag)>=0) {
-            var labelText = '';
-            if (el.id) {
-                var lbl = document.querySelector('label[for="'+cssEsc(el.id)+'"]');
-                if (lbl) labelText = norm(lbl.textContent);
-            }
-            if (!labelText && el.closest && el.closest('label'))
-                labelText = norm(el.closest('label').textContent);
-            if (labelText) candidates.push({s:S_LABEL, m:'label', v:labelText.substring(0,80)});
-        }
-
-        var alt = el.getAttribute('alt');
-        if (alt) candidates.push({s:S_ALT, m:'alt', v:norm(alt).substring(0,80)});
-
-        if (name && name.length<=50 && ['BUTTON','A','LABEL','OPTION'].indexOf(tag)>=0) {
-            candidates.push({s:S_TEXT, m:'text', v:name});
-        }
-
-        var title = el.getAttribute('title');
-        if (title) candidates.push({s:S_TITLE, m:'title', v:norm(title).substring(0,80)});
-
-        if (el.id && !isGuidLike(el.id)) {
-            candidates.push({s:S_CSS_ID, m:'css', v:'#'+cssEsc(el.id), sel:'#'+cssEsc(el.id)});
-        }
-        if (role && !name) candidates.push({s:S_ROLE_ONLY, m:'role_only', role:role});
-
-        var nameAttr = el.getAttribute('name');
-        if (nameAttr) {
-            var nsel = tag.toLowerCase()+'[name="'+cssEsc(nameAttr)+'"]';
-            candidates.push({s:S_CSS_ATTR, m:'css', v:nsel, sel:nsel});
-        }
-        if (tag==='INPUT') {
-            var itype = el.getAttribute('type')||'text';
-            var tsel2 = 'input[type="'+itype+'"]';
-            candidates.push({s:S_CSS_ATTR, m:'css', v:tsel2, sel:tsel2});
-        }
-        if (el.className && typeof el.className==='string') {
-            var classes = el.className.trim().split(/\s+/).filter(function(c){
-                return c && !isGuidLike(c);
-            });
-            for (var ci=1; ci<=Math.min(classes.length,3); ci++) {
-                var csel = tag.toLowerCase()+'.'+classes.slice(0,ci).map(cssEsc).join('.');
-                candidates.push({s:S_CSS_TAG, m:'css', v:csel, sel:csel});
-            }
-        }
-
-        candidates.sort(function(a,b){ return a.s - b.s; });
-        for (var i = 0; i < candidates.length; i++) {
-            var payloads = buildCandidateMeta(candidates[i], el);
-            for (var j = 0; j < payloads.length; j++) {
-                candidatePayloads.push(payloads[j]);
-            }
-        }
-        return candidatePayloads;
-    }
-
-    function buildCandidateMeta(c, targetEl) {
-        var matchInfo = collectCandidateMatchInfo(c, targetEl);
-        var payloads = [{
-            kind: c.m,
-            score: c.s,
-            strict_match_count: matchInfo.count,
-            visible_match_count: matchInfo.count,
-            selected: false,
-            locator: formatCandidate(c),
-            reason: matchInfo.count === 1 ? 'strict unique match' : ('strict matches = ' + matchInfo.count)
-        }];
-
-        if (matchInfo.count > 1 && matchInfo.targetIndex >= 0) {
-            payloads.push({
-                kind: 'nth',
-                score: c.s + S_NTH + matchInfo.targetIndex,
-                strict_match_count: 1,
-                visible_match_count: 1,
-                selected: false,
-                locator: buildNthLocator(c, matchInfo.targetIndex),
-                nth: matchInfo.targetIndex,
-                reason: 'strict nth match (' + (matchInfo.targetIndex + 1) + ' of ' + matchInfo.count + ')'
-            });
-        }
-
-        return payloads;
-    }
-
-    function collectCandidateMatchInfo(c, targetEl) {
-        var all = document.querySelectorAll('*');
-        var count = 0;
-        var targetIndex = -1;
-        for (var i = 0; i < all.length; i++) {
-            if (!matchesCandidate(all[i], c)) continue;
-            if (all[i] === targetEl) targetIndex = count;
-            count++;
-        }
-        return {count: count, targetIndex: targetIndex};
-    }
-
-    function countLocatorMatches(locator) {
-        var all = document.querySelectorAll('*');
-        var count = 0;
-        for (var i = 0; i < all.length; i++) {
-            if (matchesLocator(all[i], locator)) count++;
-        }
-        return count;
-    }
-
-    function buildLocatorBundle(el) {
-        var primary = generateLocator(el);
-        var candidatePayloads = collectLocatorCandidates(el);
-        var primaryMatchCount = countLocatorMatches(primary);
-        if (primaryMatchCount !== 1) {
-            var strictCandidate = null;
-            for (var si = 0; si < candidatePayloads.length; si++) {
-                var candidate = candidatePayloads[si];
-                if (candidate.strict_match_count !== 1 || !candidate.locator) continue;
-                if (!strictCandidate) {
-                    strictCandidate = candidate;
-                    continue;
-                }
-                var candidateScore = Number(candidate.score);
-                var strictScore = Number(strictCandidate.score);
-                if (!isFinite(candidateScore)) candidateScore = S_FALLBACK;
-                if (!isFinite(strictScore)) strictScore = S_FALLBACK;
-                if (candidateScore < strictScore) {
-                    strictCandidate = candidate;
-                    continue;
-                }
-                if (candidateScore === strictScore) {
-                    var candidateIsNth = candidate.kind === 'nth'
-                        || (candidate.locator && candidate.locator.method === 'nth');
-                    var strictIsNth = strictCandidate.kind === 'nth'
-                        || (strictCandidate.locator && strictCandidate.locator.method === 'nth');
-                    if (strictIsNth && !candidateIsNth) strictCandidate = candidate;
-                }
-            }
-            if (strictCandidate) {
-                primary = strictCandidate.locator;
-                primaryMatchCount = strictCandidate.strict_match_count;
-            }
-        }
-        var primaryJson = JSON.stringify(primary);
-        var selectedPayload = null;
-
-        for (var i = 0; i < candidatePayloads.length; i++) {
-            if (JSON.stringify(candidatePayloads[i].locator) === primaryJson) {
-                candidatePayloads[i].selected = true;
-                selectedPayload = candidatePayloads[i];
-                break;
-            }
-        }
-
-        if (!selectedPayload) {
-            selectedPayload = {
-                kind: primary.method || 'css',
-                score: S_FALLBACK,
-                strict_match_count: primaryMatchCount,
-                visible_match_count: primaryMatchCount,
-                selected: true,
-                locator: primary,
-                reason: primaryMatchCount === 1
-                    ? 'strict unique generated locator'
-                    : (primary.method === 'nested'
-                        ? 'scoped parent-child fallback'
-                        : ('generated locator strict matches = ' + primaryMatchCount))
-            };
-            candidatePayloads.push(selectedPayload);
-        }
-
-        return {
-            primary: primary,
-            candidates: candidatePayloads,
-            validation: {
-                status: selectedPayload.strict_match_count === 1 ? 'ok' : 'fallback',
-                details: selectedPayload.reason
-            }
-        };
-    }
-
-    function buildElementSnapshot(el) {
-        el = retarget(el);
-        var text = norm(el.textContent || '');
-        return {
-            tag: el.tagName.toLowerCase(),
-            role: getRole(el) || '',
-            name: accessibleName(el) || '',
-            text: text.substring(0, 120),
-            id: el.id || '',
-            classes: (typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean) : []).slice(0, 6),
-            type: el.getAttribute('type') || '',
-            placeholder: norm(el.getAttribute('placeholder') || ''),
-            title: norm(el.getAttribute('title') || ''),
-            name_attr: el.getAttribute('name') || ''
-        };
-    }
-
-    function testUnique(el, c) {
-        if (c.m==='role' || c.m==='role_only') {
-            // Count elements with same role+name
-            var all = document.querySelectorAll('*');
-            var count=0;
-            for(var i=0;i<all.length;i++){
-                if(getRole(all[i])===c.role){
-                    if(c.m==='role_only' || accessibleName(all[i])===c.name){
-                        count++;
-                        if(count>1) return false;
-                    }
-                }
-            }
-            return count===1;
-        }
-        if (c.m==='text') {
-            // Check text uniqueness
-            var all2 = document.querySelectorAll('*');
-            var count2=0;
-            for(var j=0;j<all2.length;j++){
-                var t=norm(all2[j].textContent);
-                if(t===c.v && all2[j].children.length===0){
-                    count2++;
-                    if(count2>1) return false;
-                }
-            }
-            return count2===1;
-        }
-        if (c.m==='placeholder'||c.m==='label'||c.m==='alt'||c.m==='title'||c.m==='testid') {
-            // These are generally unique enough, but verify
-            var attr = c.m==='testid'?'data-testid':c.m;
-            if (c.m==='label') return true; // label association is usually unique
-            if (c.m==='placeholder') {
-                var pAll = document.querySelectorAll('[placeholder]');
-                var pc=0;
-                for(var k=0;k<pAll.length;k++){
-                    if(norm(pAll[k].getAttribute('placeholder'))===c.v){pc++;if(pc>1)return false;}
-                }
-                return pc===1;
-            }
-            return true;
-        }
-        // CSS-based: use querySelectorAll
-        if (c.sel) return isUnique(c.sel);
-        return false;
-    }
-
-    function formatCandidate(c) {
-        if (c.m==='role') return {method:'role', role:c.role, name:c.name};
-        if (c.m==='role_only') return {method:'role', role:c.role, name:''};
-        if (c.m==='testid') return {method:'testid', value:c.v};
-        if (c.m==='placeholder') return {method:'placeholder', value:c.v};
-        if (c.m==='label') return {method:'label', value:c.v};
-        if (c.m==='alt') return {method:'alt', value:c.v};
-        if (c.m==='text') return {method:'text', value:c.v};
-        if (c.m==='title') return {method:'title', value:c.v};
-        if (c.m==='css') return {method:'css', value:c.v};
-        return {method:'css', value:'body'};
-    }
-
-    function buildNthLocator(c, nthIndex) {
-        return {method:'nth', locator:formatCandidate(c), index:nthIndex};
-    }
-
-    function matchesCandidate(el, c) {
-        if (!el || !c) return false;
-        if (c.m === 'role' || c.m === 'role_only') {
-            if (getRole(el) !== c.role) return false;
-            return c.m === 'role_only' || accessibleName(el) === c.name;
-        }
-        if (c.m === 'testid') {
-            var tid = el.getAttribute('data-testid') || el.getAttribute('data-test-id')
-                || el.getAttribute('data-test') || el.getAttribute('data-cy') || '';
-            return norm(tid) === c.v;
-        }
-        if (c.m === 'placeholder') return norm(el.getAttribute('placeholder')) === c.v;
-        if (c.m === 'label') return accessibleName(el) === c.v;
-        if (c.m === 'alt') return norm(el.getAttribute('alt')) === c.v;
-        if (c.m === 'title') return norm(el.getAttribute('title')) === c.v;
-        if (c.m === 'text') return norm(el.textContent) === c.v && el.children.length === 0;
-        if (c.m === 'css' && c.sel) {
-            try { return el.matches(c.sel); } catch(e) { return false; }
-        }
-        return false;
-    }
-
-    function matchesLocator(el, locator) {
-        if (!el || !locator || typeof locator !== 'object') return false;
-        var method = locator.method || 'css';
-
-        if (method === 'nested') {
-            var child = locator.child || {};
-            var parent = locator.parent || {};
-            if (!matchesLocator(el, child)) return false;
-            var cur = el.parentElement;
-            while (cur) {
-                if (matchesLocator(cur, parent)) return true;
-                cur = cur.parentElement;
-            }
-            return false;
-        }
-
-        if (method === 'nth') {
-            var base = locator.locator || locator.base;
-            var index = parseInt(locator.index, 10);
-            if (!base || isNaN(index) || index < 0) return false;
-            var all = document.querySelectorAll('*');
-            var matchedIndex = 0;
-            for (var i = 0; i < all.length; i++) {
-                if (!matchesLocator(all[i], base)) continue;
-                if (all[i] === el) return matchedIndex === index;
-                matchedIndex++;
-            }
-            return false;
-        }
-
-        if (method === 'role') {
-            var role = locator.role || '';
-            var name = locator.name || '';
-            if (getRole(el) !== role) return false;
-            if (!name) return true;
-            return accessibleName(el) === name;
-        }
-
-        if (method === 'testid') {
-            var tid = el.getAttribute('data-testid') || el.getAttribute('data-test-id')
-                || el.getAttribute('data-test') || el.getAttribute('data-cy') || '';
-            return norm(tid) === norm(locator.value || '');
-        }
-
-        if (method === 'placeholder') return norm(el.getAttribute('placeholder')) === norm(locator.value || '');
-        if (method === 'label') return accessibleName(el) === norm(locator.value || '');
-        if (method === 'alt') return norm(el.getAttribute('alt')) === norm(locator.value || '');
-        if (method === 'title') return norm(el.getAttribute('title')) === norm(locator.value || '');
-        if (method === 'text') return norm(el.textContent) === norm(locator.value || '') && el.children.length === 0;
-        if (method === 'css') {
-            var selector = locator.value || '';
-            try { return !!selector && el.matches(selector); } catch(e) { return false; }
-        }
-        return false;
-    }
-
-    function countNestedMatches(parentMatcher, childCandidate, targetEl) {
-        var all = document.querySelectorAll('*');
-        var count = 0;
-        var targetMatched = false;
-        for (var i = 0; i < all.length; i++) {
-            var parentEl = all[i];
-            if (!parentMatcher(parentEl)) continue;
-            var descendants = parentEl.querySelectorAll('*');
-            for (var j = 0; j < descendants.length; j++) {
-                var childEl = descendants[j];
-                if (!matchesCandidate(childEl, childCandidate)) continue;
-                count++;
-                if (childEl === targetEl) targetMatched = true;
-                if (count > 1 && targetMatched) return {count: count, targetMatched: true};
-            }
-        }
-        return {count: count, targetMatched: targetMatched};
-    }
-
-    // Try parent >> child nesting for non-unique candidates
-    function tryNested(el, c) {
-        var parent = el.parentElement;
-        for (var depth=0; depth<3 && parent && parent!==document.body; depth++) {
-            // Try parent with id
-            if (parent.id && !isGuidLike(parent.id)) {
-                var psel = '#'+cssEsc(parent.id);
-                if (c.m === 'css' && c.sel) {
-                    var combo = psel+' '+c.sel;
-                    if (isUnique(combo)) return {method:'css', value:combo};
-                }
-                var byIdNested = countNestedMatches(function(parentEl) {
-                    return parentEl.id === parent.id;
-                }, c, el);
-                if (byIdNested.count === 1 && byIdNested.targetMatched) {
-                    return {method:'nested', parent:{method:'css', value:psel}, child:formatCandidate(c)};
-                }
-            }
-            // Try parent role
-            var pRole = getRole(parent);
-            var pName = accessibleName(parent);
-            if (pRole && pName) {
-                var byRoleNested = countNestedMatches(function(parentEl) {
-                    return getRole(parentEl) === pRole && accessibleName(parentEl) === pName;
-                }, c, el);
-                if (byRoleNested.count === 1 && byRoleNested.targetMatched) {
-                    return {method:'nested', parent:{method:'role',role:pRole,name:pName},
-                            child:formatCandidate(c)};
-                }
-            }
-            parent = parent.parentElement;
-        }
-        return null;
-    }
-
-    // CSS path fallback: walk up using id > nth-child
-    function cssFallback(el) {
-        var parts = [];
-        var cur = el;
-        while (cur && cur!==document.body && cur!==document.documentElement) {
-            var seg = cur.tagName.toLowerCase();
-            if (cur.id && !isGuidLike(cur.id)) {
-                parts.unshift('#'+cssEsc(cur.id));
-                break;
-            }
-            // nth-child
-            if (cur.parentElement) {
-                var sibs = cur.parentElement.children;
-                var idx=0;
-                for(var i=0;i<sibs.length;i++){
-                    if(sibs[i].tagName===cur.tagName) idx++;
-                    if(sibs[i]===cur) break;
-                }
-                var sameTag=0;
-                for(var j=0;j<sibs.length;j++){
-                    if(sibs[j].tagName===cur.tagName) sameTag++;
-                }
-                if(sameTag>1) seg += ':nth-of-type('+idx+')';
-            }
-            parts.unshift(seg);
-            cur = cur.parentElement;
-            if (parts.length>=4) break;  // limit depth
-        }
-        return parts.join(' > ');
-    }
-
-    function describeFrameElement(frameEl) {
-        if (!frameEl) return 'iframe';
-        var tag = (frameEl.tagName || 'iframe').toLowerCase();
-        var name = frameEl.getAttribute('name');
-        if (name) return tag + '[name="' + cssEsc(name) + '"]';
-        var title = frameEl.getAttribute('title');
-        if (title) return tag + '[title="' + cssEsc(title) + '"]';
-        if (frameEl.id && !isGuidLike(frameEl.id)) return tag + '#' + cssEsc(frameEl.id);
-        var src = frameEl.getAttribute('src');
-        if (src) return tag + '[src="' + cssEsc(src) + '"]';
-        return cssFallback(frameEl);
-    }
-
-    function getFramePath() {
-        var path = [];
-        var currentWindow = window;
-        try {
-            while (currentWindow && currentWindow !== currentWindow.parent) {
-                var frameEl = currentWindow === window ? window.frameElement : currentWindow.frameElement;
-                if (!frameEl) break;
-                path.unshift(describeFrameElement(frameEl));
-                currentWindow = currentWindow.parent;
-            }
-        } catch (e) {
-            // Cross-origin access can break parent traversal; keep collected path.
-        }
-        return path;
-    }
-
-    // ── Navigation deduplication ────────────────────────────────────
-    var _lastAction = null;  // {action, time}
-    var _eventSequence = 0;
-    var _activeTarget = null;
-    var _activeLocatorBundle = null;
-
-    function rememberActiveTarget(el) {
-        if (!el) return null;
-        var target = retarget(el);
-        if (_activeTarget !== target) {
-            _activeTarget = target;
-            _activeLocatorBundle = null;
-        }
-        return _activeTarget;
-    }
-
-    function resolveActiveTarget() {
-        if (_activeTarget && _activeTarget.isConnected) return _activeTarget;
-        if (document.activeElement && document.activeElement !== document.body) {
-            return rememberActiveTarget(document.activeElement);
-        }
-        return null;
-    }
-
-    function ensureActiveLocatorBundle(el) {
-        var target = el ? rememberActiveTarget(el) : resolveActiveTarget();
-        if (!target) return null;
-        if (!_activeLocatorBundle) _activeLocatorBundle = buildLocatorBundle(target);
-        return _activeLocatorBundle;
-    }
-
-    function emit(evt) {
-        evt.timestamp = Date.now();
-        _eventSequence += 1;
-        evt.sequence = _eventSequence;
-        evt.url = location.href;
-        evt.frame_path = getFramePath();
-        _lastAction = {action:evt.action, time:evt.timestamp};
-        window.__rpa_emit(JSON.stringify(evt));
-    }
-
-    // ── Event listeners ─────────────────────────────────────────────
-    document.addEventListener('click', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = e.target;
-        rememberActiveTarget(el);
-        // Skip clicks on SELECT/OPTION (handled by change event)
-        if (el.tagName==='SELECT'||el.tagName==='OPTION') return;
-        var locatorBundle = buildLocatorBundle(el);
-        emit({
-            action:'click',
-            locator:locatorBundle.primary,
-            locator_candidates:locatorBundle.candidates,
-            validation:locatorBundle.validation,
-            element_snapshot:buildElementSnapshot(el),
-            tag:retarget(el).tagName
-        });
-    }, true);
-
-    document.addEventListener('focusin', function(e) {
-        if (window.__rpa_paused) return;
-        var el = rememberActiveTarget(e.target);
-        if (!el) return;
-        ensureActiveLocatorBundle(el);
-    }, true);
-
-    document.addEventListener('focusout', function(e) {
-        if (_activeTarget === e.target) {
-            _activeTarget = null;
-            _activeLocatorBundle = null;
-        }
-    }, true);
-
-    document.addEventListener('input', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = rememberActiveTarget(e.target);
-        if (!el) return;
-        var isPassword = (el.tagName === 'INPUT' && el.type === 'password');
-        var rawValue = (typeof el.value === 'string') ? el.value : (el.textContent || '');
-        var locatorBundle = ensureActiveLocatorBundle(el);
-        if (!locatorBundle) return;
-        emit({action:'fill', locator:locatorBundle.primary,
-              locator_candidates:locatorBundle.candidates,
-              validation:locatorBundle.validation,
-              element_snapshot:buildElementSnapshot(el),
-              value: isPassword ? '{{credential}}' : rawValue,
-              tag:el.tagName,
-              sensitive: isPassword});
-    }, true);
-
-    document.addEventListener('change', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        var el = e.target;
-        if (el.tagName === 'SELECT') {
-            var locatorBundle = buildLocatorBundle(el);
-            emit({action:'select', locator:locatorBundle.primary,
-                  locator_candidates:locatorBundle.candidates,
-                  validation:locatorBundle.validation,
-                  element_snapshot:buildElementSnapshot(el),
-                  value:el.value||'', tag:el.tagName});
-        }
-    }, true);
-
-    document.addEventListener('keydown', function(e) {
-        if (!e.isTrusted) return;
-        if (window.__rpa_paused) return;
-        if (e.key === 'Enter') {
-            var el = resolveActiveTarget();
-            if (!el) return;
-            var locatorBundle = ensureActiveLocatorBundle(el);
-            if (!locatorBundle) return;
-            emit({action:'press', locator:locatorBundle.primary,
-                  locator_candidates:locatorBundle.candidates,
-                  validation:locatorBundle.validation,
-                  element_snapshot:buildElementSnapshot(el),
-                  value:'Enter', tag:el.tagName});
-        }
-    }, true);
-
-    console.log('[RPA] Event capture injected');
-})();
-"""
-
+# CAPTURE_JS is loaded from vendor-managed assets so the browser recorder can
+# reuse Playwright upstream selector logic without keeping a large JavaScript
+# blob inline in Python.
+RPA_VENDOR_DIR = Path(__file__).with_name("vendor")
+PLAYWRIGHT_RECORDER_RUNTIME_PATH = RPA_VENDOR_DIR / "playwright_recorder_runtime.js"
+CAPTURE_SCRIPT_PATH = RPA_VENDOR_DIR / "playwright_recorder_capture.js"
+CAPTURE_JS = CAPTURE_SCRIPT_PATH.read_text(encoding="utf-8")
 
 class RPASessionManager:
     def __init__(self):
@@ -1226,6 +424,7 @@ class RPASessionManager:
                 logger.error(f"[RPA] binding emit error: {e}")
 
         await context.expose_binding("__rpa_emit", rpa_emit, handle=False)
+        await context.add_init_script(path=str(PLAYWRIGHT_RECORDER_RUNTIME_PATH))
         await context.add_init_script(script=CAPTURE_JS)
         bridged_context_ids.add(context_key)
 
@@ -1338,34 +537,99 @@ class RPASessionManager:
     def _parse_playwright_locator_expression(cls, expression: str) -> Optional[Dict[str, Any]]:
         if not expression:
             return None
-        text = expression.strip()
-        locator_match = re.fullmatch(r'page\.locator\("((?:\\.|[^"\\])*)"\)', text)
-        if locator_match:
-            return {"method": "css", "value": cls._unescape_playwright_literal(locator_match.group(1))}
+        remaining = expression.strip()
+        if remaining.startswith("page."):
+            remaining = remaining[5:]
 
-        role_match = re.fullmatch(
-            r'page\.get_by_role\("((?:\\.|[^"\\])*)"(?:,\s*name="((?:\\.|[^"\\])*)"(?:,\s*exact=True)?)?\)',
-            text,
+        current: Optional[Dict[str, Any]] = None
+        value_patterns = (
+            ("testid", r'get_by_test_id\("((?:\\.|[^"\\])*)"\)'),
+            ("label", r'get_by_label\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("placeholder", r'get_by_placeholder\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("alt", r'get_by_alt_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("title", r'get_by_title\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
+            ("text", r'get_by_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
         )
-        if role_match:
-            role = cls._unescape_playwright_literal(role_match.group(1))
-            name = cls._unescape_playwright_literal(role_match.group(2)) if role_match.group(2) is not None else ""
-            return {"method": "role", "role": role, "name": name}
 
-        one_arg_patterns = (
-            ("testid", r'page\.get_by_test_id\("((?:\\.|[^"\\])*)"\)'),
-            ("label", r'page\.get_by_label\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
-            ("placeholder", r'page\.get_by_placeholder\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
-            ("alt", r'page\.get_by_alt_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
-            ("title", r'page\.get_by_title\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
-            ("text", r'page\.get_by_text\("((?:\\.|[^"\\])*)"(?:,\s*exact=True)?\)'),
-        )
-        for method, pattern in one_arg_patterns:
-            match = re.fullmatch(pattern, text)
-            if match:
-                return {"method": method, "value": cls._unescape_playwright_literal(match.group(1))}
+        while remaining:
+            matched_text = ""
+            step: Optional[Dict[str, Any]] = None
 
-        return None
+            if current is None:
+                locator_match = re.match(r'locator\("((?:\\.|[^"\\])*)"\)', remaining)
+                if locator_match:
+                    matched_text = locator_match.group(0)
+                    step = {"method": "css", "value": cls._unescape_playwright_literal(locator_match.group(1))}
+                else:
+                    role_match = re.match(
+                        r'get_by_role\("((?:\\.|[^"\\])*)"(?:,\s*name="((?:\\.|[^"\\])*)"(?:,\s*exact=True)?)?\)',
+                        remaining,
+                    )
+                    if role_match:
+                        matched_text = role_match.group(0)
+                        step = {
+                            "method": "role",
+                            "role": cls._unescape_playwright_literal(role_match.group(1)),
+                            "name": (
+                                cls._unescape_playwright_literal(role_match.group(2))
+                                if role_match.group(2) is not None
+                                else ""
+                            ),
+                        }
+                    else:
+                        for method, pattern in value_patterns:
+                            match = re.match(pattern, remaining)
+                            if not match:
+                                continue
+                            matched_text = match.group(0)
+                            step = {"method": method, "value": cls._unescape_playwright_literal(match.group(1))}
+                            break
+            else:
+                nth_match = re.match(r'\.nth\((\d+)\)', remaining)
+                if nth_match:
+                    matched_text = nth_match.group(0)
+                    current = {
+                        "method": "nth",
+                        "locator": current,
+                        "index": int(nth_match.group(1)),
+                    }
+                else:
+                    locator_match = re.match(r'\.locator\("((?:\\.|[^"\\])*)"\)', remaining)
+                    if locator_match:
+                        matched_text = locator_match.group(0)
+                        step = {"method": "css", "value": cls._unescape_playwright_literal(locator_match.group(1))}
+                    else:
+                        role_match = re.match(
+                            r'\.get_by_role\("((?:\\.|[^"\\])*)"(?:,\s*name="((?:\\.|[^"\\])*)"(?:,\s*exact=True)?)?\)',
+                            remaining,
+                        )
+                        if role_match:
+                            matched_text = role_match.group(0)
+                            step = {
+                                "method": "role",
+                                "role": cls._unescape_playwright_literal(role_match.group(1)),
+                                "name": (
+                                    cls._unescape_playwright_literal(role_match.group(2))
+                                    if role_match.group(2) is not None
+                                    else ""
+                                ),
+                            }
+                        else:
+                            for method, pattern in value_patterns:
+                                match = re.match(r"\." + pattern, remaining)
+                                if not match:
+                                    continue
+                                matched_text = match.group(0)
+                                step = {"method": method, "value": cls._unescape_playwright_literal(match.group(1))}
+                                break
+
+            if not matched_text:
+                return None
+            if step is not None:
+                current = step if current is None else {"method": "nested", "parent": current, "child": step}
+            remaining = remaining[len(matched_text):]
+
+        return current
 
     @classmethod
     def _resolve_candidate_locator(cls, candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -1393,7 +657,9 @@ class RPASessionManager:
         if locator is None:
             selector = candidate.get("selector")
             if isinstance(selector, str) and selector.strip():
-                locator = {"method": "css", "value": selector.strip()}
+                normalized_selector = selector.strip()
+                if "internal:" not in normalized_selector:
+                    locator = {"method": "css", "value": normalized_selector}
 
         if not isinstance(locator, dict):
             raise ValueError("Locator candidate is missing locator payload")
@@ -1470,13 +736,10 @@ class RPASessionManager:
     def _normalize_event_locator_payload(cls, evt: Dict[str, Any]) -> None:
         locator = evt.get("locator")
         locator_candidates = evt.get("locator_candidates")
-        if not isinstance(locator, dict) or not isinstance(locator_candidates, list) or not locator_candidates:
+        if not isinstance(locator_candidates, list) or not locator_candidates:
             return
 
         best_candidate_info = cls._pick_best_strict_candidate(locator_candidates)
-        if best_candidate_info is None:
-            return
-        best_index, best_candidate, best_locator = best_candidate_info
 
         selected_index: Optional[int] = None
         for index, candidate in enumerate(locator_candidates):
@@ -1484,7 +747,7 @@ class RPASessionManager:
                 selected_index = index
                 break
 
-        if selected_index is None:
+        if selected_index is None and isinstance(locator, dict):
             locator_json = json.dumps(locator, sort_keys=True)
             for index, candidate in enumerate(locator_candidates):
                 if not isinstance(candidate, dict):
@@ -1496,6 +759,28 @@ class RPASessionManager:
                 if json.dumps(candidate_locator, sort_keys=True) == locator_json:
                     selected_index = index
                     break
+
+        selected_candidate_info: Optional[tuple[int, Dict[str, Any], Dict[str, Any]]] = None
+        if selected_index is not None and 0 <= selected_index < len(locator_candidates):
+            selected_candidate = locator_candidates[selected_index]
+            if isinstance(selected_candidate, dict):
+                try:
+                    selected_locator = cls._resolve_candidate_locator(selected_candidate)
+                except ValueError:
+                    selected_locator = None
+                if isinstance(selected_locator, dict):
+                    selected_candidate_info = (selected_index, selected_candidate, selected_locator)
+
+        if not isinstance(locator, dict):
+            candidate_info = best_candidate_info or selected_candidate_info
+            if candidate_info is None:
+                return
+            cls._apply_candidate_selection(evt, locator_candidates, *candidate_info)
+            return
+
+        if best_candidate_info is None:
+            return
+        best_index, best_candidate, best_locator = best_candidate_info
 
         should_promote = False
         if selected_index is not None:
@@ -1522,25 +807,40 @@ class RPASessionManager:
         if not should_promote:
             return
 
+        cls._apply_candidate_selection(evt, locator_candidates, best_index, best_candidate, best_locator)
+
+    @classmethod
+    def _apply_candidate_selection(
+        cls,
+        evt: Dict[str, Any],
+        locator_candidates: List[Dict[str, Any]],
+        selected_index: int,
+        selected_candidate: Dict[str, Any],
+        selected_locator: Dict[str, Any],
+    ) -> None:
         normalized_candidates: List[Dict[str, Any]] = []
         for index, candidate in enumerate(locator_candidates):
             if not isinstance(candidate, dict):
                 continue
             normalized = dict(candidate)
-            normalized["selected"] = index == best_index
-            if index == best_index:
-                normalized["locator"] = best_locator
+            normalized["selected"] = index == selected_index
+            if index == selected_index:
+                normalized["locator"] = selected_locator
             normalized_candidates.append(normalized)
 
-        evt["locator"] = best_locator
+        evt["locator"] = selected_locator
         evt["locator_candidates"] = normalized_candidates
         validation = evt.get("validation")
         normalized_validation = dict(validation) if isinstance(validation, dict) else {}
-        normalized_validation["status"] = "ok"
-        if best_candidate.get("reason"):
-            normalized_validation["details"] = best_candidate["reason"]
-        normalized_validation["selected_candidate_index"] = best_index
-        normalized_validation["selected_candidate_kind"] = best_candidate.get("kind", "")
+        strict_match_count = selected_candidate.get("strict_match_count")
+        if isinstance(strict_match_count, int):
+            normalized_validation["status"] = "ok" if strict_match_count == 1 else "fallback"
+        elif "status" not in normalized_validation:
+            normalized_validation["status"] = "ok"
+        if selected_candidate.get("reason"):
+            normalized_validation["details"] = selected_candidate["reason"]
+        normalized_validation["selected_candidate_index"] = selected_index
+        normalized_validation["selected_candidate_kind"] = selected_candidate.get("kind", "")
         evt["validation"] = normalized_validation
 
     async def select_step_locator_candidate(self, session_id: str, step_index: int, candidate_index: int) -> RPAStep:
@@ -1863,3 +1163,4 @@ class RPASessionManager:
 
 # ── Global instance ──────────────────────────────────────────────────
 rpa_manager = RPASessionManager()
+
