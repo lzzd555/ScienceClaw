@@ -3,9 +3,15 @@
 import inspect
 import json
 import re
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .assistant_resolution import pick_expansion_container
+from .assistant_snapshot_runtime import SNAPSHOT_V2_JS
 from .frame_selectors import build_frame_path
+
+RPA_VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
+PLAYWRIGHT_RECORDER_RUNTIME_JS = (RPA_VENDOR_DIR / "playwright_recorder_runtime.js").read_text(encoding="utf-8")
 
 
 EXTRACT_ELEMENTS_JS = r"""() => {
@@ -149,6 +155,31 @@ async def _extract_frame_elements(frame) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+async def _extract_frame_snapshot_v2(frame) -> Dict[str, Any]:
+    try:
+        ready = await frame.evaluate("() => !!globalThis.__rpaPlaywrightRecorder")
+        if not ready:
+            await frame.evaluate(PLAYWRIGHT_RECORDER_RUNTIME_JS)
+        raw = await frame.evaluate(SNAPSHOT_V2_JS)
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        return {
+            "actionable_nodes": list(data.get("actionable_nodes") or []),
+            "content_nodes": list(data.get("content_nodes") or []),
+            "containers": list(data.get("containers") or []),
+        }
+
+    elements = await _extract_frame_elements(frame)
+    return {
+        "actionable_nodes": [],
+        "content_nodes": [],
+        "containers": [],
+        "elements": elements,
+    }
+
+
 def _is_detached_frame_error(exc: Exception) -> bool:
     text = str(exc or "").lower()
     return "frame has been detached" in text or "frame was detached" in text
@@ -212,24 +243,55 @@ async def build_frame_path_from_frame(frame) -> List[str]:
 
 async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) -> Dict[str, Any]:
     frames: List[Dict[str, Any]] = []
+    actionable_nodes: List[Dict[str, Any]] = []
+    content_nodes: List[Dict[str, Any]] = []
+    containers: List[Dict[str, Any]] = []
 
     async def walk(frame) -> None:
         try:
             frame_path = await _resolve_frame_path(frame, frame_path_builder)
-            elements = await _extract_frame_elements(frame)
+            snapshot_v2 = await _extract_frame_snapshot_v2(frame)
+            elements = list(snapshot_v2.get("elements") or [])
+            if not elements:
+                elements = await _extract_frame_elements(frame)
         except Exception as exc:
             if _is_detached_frame_error(exc):
                 return
             raise
+        frame_actionable_nodes = [
+            {
+                **node,
+                "frame_path": list(node.get("frame_path") or frame_path),
+            }
+            for node in list(snapshot_v2.get("actionable_nodes") or [])
+        ]
+        frame_content_nodes = [
+            {
+                **node,
+                "frame_path": list(node.get("frame_path") or frame_path),
+            }
+            for node in list(snapshot_v2.get("content_nodes") or [])
+        ]
+        frame_containers = [
+            {
+                **container,
+                "frame_path": list(container.get("frame_path") or frame_path),
+            }
+            for container in list(snapshot_v2.get("containers") or [])
+        ]
+        collections = _detect_collections(elements, frame_path)
         frames.append(
             {
                 "frame_path": frame_path,
                 "url": getattr(frame, "url", ""),
                 "frame_hint": "main document" if not frame_path else " -> ".join(frame_path),
-                "elements": elements,
-                "collections": _detect_collections(elements, frame_path),
+                "elements": elements or frame_actionable_nodes,
+                "collections": collections,
             }
         )
+        actionable_nodes.extend(frame_actionable_nodes)
+        content_nodes.extend(frame_content_nodes)
+        containers.extend(frame_containers)
         for child in getattr(frame, "child_frames", []):
             await walk(child)
 
@@ -238,6 +300,9 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
         "url": page.url,
         "title": await page.title(),
         "frames": frames,
+        "actionable_nodes": actionable_nodes,
+        "content_nodes": content_nodes,
+        "containers": containers,
     }
 
 
@@ -338,6 +403,50 @@ def _candidate_locator_payload(candidates: List[Dict[str, Any]]) -> Dict[str, An
         if candidate.get("selected"):
             return candidate["locator"]
     return candidates[0]["locator"]
+
+
+def _node_locator_bundle(node: Dict[str, Any]) -> tuple[Dict[str, Any], List[Dict[str, Any]], str]:
+    locator_candidates = list(node.get("locator_candidates") or [])
+    locator = node.get("locator")
+    if locator_candidates and locator:
+        for candidate in locator_candidates:
+            if candidate.get("selected"):
+                return locator, locator_candidates, str(candidate.get("kind") or "")
+        return locator, locator_candidates, str(locator_candidates[0].get("kind") or "")
+    fallback_candidates = _build_locator_candidates_for_element(node)
+    return _candidate_locator_payload(fallback_candidates), fallback_candidates, str(fallback_candidates[0].get("kind") or "")
+
+
+def _resolve_content_node(snapshot: Dict[str, Any], intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    target_hint = intent.get("target_hint", {}) or {}
+    expected_name = _normalize_hint(target_hint.get("name") or target_hint.get("text") or target_hint.get("value"))
+    expected_tokens = _tokenize_text(expected_name)
+    for node in snapshot.get("content_nodes", []):
+        haystack = " ".join(
+            [
+                str(node.get("text") or ""),
+                str(node.get("semantic_kind") or ""),
+                str(node.get("role") or ""),
+            ]
+        ).lower()
+        if expected_name:
+            haystack_tokens = _tokenize_text(haystack)
+            if expected_name in haystack:
+                return node
+            if expected_tokens and expected_tokens & haystack_tokens:
+                return node
+            if "title" in expected_tokens and _normalize_hint(node.get("semantic_kind")) in {"heading", "title"}:
+                return node
+            continue
+        return node
+    return None
+
+
+def expand_container_snapshot(_snapshot: Dict[str, Any], _container: Dict[str, Any], _intent: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "actionable_nodes": [],
+        "content_nodes": [],
+    }
 
 
 def _normalize_hint(value: Optional[str]) -> str:
@@ -524,8 +633,7 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
         try:
             resolved = resolve_collection_target(snapshot, intent)
             item = resolved["resolved_target"]
-            locator_candidates = _build_locator_candidates_for_element(item)
-            locator = _candidate_locator_payload(locator_candidates)
+            locator, locator_candidates, selected_locator_kind = _node_locator_bundle(item)
             collection = resolved["collection"]
             return {
                 **intent,
@@ -539,17 +647,95 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
                     },
                     "item_hint": collection.get("item_hint", {}),
                     "ordinal": resolved.get("ordinal"),
-                    "selected_locator_kind": locator_candidates[0]["kind"],
+                    "selected_locator_kind": selected_locator_kind,
                 },
             }
         except ValueError:
             pass
 
+    if action == "extract_text":
+        content_node = _resolve_content_node(snapshot, intent)
+        if content_node:
+            locator = content_node.get("locator") or {"method": "text", "value": content_node.get("text", "")}
+            return {
+                **intent,
+                "resolved": {
+                    "frame_path": list(content_node.get("frame_path") or []),
+                    "locator": locator,
+                    "locator_candidates": list(content_node.get("locator_candidates") or []),
+                    "collection_hint": {},
+                    "item_hint": {},
+                    "ordinal": None,
+                    "selected_locator_kind": str((content_node.get("locator_candidates") or [{}])[0].get("kind") or locator.get("method", "")),
+                    "content_node": content_node,
+                },
+            }
+
+    expansion_container = pick_expansion_container(snapshot, intent)
+    if expansion_container:
+        expanded = expand_container_snapshot(snapshot, expansion_container, intent)
+        expanded_nodes = list((expanded or {}).get("actionable_nodes") or [])
+        if action == "extract_text":
+            expanded_content_nodes = list((expanded or {}).get("content_nodes") or [])
+            if expanded_content_nodes:
+                content_node = expanded_content_nodes[0]
+                locator = content_node.get("locator") or {"method": "text", "value": content_node.get("text", "")}
+                return {
+                    **intent,
+                    "resolved": {
+                        "frame_path": list(content_node.get("frame_path") or expansion_container.get("frame_path") or []),
+                        "locator": locator,
+                        "locator_candidates": list(content_node.get("locator_candidates") or []),
+                        "collection_hint": {},
+                        "item_hint": {},
+                        "ordinal": None,
+                        "selected_locator_kind": str((content_node.get("locator_candidates") or [{}])[0].get("kind") or locator.get("method", "")),
+                        "content_node": content_node,
+                        "assistant_diagnostics": {
+                            "used_local_expansion": True,
+                            "container_id": expansion_container.get("container_id"),
+                        },
+                    },
+                }
+        if expanded_nodes:
+            selected_node = expanded_nodes[0]
+            locator, locator_candidates, selected_locator_kind = _node_locator_bundle(selected_node)
+            return {
+                **intent,
+                "resolved": {
+                    "frame_path": list(selected_node.get("frame_path") or expansion_container.get("frame_path") or []),
+                    "locator": locator,
+                    "locator_candidates": locator_candidates,
+                    "collection_hint": {},
+                    "item_hint": {},
+                    "ordinal": _normalize_ordinal(intent) if intent.get("ordinal") else None,
+                    "selected_locator_kind": selected_locator_kind,
+                    "assistant_diagnostics": {
+                        "used_local_expansion": True,
+                        "container_id": expansion_container.get("container_id"),
+                    },
+                },
+            }
+
     expected_role = _normalize_hint(target_hint.get("role"))
     expected_name = _normalize_hint(target_hint.get("name") or target_hint.get("text") or target_hint.get("value"))
     best_match: Optional[Dict[str, Any]] = None
     best_frame_path: List[str] = []
+    search_nodes = list(snapshot.get("actionable_nodes") or [])
+    if search_nodes:
+        for element in search_nodes:
+            role = _normalize_hint(element.get("role"))
+            name = _normalize_hint(element.get("name") or element.get("text"))
+            if expected_role and role != expected_role:
+                continue
+            if expected_name and expected_name not in name:
+                continue
+            best_match = element
+            best_frame_path = list(element.get("frame_path") or [])
+            break
     for frame in snapshot.get("frames", []):
+        if best_match:
+            break
         for element in frame.get("elements", []):
             role = _normalize_hint(element.get("role"))
             name = _normalize_hint(element.get("name"))
@@ -566,8 +752,7 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
     if not best_match:
         raise ValueError("No frame-aware target matched the structured intent")
 
-    locator_candidates = _build_locator_candidates_for_element(best_match)
-    locator = _candidate_locator_payload(locator_candidates)
+    locator, locator_candidates, selected_locator_kind = _node_locator_bundle(best_match)
     return {
         **intent,
         "resolved": {
@@ -577,7 +762,7 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
             "collection_hint": {},
             "item_hint": {},
             "ordinal": None,
-            "selected_locator_kind": locator_candidates[0]["kind"],
+            "selected_locator_kind": selected_locator_kind,
         },
     }
 
@@ -675,6 +860,7 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         "item_hint": resolved.get("item_hint", {}),
         "ordinal": resolved.get("ordinal"),
         "assistant_diagnostics": {
+            **(resolved.get("assistant_diagnostics", {}) or {}),
             "resolved_frame_path": frame_path,
             "selected_locator_kind": resolved.get("selected_locator_kind", ""),
             "collection_kind": resolved.get("collection_hint", {}).get("kind", ""),

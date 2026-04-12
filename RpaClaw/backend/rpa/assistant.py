@@ -237,6 +237,14 @@ def _extract_llm_chunk_fallback_text(chunk: Any) -> str:
 
 def _snapshot_frame_lines(snapshot: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
+    for container in snapshot.get("containers", []):
+        lines.append(
+            "Container: "
+            f"{container.get('container_kind', 'container')} "
+            f"{container.get('name', '')} "
+            f"(actionable={len(container.get('child_actionable_ids') or [])}, "
+            f"content={len(container.get('child_content_ids') or [])})"
+        )
     for frame in snapshot.get("frames", []):
         lines.append(f"Frame: {frame.get('frame_hint', 'main document')}")
         for collection in frame.get("collections", []):
