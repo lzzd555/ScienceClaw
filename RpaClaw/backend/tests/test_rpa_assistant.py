@@ -586,6 +586,56 @@ class RPAAssistantFrameAwareSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved["frame_path"], ["iframe[title='results']"])
         self.assertEqual(resolved["resolved_target"]["name"], "Result A")
 
+    async def test_expand_container_snapshot_orders_nodes_by_visual_position(self):
+        snapshot = {
+            "actionable_nodes": [
+                {
+                    "node_id": "download-2",
+                    "container_id": "table-1",
+                    "name": "文件二",
+                    "bbox": {"x": 20, "y": 60, "width": 80, "height": 20},
+                },
+                {
+                    "node_id": "download-1",
+                    "container_id": "table-1",
+                    "name": "文件一",
+                    "bbox": {"x": 20, "y": 20, "width": 80, "height": 20},
+                },
+            ],
+            "content_nodes": [
+                {
+                    "node_id": "title-2",
+                    "container_id": "table-1",
+                    "text": "第二行",
+                    "bbox": {"x": 140, "y": 60, "width": 80, "height": 20},
+                },
+                {
+                    "node_id": "title-1",
+                    "container_id": "table-1",
+                    "text": "第一行",
+                    "bbox": {"x": 140, "y": 20, "width": 80, "height": 20},
+                },
+            ],
+            "containers": [
+                {
+                    "container_id": "table-1",
+                    "container_kind": "table",
+                    "child_actionable_ids": ["download-1", "download-2"],
+                    "child_content_ids": ["title-1", "title-2"],
+                }
+            ],
+        }
+
+        expanded = ASSISTANT_RUNTIME_MODULE.expand_container_snapshot(
+            snapshot,
+            snapshot["containers"][0],
+            {"action": "click", "prompt": "点击第一个文件下载", "ordinal": "first"},
+        )
+
+        self.assertEqual([node["name"] for node in expanded["actionable_nodes"]], ["文件一", "文件二"])
+        self.assertEqual([node["row_index"] for node in expanded["actionable_nodes"]], [1, 2])
+        self.assertEqual([node["text"] for node in expanded["content_nodes"]], ["第一行", "第二行"])
+
 
 class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_resolve_structured_intent_uses_local_expansion_when_top_candidates_are_close(self):

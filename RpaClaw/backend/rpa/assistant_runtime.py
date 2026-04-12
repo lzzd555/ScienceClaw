@@ -442,10 +442,45 @@ def _resolve_content_node(snapshot: Dict[str, Any], intent: Dict[str, Any]) -> O
     return None
 
 
-def expand_container_snapshot(_snapshot: Dict[str, Any], _container: Dict[str, Any], _intent: Dict[str, Any]) -> Dict[str, Any]:
+def _node_sort_key(node: Dict[str, Any]) -> tuple[int, int]:
+    bbox = node.get("bbox") or {}
+    return int(bbox.get("y", 0) or 0), int(bbox.get("x", 0) or 0)
+
+
+def _annotate_visual_order(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = sorted(nodes, key=_node_sort_key)
+    last_y: Optional[int] = None
+    row_index = 0
+    annotated: List[Dict[str, Any]] = []
+    for node in ordered:
+        bbox = node.get("bbox") or {}
+        current_y = int(bbox.get("y", 0) or 0)
+        if last_y is None or abs(current_y - last_y) > 8:
+            row_index += 1
+            last_y = current_y
+        annotated.append({**node, "row_index": row_index})
+    return annotated
+
+
+def expand_container_snapshot(snapshot: Dict[str, Any], container: Dict[str, Any], _intent: Dict[str, Any]) -> Dict[str, Any]:
+    container_id = str(container.get("container_id") or "")
+    actionable_ids = set(container.get("child_actionable_ids") or [])
+    content_ids = set(container.get("child_content_ids") or [])
+
+    actionable_nodes = [
+        node
+        for node in snapshot.get("actionable_nodes", [])
+        if (actionable_ids and node.get("node_id") in actionable_ids) or str(node.get("container_id") or "") == container_id
+    ]
+    content_nodes = [
+        node
+        for node in snapshot.get("content_nodes", [])
+        if (content_ids and node.get("node_id") in content_ids) or str(node.get("container_id") or "") == container_id
+    ]
+
     return {
-        "actionable_nodes": [],
-        "content_nodes": [],
+        "actionable_nodes": _annotate_visual_order(actionable_nodes),
+        "content_nodes": _annotate_visual_order(content_nodes),
     }
 
 
