@@ -606,8 +606,15 @@ const sendConfirm = async (approved: boolean) => {
   await apiClient.post(`/rpa/session/${sessionId.value}/agent/confirm`, { approved });
 };
 
-const sendMessage = async () => {
-  if (!newMessage.value.trim() || !sessionId.value || sending.value) return;
+const sendMessage = async (e?: Event) => {
+  if (e && (e as KeyboardEvent).isComposing) {
+    return;
+  }
+  // Prevent default Enter behavior (new line) if we are not composing
+  if (e) {
+    e.preventDefault();
+  }
+  if (!newMessage.value.trim() || !sessionId.value || sending.value || agentRunning.value) return;
   const userText = newMessage.value.trim();
   newMessage.value = '';
   sending.value = true;
@@ -1040,18 +1047,6 @@ const sendMessage = async () => {
                 @click="abortAgent"
                 class="text-[10px] font-bold text-red-500 border border-red-200 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
               >中止</button>
-              <label class="flex items-center gap-1.5 cursor-pointer" :class="agentRunning ? 'opacity-50 pointer-events-none' : ''">
-                <span class="text-[10px] text-gray-500 font-medium">AI 指令</span>
-                <div
-                  @click="agentMode = !agentMode"
-                  class="w-8 h-4 rounded-full transition-colors relative"
-                  :class="agentMode ? 'bg-[#831bd7]' : 'bg-gray-300'"
-                >
-                  <div class="w-3 h-3 bg-white rounded-full absolute top-0.5 transition-transform shadow-sm"
-                    :class="agentMode ? 'translate-x-4' : 'translate-x-0.5'"
-                  ></div>
-                </div>
-              </label>
             </div>
           </div>
         </div>
@@ -1140,22 +1135,42 @@ const sendMessage = async () => {
         </div>
 
         <div class="p-4 bg-gray-50 border-t border-gray-100">
-          <div class="relative">
-            <input
-              v-model="newMessage"
-              @keyup.enter="sendMessage"
-              :disabled="sending || agentRunning"
-              class="w-full bg-white border border-gray-200 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
-              :placeholder="agentRunning ? 'AI 指令执行中...' : (sending ? 'AI 正在处理...' : (agentMode ? '输入 AI 指令...' : '向助手提问...'))"
-              type="text"
-            />
-            <button
-              @click="sendMessage"
-              :disabled="sending || agentRunning"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-[#831bd7] hover:scale-110 transition-transform p-1.5 disabled:opacity-50"
-            >
-              <Send :size="16" />
-            </button>
+          <div class="flex flex-col bg-white border border-gray-200 rounded-2xl shadow-sm focus-within:ring-2 focus-within:ring-[#831bd7] focus-within:border-transparent transition-all">
+            <!-- Mode Switch (Integrated) -->
+            <div class="flex border-b border-gray-100 px-3 py-2 gap-2" :class="agentRunning ? 'opacity-50 pointer-events-none' : ''">
+              <button
+                @click="agentMode = false"
+                class="px-3 py-1 rounded-md text-[10px] font-bold transition-all duration-200"
+                :class="!agentMode ? 'bg-purple-50 text-[#831bd7]' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'"
+              >
+                普通对话
+              </button>
+              <button
+                @click="agentMode = true"
+                class="px-3 py-1 rounded-md text-[10px] font-bold transition-all duration-200"
+                :class="agentMode ? 'bg-purple-50 text-[#831bd7]' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'"
+              >
+                AI 指令
+              </button>
+            </div>
+            
+            <div class="relative flex flex-col p-2">
+              <textarea
+                v-model="newMessage"
+                @keydown.enter.exact="sendMessage"
+                :disabled="sending || agentRunning"
+                rows="3"
+                class="w-full bg-transparent border-none p-2 text-xs focus:ring-0 outline-none disabled:opacity-50 resize-none pr-12"
+                :placeholder="agentRunning ? 'AI 指令执行中...' : (sending ? 'AI 正在处理...' : (agentMode ? '输入 AI 指令 (Shift+Enter 换行)...' : '向助手提问 (Shift+Enter 换行)...'))"
+              ></textarea>
+              <button
+                @click="sendMessage"
+                :disabled="sending || agentRunning"
+                class="absolute right-3 bottom-3 text-white bg-[#831bd7] rounded-lg hover:bg-[#6c16b2] transition-colors p-1.5 disabled:opacity-50 flex items-center justify-center shadow-sm"
+              >
+                <Send :size="14" />
+              </button>
+            </div>
           </div>
         </div>
       </aside>
