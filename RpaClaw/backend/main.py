@@ -6,6 +6,7 @@ FastAPI 应用入口 — 精简版。
 """
 import asyncio
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -159,13 +160,26 @@ def create_app() -> FastAPI:
     return app
 
 
+def resolve_frontend_dist_dir(module_file: str | None = None) -> str | None:
+    frontend_dist = os.environ.get("FRONTEND_DIST_DIR")
+    if frontend_dist and os.path.exists(frontend_dist):
+        return frontend_dist
+
+    current_file = Path(module_file or __file__).resolve()
+    fallback_dir = current_file.parent.parent / "frontend-dist"
+    if fallback_dir.exists():
+        return str(fallback_dir)
+
+    return None
+
+
 app = create_app()
 
 # Serve frontend static files (for Electron packaged app)
 from fastapi.staticfiles import StaticFiles
 
-frontend_dist = os.environ.get("FRONTEND_DIST_DIR")
-if frontend_dist and os.path.exists(frontend_dist):
+frontend_dist = resolve_frontend_dist_dir()
+if frontend_dist:
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
     logger.info(f"Serving frontend static files from: {frontend_dist}")
 

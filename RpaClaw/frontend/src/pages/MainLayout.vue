@@ -1,8 +1,8 @@
 <template>
-  <div className="h-screen flex overflow-hidden bg-white">
+  <div class="flex h-full min-h-0 overflow-hidden bg-white">
     <LeftPanel />
-    <div className="flex-1 min-w-0 h-full py-0 pr-0 relative">
-      <div className="flex h-full bg-[var(--background-gray-main)]">
+    <div class="relative h-full min-w-0 flex-1 py-0 pr-0">
+      <div class="flex h-full bg-[var(--background-gray-main)]">
         <div class="flex flex-1 min-w-0 min-h-0">
           <router-view :key="$route.params.sessionId" />
           <FilePanel />

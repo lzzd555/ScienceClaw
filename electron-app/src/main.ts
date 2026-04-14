@@ -1,7 +1,16 @@
 import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell } from 'electron';
+import type { Event } from 'electron';
+import * as fs from 'node:fs';
 import * as path from 'path';
 import { ConfigManager } from './config';
+import { buildRelaunchArgs, getStartupDelayMs } from './launch-context';
 import { ProcessManager } from './process-manager';
+import {
+  buildMainWindowChromeOptions,
+  DESKTOP_WINDOW_CHANNELS,
+  DESKTOP_WINDOW_STATE_EVENT,
+} from './window-chrome';
+import { normalizeExternalUrl } from './url-utils';
 
 let mainWindow: BrowserWindow | null = null;
 let wizardWindow: BrowserWindow | null = null;
@@ -9,6 +18,34 @@ let tray: Tray | null = null;
 let configManager: ConfigManager;
 let processManager: ProcessManager | null = null;
 let isQuitting = false;
+let cleanupPromise: Promise<void> | null = null;
+
+function isMainWindowMaximizedOrFullScreen() {
+  if (!mainWindow) {
+    return false;
+  }
+
+  return mainWindow.isMaximized() || mainWindow.isFullScreen();
+}
+
+function emitMainWindowState() {
+  if (!mainWindow || mainWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  const maximizedState = isMainWindowMaximizedOrFullScreen();
+  mainWindow.webContents.send(DESKTOP_WINDOW_STATE_EVENT, {
+    maximized: maximizedState,
+  });
+}
+
+function registerMainWindowStateEvents(window: BrowserWindow) {
+  const emit = () => emitMainWindowState();
+  window.on('maximize', emit);
+  window.on('unmaximize', emit);
+  window.on('enter-full-screen', emit);
+  window.on('leave-full-screen', emit);
+}
 
 // In development, use frontend dev server; in production, use backend
 const FRONTEND_URL = app.isPackaged
@@ -41,10 +78,24 @@ function createWizardWindow() {
 /**
  * Create the main application window
  */
+function showAndFocusMainWindow() {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    ...buildMainWindowChromeOptions(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -52,14 +103,24 @@ function createMainWindow() {
     },
   });
 
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
+  registerMainWindowStateEvents(mainWindow);
+
   // Load frontend URL
   mainWindow.loadURL(FRONTEND_URL);
 
   mainWindow.on('close', (event) => {
-    if (!isQuitting) {
-      event.preventDefault();
-      mainWindow?.hide();
+    if (isQuitting) {
+      return;
     }
+
+    if (!tray) {
+      return;
+    }
+
+    event.preventDefault();
+    mainWindow?.hide();
   });
 
   mainWindow.on('closed', () => {
@@ -70,23 +131,44 @@ function createMainWindow() {
 /**
  * Create system tray icon
  */
+function requestAppQuit() {
+  if (isQuitting) {
+    return;
+  }
+
+  isQuitting = true;
+  app.quit();
+}
+
 function createTray() {
-  // Use a default icon (you'll need to provide icon.ico)
+  if (tray) {
+    return;
+  }
+
   const iconPath = path.join(__dirname, '..', 'resources', 'icon.ico');
-  tray = new Tray(iconPath);
+  if (!fs.existsSync(iconPath)) {
+    console.warn(`Tray icon not found at ${iconPath}; tray icon creation skipped.`);
+    return;
+  }
+
+  try {
+    tray = new Tray(iconPath);
+  } catch (error) {
+    console.error('Failed to create tray icon', error);
+    return;
+  }
 
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Show RpaClaw',
       click: () => {
-        mainWindow?.show();
+        showAndFocusMainWindow();
       },
     },
     {
       label: 'Quit',
       click: () => {
-        isQuitting = true;
-        app.quit();
+        requestAppQuit();
       },
     },
   ]);
@@ -95,7 +177,7 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 
   tray.on('click', () => {
-    mainWindow?.show();
+    showAndFocusMainWindow();
   });
 }
 
@@ -135,8 +217,20 @@ async function initialize() {
   }
 }
 
+async function handleAppReady() {
+  const startupDelayMs = getStartupDelayMs(process.argv);
+  if (startupDelayMs > 0) {
+    console.log(`Installer launch detected, delaying startup by ${startupDelayMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
+  }
+
+  await initialize();
+}
+
 // App lifecycle
-app.on('ready', initialize);
+app.on('ready', () => {
+  void handleAppReady();
+});
 
 app.on('window-all-closed', () => {
   // On macOS, keep app running when all windows closed
@@ -146,19 +240,66 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
+  if (!configManager) {
+    return;
+  }
+
+  if (configManager.isFirstRun()) {
+    if (wizardWindow) {
+      wizardWindow.show();
+    } else {
+      createWizardWindow();
+    }
+    return;
+  }
+
   if (mainWindow === null) {
     createMainWindow();
+    if (!tray) {
+      createTray();
+    }
   } else {
-    mainWindow.show();
+    showAndFocusMainWindow();
+    if (!tray) {
+      createTray();
+    }
   }
 });
 
-app.on('before-quit', async () => {
-  isQuitting = true;
-  if (processManager) {
-    await processManager.stopAll();
+function scheduleCleanupAndQuit() {
+  if (!processManager || cleanupPromise) {
+    return;
   }
-});
+
+  cleanupPromise = processManager
+    .stopAll()
+    .catch((error) => {
+      console.error('Failed to stop services before quit:', error);
+    })
+    .finally(() => {
+      cleanupPromise = null;
+      app.removeListener('before-quit', handleBeforeQuit);
+      app.quit();
+    });
+}
+
+function handleBeforeQuit(event: Event) {
+  if (cleanupPromise) {
+    event.preventDefault();
+    return;
+  }
+
+  isQuitting = true;
+
+  if (!processManager) {
+    return;
+  }
+
+  event.preventDefault();
+  scheduleCleanupAndQuit();
+}
+
+app.on('before-quit', handleBeforeQuit);
 
 // IPC Handlers
 
@@ -195,12 +336,51 @@ ipcMain.handle('get-task-service-status', () => {
 
 // App control
 ipcMain.on('restart-app', () => {
-  app.relaunch();
+  app.relaunch({ args: buildRelaunchArgs(process.argv) });
   app.quit();
 });
 
-ipcMain.on('open-external', (event, url: string) => {
-  shell.openExternal(url);
+ipcMain.on('open-external', async (event, externalUrl: string) => {
+  const normalized = normalizeExternalUrl(externalUrl);
+  if (!normalized) {
+    console.warn(`Blocked external URL with disallowed protocol or invalid URL: ${externalUrl}`);
+    return;
+  }
+
+  try {
+    await shell.openExternal(normalized);
+  } catch (error) {
+    console.warn('open-external failed', normalized, error);
+  }
+});
+
+ipcMain.on(DESKTOP_WINDOW_CHANNELS.minimize, () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.on(DESKTOP_WINDOW_CHANNELS.toggleMaximize, () => {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+    return;
+  }
+
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow.maximize();
+  }
+});
+
+ipcMain.on(DESKTOP_WINDOW_CHANNELS.close, () => {
+  mainWindow?.close();
+});
+
+ipcMain.handle(DESKTOP_WINDOW_CHANNELS.isMaximized, () => {
+  return isMainWindowMaximizedOrFullScreen();
 });
 
 // Wizard
@@ -245,6 +425,6 @@ ipcMain.handle('initialize-home-dir', async (event, dirPath: string) => {
 ipcMain.on('wizard-complete', () => {
   // Close wizard and relaunch app so it goes through normal initialize() path
   wizardWindow?.close();
-  app.relaunch();
+  app.relaunch({ args: buildRelaunchArgs(process.argv) });
   app.quit();
 });

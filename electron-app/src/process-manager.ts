@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { ProcessStatus } from './types';
+import { getServiceStartupTimeoutMs } from './launch-context';
 import {
   buildBackendEnv,
   loadEnvFile,
@@ -17,9 +18,11 @@ export class ProcessManager {
   private taskServiceProcess: ChildProcess | null = null;
   private homeDir: string;
   private runtimePaths: RuntimePaths;
+  private serviceStartupTimeoutMs: number;
 
   constructor(homeDir: string) {
     this.homeDir = homeDir;
+    this.serviceStartupTimeoutMs = getServiceStartupTimeoutMs(process.argv);
     this.runtimePaths = resolveRuntimePaths({
       isPackaged: app.isPackaged,
       execPath: process.execPath,
@@ -115,7 +118,7 @@ export class ProcessManager {
     });
 
     // Wait for backend to be ready
-    await this.waitForPort(parseInt(env.BACKEND_PORT), 30000);
+    await this.waitForPort(parseInt(env.BACKEND_PORT), this.serviceStartupTimeoutMs);
   }
 
   /**
@@ -177,7 +180,7 @@ export class ProcessManager {
     });
 
     // Wait for task-service to be ready
-    await this.waitForPort(parseInt(env.TASK_SERVICE_PORT), 30000);
+    await this.waitForPort(parseInt(env.TASK_SERVICE_PORT), this.serviceStartupTimeoutMs);
   }
 
   /**

@@ -4,7 +4,29 @@
 
 
 #app {
-  display: contents;
+  width: 100%;
+  height: 100%;
+}
+
+.app-shell {
+  height: 100%;
+}
+
+.app-shell__viewport {
+  min-height: 0;
+}
+
+.app-shell__viewport > * {
+  max-height: 100%;
+}
+
+.app-shell__viewport > [class~="h-screen"] {
+  height: 100%;
+}
+
+.app-shell__viewport > [class~="min-h-screen"],
+.app-shell__viewport > [class~="min-h-[100vh]"] {
+  min-height: 100%;
 }
 
 body,html {
