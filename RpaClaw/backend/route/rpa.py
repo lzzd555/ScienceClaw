@@ -736,13 +736,19 @@ async def save_skill(
     session_id: str,
     request: SaveSkillRequest,
     current_user: User = Depends(get_current_user),
+    http_request: Request = None,
 ):
     session = await rpa_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"))
+    is_local_mode = settings.storage_backend == "local"
+    ai_command_url = _build_ai_command_url_for_request(http_request, is_local=is_local_mode)
+    script = generator.generate_script(
+        steps, request.params, is_local=is_local_mode,
+        ai_command_url=ai_command_url,
+    )
 
     skill_name = await exporter.export_skill(
         user_id=str(current_user.id),
@@ -750,6 +756,7 @@ async def save_skill(
         description=request.description,
         script=script,
         params=request.params,
+        ai_command_url=ai_command_url,
     )
 
     session.status = "saved"

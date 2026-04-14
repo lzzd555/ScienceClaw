@@ -35,8 +35,9 @@ async def _get_cdp_url() -> str:
         return resp.json()["data"]["cdp_url"]
 
 
-async def _ai_command(prompt: str, mode: str, page, token: str):
+async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None):
     """Call AI with prompt. mode='execute' runs Playwright code, mode='data' returns text."""
+    _target_url = url or _AI_COMMAND_URL
     _ctx = ""
     try:
         _ctx = await page.inner_text("body")
@@ -47,7 +48,7 @@ async def _ai_command(prompt: str, mode: str, page, token: str):
     _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
     async with httpx.AsyncClient(timeout=120) as _c:
         _r = await _c.post(
-            _AI_COMMAND_URL,
+            _target_url,
             json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
             headers=_headers
         )
@@ -71,12 +72,27 @@ async def _ai_command(prompt: str, mode: str, page, token: str):
 {execute_skill_func}
 
 
+def _load_params():
+    """Load params.json from skill directory if available."""
+    try:
+        from pathlib import Path as _P
+        _pj = _P(__file__).parent / "params.json"
+        if _pj.exists():
+            return _json.loads(_pj.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {{}}
+
+
 async def main():
     kwargs = {{}}
     for arg in sys.argv[1:]:
         if arg.startswith("--") and "=" in arg:
             k, v = arg[2:].split("=", 1)
             kwargs[k] = v
+    _params = _load_params()
+    _params.update(kwargs)
+    kwargs = _params
 
     cdp_url = await _get_cdp_url()
     pw = await async_playwright().start()
@@ -113,8 +129,9 @@ from playwright.async_api import async_playwright
 _AI_COMMAND_URL = "{ai_command_url}"
 
 
-async def _ai_command(prompt: str, mode: str, page, token: str):
+async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None):
     """Call AI with prompt. mode='execute' runs Playwright code, mode='data' returns text."""
+    _target_url = url or _AI_COMMAND_URL
     _ctx = ""
     try:
         _ctx = await page.inner_text("body")
@@ -125,7 +142,7 @@ async def _ai_command(prompt: str, mode: str, page, token: str):
     _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
     async with httpx.AsyncClient(timeout=120) as _c:
         _r = await _c.post(
-            _AI_COMMAND_URL,
+            _target_url,
             json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
             headers=_headers
         )
@@ -149,12 +166,27 @@ async def _ai_command(prompt: str, mode: str, page, token: str):
 {execute_skill_func}
 
 
+def _load_params():
+    """Load params.json from skill directory if available."""
+    try:
+        from pathlib import Path as _P
+        _pj = _P(__file__).parent / "params.json"
+        if _pj.exists():
+            return _json.loads(_pj.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {{}}
+
+
 async def main():
     kwargs = {{}}
     for arg in sys.argv[1:]:
         if arg.startswith("--") and "=" in arg:
             k, v = arg[2:].split("=", 1)
             kwargs[k] = v
+    _params = _load_params()
+    _params.update(kwargs)
+    kwargs = _params
 
     pw = await async_playwright().start()
     browser = await pw.chromium.launch(headless=False)
@@ -210,6 +242,7 @@ class StepExecutionError(Exception):
             "async def execute_skill(page, **kwargs):",
             '    """Auto-generated skill from RPA recording."""',
             "    _results = {}",
+            "    _ai_cmd_url = kwargs.get('_ai_command_url', _AI_COMMAND_URL)",
             f'    tabs = {{"{root_tab_id}": page}}',
             "    current_page = page",
         ]
@@ -264,7 +297,7 @@ class StepExecutionError(Exception):
                 legacy_mode = step.get("ai_mode", "data")
 
                 if not operation_code and legacy_mode == "execute":
-                    step_lines.append(f'    await _ai_command("{prompt_text}", "execute", current_page, kwargs.get("_ai_token", ""))')
+                    step_lines.append(f'    await _ai_command("{prompt_text}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
                     lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                     lines.append("")
                     continue
@@ -276,7 +309,7 @@ class StepExecutionError(Exception):
                 # instead of hardcoding recorded code that may break on page changes.
                 if has_operation:
                     operation_prompt = operation_summary or prompt_text
-                    step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""))')
+                    step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
 
                 # Stability wait between operation and data extraction
                 if has_operation and has_data:
@@ -296,7 +329,7 @@ class StepExecutionError(Exception):
                     result_var = output_var or f"ai_result_{step_index + 1}"
                     result_key = output_var or f"ai_command_{step_index + 1}"
                     effective_prompt = data_prompt or prompt_text
-                    step_lines.append(f'    {result_var} = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""))')
+                    step_lines.append(f'    {result_var} = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
                     step_lines.append(f'    _results["{result_key}"] = {result_var}')
 
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
