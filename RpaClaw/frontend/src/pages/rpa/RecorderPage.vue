@@ -96,11 +96,11 @@ const VALIDATION_LABELS: Record<string, string> = {
 };
 
 const VALIDATION_CLASS_MAP: Record<string, string> = {
-  ok: 'bg-emerald-100 text-emerald-700',
-  ambiguous: 'bg-amber-100 text-amber-700',
-  fallback: 'bg-amber-100 text-amber-700',
-  warning: 'bg-amber-100 text-amber-700',
-  broken: 'bg-rose-100 text-rose-700',
+  ok: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+  ambiguous: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  fallback: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  warning: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  broken: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
 };
 
 const getValidationLabel = (status?: string) => {
@@ -109,8 +109,8 @@ const getValidationLabel = (status?: string) => {
 };
 
 const getValidationClass = (status?: string) => {
-  if (!status) return 'bg-gray-100 text-gray-700';
-  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 text-gray-700';
+  if (!status) return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
+  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 };
 
 const mapServerSteps = (serverSteps: any[]) => ([
@@ -692,7 +692,7 @@ const sendMessage = async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#f5f6f7] overflow-hidden">
+  <div class="flex flex-col h-screen bg-[#f5f6f7] dark:bg-[#161618] overflow-hidden">
     <!-- Header -->
     <header class="h-16 flex-shrink-0 bg-gradient-to-r from-[#831bd7] to-[#ac0089] shadow-lg flex justify-between items-center px-8 z-50">
       <div class="flex items-center gap-4">
@@ -720,7 +720,7 @@ const sendMessage = async () => {
         </button>
         <button
           @click="stopRecording"
-          class="bg-white text-[#831bd7] font-bold px-6 py-2 rounded-full hover:bg-white/90 transition-all shadow-md active:scale-95 text-sm"
+          class="bg-white dark:bg-[#272728] text-[#831bd7] font-bold px-6 py-2 rounded-full hover:bg-white/90 transition-all shadow-md active:scale-95 text-sm"
         >
           完成录制
         </button>
@@ -730,9 +730,9 @@ const sendMessage = async () => {
     <!-- Main Content -->
     <div class="flex-1 flex overflow-hidden">
       <!-- Left Sidebar: Steps -->
-      <aside class="w-80 bg-[#eff1f2] border-r border-gray-200 p-6 overflow-y-auto flex flex-col">
+      <aside class="w-80 bg-[#eff1f2] dark:bg-[#212122] border-r border-gray-200 dark:border-gray-700 p-6 overflow-y-auto flex flex-col">
         <div class="flex items-center justify-between mb-8">
-          <h2 class="text-gray-900 font-extrabold text-lg">录制步骤</h2>
+          <h2 class="text-gray-900 dark:text-gray-100 font-extrabold text-lg">录制步骤</h2>
           <span class="text-[#831bd7] text-[10px] font-bold bg-[#c384ff]/20 px-2 py-1 rounded-md">{{ steps.length }} 步</span>
         </div>
 
@@ -740,15 +740,13 @@ const sendMessage = async () => {
           <div
             v-for="(step, index) in steps"
             :key="step.id"
-            class="bg-white p-4 rounded-xl shadow-sm border-l-4 transition-all group relative"
-            :class="[
-              step.source === 'ai' ? 'border-[#ac0089]' : (step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 opacity-70')
-            ]"
+            class="bg-white dark:bg-[#272728] p-4 rounded-xl shadow-sm border-l-4 transition-all group relative"
+            :class="[ step.source === 'ai' ? 'border-[#ac0089]' : (step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 dark:border-gray-700 opacity-70') ]"
           >
             <div class="flex justify-between items-start mb-1">
               <div class="flex items-center gap-1.5">
                 <Bot v-if="step.source === 'ai'" class="text-[#ac0089]" :size="12" />
-                <p class="text-[10px] font-bold" :class="step.source === 'ai' ? 'text-[#ac0089]' : (step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400')">
+                <p class="text-[10px] font-bold" :class="step.source === 'ai' ? 'text-[#ac0089]' : (step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400 dark:text-gray-500')">
                   {{ step.source === 'ai' ? 'AI' : '步骤' }} {{ step.id.padStart(2, '0') }}
                 </p>
               </div>
@@ -764,19 +762,19 @@ const sendMessage = async () => {
                 <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
               </div>
             </div>
-            <h3 class="text-gray-900 font-semibold text-sm">{{ step.title }}</h3>
-            <p class="text-gray-500 text-[11px] mt-2 leading-relaxed">{{ step.description }}</p>
-            <div v-if="step.locatorSummary || step.frameSummary || step.validationStatus" class="mt-3 space-y-1.5 text-[10px] text-gray-500">
+            <h3 class="text-gray-900 dark:text-gray-100 font-semibold text-sm">{{ step.title }}</h3>
+            <p class="text-gray-500 dark:text-gray-400 text-[11px] mt-2 leading-relaxed">{{ step.description }}</p>
+            <div v-if="step.locatorSummary || step.frameSummary || step.validationStatus" class="mt-3 space-y-1.5 text-[10px] text-gray-500 dark:text-gray-400">
               <p v-if="step.locatorSummary" class="break-all">
-                <span class="font-semibold text-gray-600">Locator:</span>
+                <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
                 <span class="font-mono ml-1">{{ step.locatorSummary }}</span>
               </p>
               <p v-if="step.frameSummary" class="break-all">
-                <span class="font-semibold text-gray-600">Frame:</span>
+                <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
                 <span class="font-mono ml-1">{{ step.frameSummary }}</span>
               </p>
               <p v-if="step.validationStatus" class="break-all">
-                <span class="font-semibold text-gray-600">Validation:</span>
+                <span class="font-semibold text-gray-600 dark:text-gray-400">Validation:</span>
                 <span
                   class="ml-1 px-1.5 py-0.5 rounded-full"
                   :class="getValidationClass(step.validationStatus)"
@@ -788,41 +786,41 @@ const sendMessage = async () => {
             </div>
           </div>
 
-          <div v-if="isRecording" class="flex flex-col items-center justify-center py-8 gap-3 border-2 border-dashed border-gray-300 rounded-xl opacity-60">
+          <div v-if="isRecording" class="flex flex-col items-center justify-center py-8 gap-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl opacity-60">
             <div class="animate-spin text-[#831bd7]">
               <Wand2 :size="20" />
             </div>
-            <p class="text-xs text-gray-500 font-medium">检测新操作中...</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">检测新操作中...</p>
           </div>
         </div>
       </aside>
 
       <!-- Center: Screencast Viewport -->
-      <main class="flex-1 bg-[#f5f6f7] px-5 py-4 flex flex-col min-w-0">
-        <div class="flex-1 bg-[#1e1e1e] rounded-2xl shadow-2xl relative overflow-hidden flex flex-col border border-gray-800">
-          <div class="h-9 bg-[#cfd3d8] flex items-end px-3 gap-2 flex-shrink-0 overflow-x-auto">
+      <main class="flex-1 bg-[#f5f6f7] dark:bg-[#161618] px-5 py-4 flex flex-col min-w-0">
+        <div class="flex-1 bg-[#1e1e1e] rounded-2xl shadow-2xl relative overflow-hidden flex flex-col border border-gray-800 dark:border-gray-600">
+          <div class="h-9 bg-[#cfd3d8] dark:bg-[#2a2a2b] flex items-end px-3 gap-2 flex-shrink-0 overflow-x-auto">
             <button
               v-for="tab in tabs"
               :key="tab.tab_id"
               type="button"
               @click="activateTab(tab.tab_id)"
               class="max-w-[220px] min-w-[120px] h-7 px-3 rounded-t-xl text-[11px] border border-b-0 transition-colors truncate"
-              :class="tab.active ? 'bg-[#f5f6f7] text-gray-900 border-gray-300' : 'bg-white/60 text-gray-600 border-transparent hover:bg-white/80'"
+              :class="tab.active ? 'bg-[#f5f6f7] dark:bg-[#161618] text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600' : 'bg-white/60 dark:bg-white/10 text-gray-600 dark:text-gray-400 border-transparent hover:bg-white/80 dark:hover:bg-white/20'"
             >
               {{ tab.title || tab.url || 'New Tab' }}
             </button>
           </div>
-          <div class="h-9 bg-[#dadddf] flex items-center px-3 gap-2 flex-shrink-0 border-t border-white/40">
+          <div class="h-9 bg-[#dadddf] dark:bg-[#383839] flex items-center px-3 gap-2 flex-shrink-0 border-t border-white/40 dark:border-white/10">
             <div class="flex gap-1.5">
               <div class="w-2.5 h-2.5 rounded-full bg-red-400"></div>
               <div class="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
               <div class="w-2.5 h-2.5 rounded-full bg-green-400"></div>
             </div>
-            <form class="flex-1 bg-white rounded-md h-5 mx-3 flex items-center px-2 shadow-inner border border-transparent focus-within:border-[#831bd7]/30" @submit.prevent="submitAddressBar">
-              <Globe class="text-gray-400 flex-shrink-0" :size="12" />
+            <form class="flex-1 bg-white dark:bg-[#272728] rounded-md h-5 mx-3 flex items-center px-2 shadow-inner border border-transparent focus-within:border-[#831bd7]/30" @submit.prevent="submitAddressBar">
+              <Globe class="text-gray-400 dark:text-gray-500 flex-shrink-0" :size="12" />
               <input
                 v-model="addressInput"
-                class="flex-1 bg-transparent text-[10px] text-gray-700 ml-2 outline-none placeholder:text-gray-400"
+                class="flex-1 bg-transparent text-[10px] text-gray-700 dark:text-gray-300 ml-2 outline-none placeholder:text-gray-400"
                 :disabled="!sessionId || isNavigating"
                 placeholder="输入网址并按回车跳转"
                 type="text"
@@ -866,23 +864,23 @@ const sendMessage = async () => {
         </div>
 
         <div v-if="false" class="mt-6 flex justify-center gap-4">
-          <button class="flex items-center gap-2 bg-white px-5 py-2.5 rounded-xl text-xs font-bold text-gray-700 shadow-sm hover:bg-gray-50 transition-colors border border-gray-200">
-            <Camera :size="16" class="text-gray-500" />
+          <button class="flex items-center gap-2 bg-white dark:bg-[#272728] px-5 py-2.5 rounded-xl text-xs font-bold text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-[#444345] transition-colors border border-gray-200 dark:border-gray-700">
+            <Camera :size="16" class="text-gray-500 dark:text-gray-400" />
             截图标记
           </button>
         </div>
       </main>
 
       <!-- Right Sidebar: AI Chat -->
-      <aside class="w-80 bg-white border-l border-gray-200 flex flex-col shadow-[-10px_0_40px_-10px_rgba(0,0,0,0.03)]">
-        <div class="p-6 border-b border-gray-100 bg-gray-50/50">
+      <aside class="w-80 bg-[#eff1f2] dark:bg-[#212122] border-l border-gray-200 dark:border-gray-700 flex flex-col shadow-[-10px_0_40px_-10px_rgba(0,0,0,0.03)]">
+        <div class="p-6 border-b border-gray-100 dark:border-gray-800 bg-[#eff1f2] dark:bg-[#212122]">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
               <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#831bd7] to-[#ac0089] flex items-center justify-center text-white shadow-lg shadow-purple-200">
                 <Wand2 :size="20" />
               </div>
               <div>
-                <h3 class="text-gray-900 font-bold text-sm">AI 录制助手</h3>
+                <h3 class="text-gray-900 dark:text-gray-100 font-bold text-sm">AI 录制助手</h3>
                 <p class="text-[10px] font-bold" :class="agentRunning ? 'text-orange-500' : 'text-[#831bd7]'">
                   {{ agentRunning ? 'Agent 运行中...' : (agentMode ? 'Agent 模式' : '已就绪 · 协助录制中') }}
                 </p>
@@ -892,16 +890,16 @@ const sendMessage = async () => {
               <button
                 v-if="agentRunning"
                 @click="abortAgent"
-                class="text-[10px] font-bold text-red-500 border border-red-200 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
+                class="text-[10px] font-bold text-red-500 border border-red-200 dark:border-red-800 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
               >中止</button>
               <label class="flex items-center gap-1.5 cursor-pointer" :class="agentRunning ? 'opacity-50 pointer-events-none' : ''">
-                <span class="text-[10px] text-gray-500 font-medium">Agent</span>
+                <span class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">Agent</span>
                 <div
                   @click="agentMode = !agentMode"
                   class="w-8 h-4 rounded-full transition-colors relative"
                   :class="agentMode ? 'bg-[#831bd7]' : 'bg-gray-300'"
                 >
-                  <div class="w-3 h-3 bg-white rounded-full absolute top-0.5 transition-transform shadow-sm"
+                  <div class="w-3 h-3 bg-white dark:bg-[#272728] rounded-full absolute top-0.5 transition-transform shadow-sm"
                     :class="agentMode ? 'translate-x-4' : 'translate-x-0.5'"
                   ></div>
                 </div>
@@ -910,8 +908,8 @@ const sendMessage = async () => {
           </div>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
-          <div v-if="chatMessages.length === 0" class="text-center text-gray-400 text-xs mt-8">
+        <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-[#eff1f2] dark:bg-[#212122]">
+          <div v-if="chatMessages.length === 0" class="text-center text-gray-400 dark:text-gray-500 text-xs mt-8">
             在 VNC 中操作浏览器，步骤会自动记录到左侧面板。
           </div>
           <div
@@ -922,9 +920,7 @@ const sendMessage = async () => {
           >
             <div
               class="max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed"
-              :class="msg.role === 'user'
-                ? 'bg-[#831bd7] text-white rounded-tr-none shadow-md shadow-purple-100'
-                : 'bg-[#eff1f2] text-gray-700 rounded-tl-none border border-gray-100'"
+              :class="msg.role === 'user' ? 'bg-[#831bd7] text-white rounded-tr-none shadow-md shadow-purple-100' : 'bg-white dark:bg-[#272728] text-gray-700 dark:text-gray-300 rounded-tl-none border border-gray-100 dark:border-gray-800'"
             >
               <!-- Message text with inline code blocks for agent actions -->
               <div v-if="msg.actions && msg.actions.length > 0">
@@ -938,7 +934,7 @@ const sendMessage = async () => {
                       <Code :size="10" />
                       {{ msg.actions[codeActionIndex(part)].showCode ? '收起' : '查看代码' }}
                     </button>
-                    <pre v-if="msg.actions[codeActionIndex(part)].showCode" class="mt-1 bg-gray-900 text-green-300 text-[10px] p-2 rounded-lg overflow-x-auto max-h-32 overflow-y-auto"><code>{{ msg.actions[codeActionIndex(part)].code }}</code></pre>
+                    <pre v-if="msg.actions[codeActionIndex(part)].showCode" class="mt-1 bg-gray-900 dark:bg-gray-800 text-green-300 text-[10px] p-2 rounded-lg overflow-x-auto max-h-32 overflow-y-auto"><code>{{ msg.actions[codeActionIndex(part)].code }}</code></pre>
                   </div>
                 </template>
               </div>
@@ -947,20 +943,20 @@ const sendMessage = async () => {
                 <div class="w-2 h-2 rounded-full bg-[#831bd7] animate-pulse"></div>
                 正在执行...
               </div>
-              <div v-if="msg.status === 'error' && msg.error" class="mt-2 text-[10px] text-red-500 bg-red-50 p-2 rounded-lg">
+              <div v-if="msg.status === 'error' && msg.error" class="mt-2 text-[10px] text-red-500 bg-red-50 dark:bg-red-900/30 p-2 rounded-lg">
                 {{ msg.error }}
               </div>
-              <div v-if="msg.frameSummary || msg.collectionSummary || msg.locatorSummary" class="mt-2 space-y-1 text-[10px] text-gray-500">
+              <div v-if="msg.frameSummary || msg.collectionSummary || msg.locatorSummary" class="mt-2 space-y-1 text-[10px] text-gray-500 dark:text-gray-400">
                 <div v-if="msg.frameSummary">
-                  <span class="font-semibold text-gray-600">Frame:</span>
+                  <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
                   <span class="ml-1 font-mono">{{ msg.frameSummary }}</span>
                 </div>
                 <div v-if="msg.collectionSummary">
-                  <span class="font-semibold text-gray-600">Collection:</span>
+                  <span class="font-semibold text-gray-600 dark:text-gray-400">Collection:</span>
                   <span class="ml-1">{{ msg.collectionSummary }}</span>
                 </div>
                 <div v-if="msg.locatorSummary">
-                  <span class="font-semibold text-gray-600">Locator:</span>
+                  <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
                   <span class="ml-1">{{ msg.locatorSummary }}</span>
                 </div>
               </div>
@@ -976,30 +972,30 @@ const sendMessage = async () => {
                 <Code :size="10" />
                 {{ msg.showCode ? '收起代码' : '查看代码' }}
               </button>
-              <pre v-if="msg.script && msg.showCode" class="mt-2 bg-gray-900 text-green-300 text-[10px] p-3 rounded-lg overflow-x-auto max-h-48 overflow-y-auto"><code>{{ msg.script }}</code></pre>
+              <pre v-if="msg.script && msg.showCode" class="mt-2 bg-gray-900 dark:bg-gray-800 text-green-300 text-[10px] p-3 rounded-lg overflow-x-auto max-h-48 overflow-y-auto"><code>{{ msg.script }}</code></pre>
             </div>
-            <span class="text-[9px] text-gray-400 font-medium px-1">{{ msg.time }}</span>
+            <span class="text-[9px] text-gray-400 dark:text-gray-500 font-medium px-1">{{ msg.time }}</span>
           </div>
 
           <!-- Inline confirm dialog for high-risk operations -->
-          <div v-if="pendingConfirm" class="bg-orange-50 border border-orange-200 rounded-xl p-4 text-xs">
+          <div v-if="pendingConfirm" class="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-xl p-4 text-xs">
             <p class="font-bold text-orange-700 mb-1">⚠️ 高危操作确认</p>
-            <p class="text-gray-700 mb-1">{{ pendingConfirm.description }}</p>
+            <p class="text-gray-700 dark:text-gray-300 mb-1">{{ pendingConfirm.description }}</p>
             <p class="text-orange-600 text-[10px] mb-3">风险：{{ pendingConfirm.risk_reason }}</p>
             <div class="flex gap-2">
               <button @click="sendConfirm(true)" class="flex-1 bg-orange-500 text-white rounded-lg py-1.5 font-bold hover:bg-orange-600 transition-colors">确认执行</button>
-              <button @click="sendConfirm(false)" class="flex-1 bg-white border border-gray-200 text-gray-600 rounded-lg py-1.5 font-bold hover:bg-gray-50 transition-colors">跳过</button>
+              <button @click="sendConfirm(false)" class="flex-1 bg-white dark:bg-[#272728] border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 rounded-lg py-1.5 font-bold hover:bg-gray-50 dark:hover:bg-[#444345] transition-colors">跳过</button>
             </div>
           </div>
         </div>
 
-        <div class="p-4 bg-gray-50 border-t border-gray-100">
+        <div class="p-4 bg-[#eff1f2] dark:bg-[#212122] border-t border-gray-100 dark:border-gray-800">
           <div class="relative">
             <input
               v-model="newMessage"
               @keyup.enter="sendMessage"
               :disabled="sending || agentRunning"
-              class="w-full bg-white border border-gray-200 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
+              class="w-full bg-white dark:bg-[#272728] border border-gray-200 dark:border-gray-700 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
               :placeholder="agentRunning ? 'Agent 运行中...' : (sending ? 'AI 正在处理...' : (agentMode ? '描述目标任务...' : '向助手提问...'))"
               type="text"
             />

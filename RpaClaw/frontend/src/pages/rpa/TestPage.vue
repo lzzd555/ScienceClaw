@@ -134,11 +134,11 @@ const VALIDATION_LABELS: Record<string, string> = {
 };
 
 const VALIDATION_CLASS_MAP: Record<string, string> = {
-  ok: 'bg-emerald-100 text-emerald-700',
-  ambiguous: 'bg-amber-100 text-amber-700',
-  fallback: 'bg-amber-100 text-amber-700',
-  warning: 'bg-amber-100 text-amber-700',
-  broken: 'bg-rose-100 text-rose-700',
+  ok: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+  ambiguous: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  fallback: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  warning: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+  broken: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
 };
 
 const getValidationLabel = (status?: string) => {
@@ -147,8 +147,8 @@ const getValidationLabel = (status?: string) => {
 };
 
 const getValidationClass = (status?: string) => {
-  if (!status) return 'bg-gray-100 text-gray-700';
-  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 text-gray-700';
+  if (!status) return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
+  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 };
 
 const loadSessionDiagnostics = async () => {
@@ -426,28 +426,28 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col overflow-hidden bg-[#f5f6f7]">
-    <header class="flex h-14 flex-shrink-0 items-center gap-3 border-b border-gray-200 bg-white px-6">
+  <div class="flex h-screen flex-col overflow-hidden bg-[#f5f6f7] dark:bg-[#161618]">
+    <header class="flex h-14 flex-shrink-0 items-center gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-6">
       <button
-        class="flex items-center gap-1 text-gray-500 transition-colors hover:text-gray-700"
+        class="flex items-center gap-1 text-gray-500 dark:text-gray-400 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
         @click="goBackToConfigure"
       >
         <ArrowLeft :size="18" />
       </button>
       <Play class="text-[#831bd7]" :size="22" />
-      <h1 class="text-lg font-extrabold text-gray-900">测试技能</h1>
-      <span class="max-w-48 truncate text-sm text-gray-500">{{ skillName }}</span>
+      <h1 class="text-lg font-extrabold text-gray-900 dark:text-gray-100">测试技能</h1>
+      <span class="max-w-48 truncate text-sm text-gray-500 dark:text-gray-400">{{ skillName }}</span>
       <div class="flex-1" />
 
       <button
-        class="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+        class="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] hover:text-gray-900 dark:hover:text-white"
         @click="goToHome"
       >
         <House :size="15" />
         返回首页
       </button>
       <button
-        class="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+        class="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] hover:text-gray-900 dark:hover:text-white"
         @click="goToSkills"
       >
         <FolderOpen :size="15" />
@@ -464,9 +464,9 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="flex min-h-0 flex-1">
-      <aside class="flex w-[300px] flex-col overflow-y-auto border-r border-gray-200 bg-[#eff1f2] p-5">
+      <aside class="flex w-[300px] flex-col overflow-y-auto border-r border-gray-200 dark:border-gray-700 bg-[#eff1f2] dark:bg-[#212122] p-5">
         <div class="mb-6 flex items-center justify-between">
-          <h2 class="text-lg font-extrabold text-gray-900">录制步骤</h2>
+          <h2 class="text-lg font-extrabold text-gray-900 dark:text-gray-100">录制步骤</h2>
           <span class="rounded-md bg-[#c384ff]/20 px-2 py-1 text-[10px] font-bold text-[#831bd7]">
             {{ recordedSteps.length }} 步
           </span>
@@ -477,15 +477,11 @@ onBeforeUnmount(() => {
             v-for="(step, index) in recordedSteps"
             :key="step.id || index"
             :data-step-index="index"
-            class="rounded-xl border-l-4 bg-white p-4 shadow-sm"
-            :class="[
-              failedStepIndex === index
-                ? 'border-red-500 ring-2 ring-red-100'
-                : 'border-gray-200'
-            ]"
+            class="rounded-xl border-l-4 bg-white dark:bg-[#272728] p-4 shadow-sm"
+            :class="[ failedStepIndex === index ? 'border-red-500 ring-2 ring-red-100' : 'border-gray-200 dark:border-gray-700' ]"
           >
             <div class="mb-1 flex items-center justify-between gap-3">
-              <span class="text-[10px] font-bold text-gray-400">
+              <span class="text-[10px] font-bold text-gray-400 dark:text-gray-500">
                 步骤 {{ String(index + 1).padStart(2, '0') }}
               </span>
               <span
@@ -495,27 +491,27 @@ onBeforeUnmount(() => {
                 {{ getValidationLabel(step.validation?.status) }}
               </span>
             </div>
-            <h3 class="text-sm font-semibold text-gray-900">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
               {{ step.description || step.action }}
             </h3>
-            <p class="mt-2 break-all text-[11px] text-gray-500">
-              <span class="font-semibold text-gray-600">Locator:</span>
+            <p class="mt-2 break-all text-[11px] text-gray-500 dark:text-gray-400">
+              <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
               <span class="ml-1 font-mono">{{ formatLocator(step.target) }}</span>
             </p>
-            <p class="mt-1 break-all text-[11px] text-gray-500">
-              <span class="font-semibold text-gray-600">Frame:</span>
+            <p class="mt-1 break-all text-[11px] text-gray-500 dark:text-gray-400">
+              <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
               <span class="ml-1 font-mono">{{ formatFramePath(step.frame_path) }}</span>
             </p>
             <p
               v-if="step.validation?.details"
-              class="mt-1 break-all text-[11px] text-gray-500"
+              class="mt-1 break-all text-[11px] text-gray-500 dark:text-gray-400"
             >
-              <span class="font-semibold text-gray-600">Details:</span>
+              <span class="font-semibold text-gray-600 dark:text-gray-400">Details:</span>
               <span class="ml-1">{{ step.validation.details }}</span>
             </p>
 
             <div v-if="failedStepIndex === index" class="mt-3 space-y-3">
-              <div class="rounded-lg bg-red-50 p-2.5 text-[11px] text-red-700">
+              <div class="rounded-lg bg-red-50 dark:bg-red-900/30 p-2.5 text-[11px] text-red-700">
                 <p class="font-semibold flex items-center gap-1">
                   <AlertTriangle :size="12" />
                   执行失败
@@ -524,7 +520,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-if="failedStepCandidates.length > 0">
-                <p class="text-[11px] font-semibold text-gray-700">
+                <p class="text-[11px] font-semibold text-gray-700 dark:text-gray-300">
                   尝试其他定位器：
                 </p>
                 <div class="mt-2 space-y-1.5">
@@ -532,16 +528,12 @@ onBeforeUnmount(() => {
                     v-for="(candidate, cIdx) in failedStepCandidates"
                     :key="cIdx"
                     class="w-full rounded-lg border p-2 text-left text-[11px] transition-colors"
-                    :class="[
-                      triedCandidateIndices.has(cIdx)
-                        ? 'border-gray-200 bg-gray-50 opacity-60'
-                        : 'border-purple-200 hover:bg-purple-50 hover:border-purple-400'
-                    ]"
+                    :class="[ triedCandidateIndices.has(cIdx) ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#383739] opacity-60' : 'border-purple-200 dark:border-purple-800 hover:bg-purple-50 hover:border-purple-400' ]"
                     :disabled="retryingWithCandidate"
                     @click="retryWithCandidate(cIdx)"
                   >
                     <div class="flex items-center justify-between">
-                      <span class="font-mono font-medium text-gray-900 truncate">
+                      <span class="font-mono font-medium text-gray-900 dark:text-gray-100 truncate">
                         {{ candidate.kind }}: {{ candidate.playwright_locator || formatLocator(candidate.locator) }}
                       </span>
                       <span
@@ -552,12 +544,12 @@ onBeforeUnmount(() => {
                       </span>
                       <span
                         v-if="triedCandidateIndices.has(cIdx)"
-                        class="flex-shrink-0 rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-bold text-gray-500"
+                        class="flex-shrink-0 rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-bold text-gray-500 dark:text-gray-400"
                       >
                         已尝试
                       </span>
                     </div>
-                    <div class="mt-1 flex gap-3 text-gray-500">
+                    <div class="mt-1 flex gap-3 text-gray-500 dark:text-gray-400">
                       <span>score: {{ candidate.score }}</span>
                       <span :class="candidate.strict_match_count === 1 ? 'text-green-600' : 'text-amber-600'">
                         match: {{ candidate.strict_match_count }}
@@ -568,7 +560,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
 
-              <div v-else class="rounded-lg bg-amber-50 p-2.5 text-[11px] text-amber-700">
+              <div v-else class="rounded-lg bg-amber-50 dark:bg-amber-900/30 p-2.5 text-[11px] text-amber-700">
                 此步骤无候选定位器可切换，建议返回重新录制。
               </div>
             </div>
@@ -576,28 +568,24 @@ onBeforeUnmount(() => {
 
           <div
             v-if="!recordedSteps.length"
-            class="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-gray-300 py-8 opacity-60"
+            class="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 py-8 opacity-60"
           >
             <div class="animate-spin text-[#831bd7]">
               <Loader2 :size="20" />
             </div>
-            <p class="text-xs font-medium text-gray-500">等待录制步骤加载...</p>
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">等待录制步骤加载...</p>
           </div>
         </div>
       </aside>
 
-      <main class="flex min-w-0 flex-1 flex-col bg-[#f5f6f7] px-5 py-4">
-        <div class="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-gray-800 bg-[#1e1e1e] shadow-2xl">
-          <div class="flex h-9 flex-shrink-0 items-end gap-2 overflow-x-auto bg-[#cfd3d8] px-3">
+      <main class="flex min-w-0 flex-1 flex-col bg-[#f5f6f7] dark:bg-[#161618] px-5 py-4">
+        <div class="relative flex flex-1 flex-col overflow-hidden rounded-2xl border border-gray-800 dark:border-gray-600 bg-[#1e1e1e] shadow-2xl">
+          <div class="flex h-9 flex-shrink-0 items-end gap-2 overflow-x-auto bg-[#cfd3d8] dark:bg-[#2a2a2b] px-3">
             <button
               v-for="tab in tabs"
               :key="tab.tab_id"
               class="h-7 max-w-[220px] min-w-[120px] truncate rounded-t-xl border border-b-0 px-3 text-[11px] transition-colors"
-              :class="
-                tab.active
-                  ? 'border-gray-300 bg-[#f5f6f7] text-gray-900'
-                  : 'border-transparent bg-white/60 text-gray-600 hover:bg-white/80'
-              "
+              :class=" tab.active ? 'border-gray-300 dark:border-gray-600 bg-[#f5f6f7] dark:bg-[#161618] text-gray-900 dark:text-gray-100' : 'border-transparent bg-white/60 dark:bg-white/10 text-gray-600 dark:text-gray-400 hover:bg-white/80 dark:hover:bg-white/20' "
               type="button"
               @click="activateTab(tab.tab_id)"
             >
@@ -605,17 +593,17 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div class="flex h-9 flex-shrink-0 items-center gap-2 border-t border-white/40 bg-[#dadddf] px-3">
+          <div class="flex h-9 flex-shrink-0 items-center gap-2 border-t border-white/40 dark:border-white/10 bg-[#dadddf] dark:bg-[#383839] px-3">
             <div class="flex gap-1.5">
               <div class="h-2.5 w-2.5 rounded-full bg-red-400" />
               <div class="h-2.5 w-2.5 rounded-full bg-yellow-400" />
               <div class="h-2.5 w-2.5 rounded-full bg-green-400" />
             </div>
-            <div class="mx-3 flex h-5 flex-1 items-center rounded-md border border-transparent bg-white px-2 shadow-inner">
-              <Globe class="flex-shrink-0 text-gray-400" :size="12" />
+            <div class="mx-3 flex h-5 flex-1 items-center rounded-md border border-transparent bg-white dark:bg-[#272728] px-2 shadow-inner">
+              <Globe class="flex-shrink-0 text-gray-400 dark:text-gray-500" :size="12" />
               <input
                 :value="previewUrl"
-                class="ml-2 flex-1 bg-transparent text-[10px] text-gray-700 outline-none"
+                class="ml-2 flex-1 bg-transparent text-[10px] text-gray-700 dark:text-gray-300 outline-none"
                 readonly
                 spellcheck="false"
                 type="text"
@@ -658,19 +646,11 @@ onBeforeUnmount(() => {
         </div>
       </main>
 
-      <aside class="flex w-[320px] flex-shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white shadow-[-10px_0_40px_-10px_rgba(0,0,0,0.03)]">
+      <aside class="flex w-[320px] flex-shrink-0 flex-col overflow-hidden border-l border-gray-200 dark:border-gray-700 bg-[#eff1f2] dark:bg-[#212122] shadow-[-10px_0_40px_-10px_rgba(0,0,0,0.03)]">
         <div class="flex-1 space-y-4 overflow-y-auto p-4">
           <div
             class="rounded-xl border p-4"
-            :class="[
-              testing
-                ? 'border-purple-200 bg-purple-50'
-                : testDone && testSuccess
-                  ? 'border-green-200 bg-green-50'
-                  : testDone && !testSuccess
-                    ? 'border-red-200 bg-red-50'
-                    : 'border-gray-200 bg-gray-50',
-            ]"
+            :class="[ testing ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/30' : testDone && testSuccess ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/30' : testDone && !testSuccess ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#383739]', ]"
           >
             <div class="mb-3 flex items-center gap-3">
               <Loader2
@@ -692,7 +672,7 @@ onBeforeUnmount(() => {
                 v-else
                 class="h-5 w-5 rounded-full bg-gray-300"
               />
-              <h2 class="text-base font-bold text-gray-900">
+              <h2 class="text-base font-bold text-gray-900 dark:text-gray-100">
                 {{ testing ? '正在执行...' : testDone ? (testSuccess ? '执行成功' : '执行失败') : '准备测试' }}
               </h2>
             </div>
@@ -721,7 +701,7 @@ onBeforeUnmount(() => {
             class="flex flex-col gap-2.5"
           >
             <button
-              class="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium transition-colors hover:bg-gray-50 disabled:opacity-50"
+              class="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#272728] px-4 py-2.5 text-sm font-medium transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] disabled:opacity-50"
               :disabled="testing"
               @click="runTest"
             >
@@ -737,7 +717,7 @@ onBeforeUnmount(() => {
               {{ saving ? '保存中...' : '保存技能' }}
             </button>
             <button
-              class="flex w-full items-center justify-center gap-2 py-1.5 text-xs font-medium text-gray-500 transition-colors hover:text-gray-700"
+              class="flex w-full items-center justify-center gap-2 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
               @click="goBackToRecorder"
             >
               重新录制
@@ -746,34 +726,34 @@ onBeforeUnmount(() => {
 
           <div
             v-if="error"
-            class="rounded-xl border border-red-200 bg-red-50 p-3"
+            class="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-3"
           >
             <p class="text-xs text-red-600">{{ error }}</p>
           </div>
 
           <div>
-            <h3 class="mb-2 flex items-center gap-1.5 text-sm font-bold text-gray-900">
-              <Terminal class="text-gray-500" :size="14" />
+            <h3 class="mb-2 flex items-center gap-1.5 text-sm font-bold text-gray-900 dark:text-gray-100">
+              <Terminal class="text-gray-500 dark:text-gray-400" :size="14" />
               执行日志
             </h3>
-            <div class="max-h-60 overflow-y-auto rounded-lg bg-gray-900 p-3">
+            <div class="max-h-60 overflow-y-auto rounded-lg bg-gray-900 dark:bg-gray-800 p-3">
               <div
                 v-for="(log, idx) in testLogs"
                 :key="idx"
                 class="font-mono text-[11px] leading-relaxed text-green-400"
               >
-                <span class="mr-1.5 text-gray-600">{{ String(idx + 1).padStart(2, '0') }}</span>
+                <span class="mr-1.5 text-gray-600 dark:text-gray-400">{{ String(idx + 1).padStart(2, '0') }}</span>
                 {{ log }}
               </div>
               <div
                 v-if="testOutput"
-                class="mt-2 border-t border-gray-700 pt-2 font-mono text-[11px] text-gray-400"
+                class="mt-2 border-t border-gray-700 pt-2 font-mono text-[11px] text-gray-400 dark:text-gray-500"
               >
                 {{ testOutput }}
               </div>
               <div
                 v-if="!testLogs.length && !testOutput"
-                class="font-mono text-[11px] text-gray-600"
+                class="font-mono text-[11px] text-gray-600 dark:text-gray-400"
               >
                 等待执行...
               </div>
@@ -782,15 +762,15 @@ onBeforeUnmount(() => {
 
           <div v-if="generatedScript">
             <button
-              class="mb-2 flex items-center gap-1.5 text-sm font-bold text-gray-900 transition-colors hover:text-[#831bd7]"
+              class="mb-2 flex items-center gap-1.5 text-sm font-bold text-gray-900 dark:text-gray-100 transition-colors hover:text-[#831bd7]"
               @click="showScript = !showScript"
             >
-              <Code class="text-gray-500" :size="14" />
+              <Code class="text-gray-500 dark:text-gray-400" :size="14" />
               {{ showScript ? '收起脚本' : '查看脚本' }}
             </button>
             <pre
               v-if="showScript"
-              class="max-h-64 overflow-x-auto overflow-y-auto rounded-lg bg-gray-900 p-3 text-[11px] text-green-400"
+              class="max-h-64 overflow-x-auto overflow-y-auto rounded-lg bg-gray-900 dark:bg-gray-800 p-3 text-[11px] text-green-400"
             ><code>{{ generatedScript }}</code></pre>
           </div>
         </div>

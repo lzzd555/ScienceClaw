@@ -141,11 +141,11 @@ const VALIDATION_LABELS: Record<string, string> = {
 };
 
 const VALIDATION_CLASS_MAP: Record<string, string> = {
-  ok: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200',
-  ambiguous: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200',
-  fallback: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200',
-  warning: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200',
-  broken: 'bg-rose-100 text-rose-700 ring-1 ring-rose-200',
+  ok: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-200 dark:ring-emerald-800',
+  ambiguous: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 ring-1 ring-amber-200 dark:ring-amber-800',
+  fallback: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 ring-1 ring-amber-200 dark:ring-amber-800',
+  warning: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 ring-1 ring-amber-200 dark:ring-amber-800',
+  broken: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400 ring-1 ring-rose-200 dark:ring-rose-800',
 };
 
 const getValidationLabel = (status?: string) => {
@@ -154,8 +154,8 @@ const getValidationLabel = (status?: string) => {
 };
 
 const getValidationClass = (status?: string) => {
-  if (!status) return 'bg-gray-100 text-gray-700 ring-1 ring-gray-200';
-  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 text-gray-700 ring-1 ring-gray-200';
+  if (!status) return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 ring-1 ring-gray-200 dark:ring-gray-700';
+  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 ring-1 ring-gray-200 dark:ring-gray-700';
 };
 
 const getActionLabel = (action: string) => {
@@ -179,21 +179,21 @@ const getActionLabel = (action: string) => {
 
 const getActionColor = (action: string) => {
   const map: Record<string, string> = {
-    click: 'bg-sky-100 text-sky-700',
-    fill: 'bg-emerald-100 text-emerald-700',
-    press: 'bg-amber-100 text-amber-700',
-    select: 'bg-fuchsia-100 text-fuchsia-700',
-    navigate: 'bg-orange-100 text-orange-700',
-    goto: 'bg-orange-100 text-orange-700',
-    navigate_click: 'bg-indigo-100 text-indigo-700',
-    navigate_press: 'bg-cyan-100 text-cyan-700',
-    open_tab_click: 'bg-violet-100 text-violet-700',
-    switch_tab: 'bg-slate-100 text-slate-700',
-    close_tab: 'bg-rose-100 text-rose-700',
-    download_click: 'bg-teal-100 text-teal-700',
-    download: 'bg-teal-100 text-teal-700',
+    click: 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400',
+    fill: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
+    press: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
+    select: 'bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-700 dark:text-fuchsia-400',
+    navigate: 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400',
+    goto: 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400',
+    navigate_click: 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400',
+    navigate_press: 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-400',
+    open_tab_click: 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400',
+    switch_tab: 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300',
+    close_tab: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
+    download_click: 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400',
+    download: 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400',
   };
-  return map[action] || 'bg-gray-100 text-gray-700';
+  return map[action] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 };
 
 const getValuePreview = (step: StepItem) => {
@@ -444,8 +444,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#f5f6f7] text-gray-900">
-    <header class="sticky top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur-xl">
+  <div class="min-h-screen bg-[#f5f6f7] dark:bg-[#161618] text-gray-900 dark:text-gray-100">
+    <header class="sticky top-0 z-30 border-b border-gray-200 dark:border-gray-700 bg-white/90 dark:bg-[#161618]/90 backdrop-blur-xl">
       <div class="mx-auto flex max-w-[1440px] items-center gap-4 px-4 py-4 sm:px-6 lg:px-8">
         <div class="flex min-w-0 items-center gap-3">
           <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#831bd7] to-[#ac0089] text-white shadow-lg shadow-[#831bd7]/20">
@@ -460,7 +460,7 @@ onMounted(() => {
           <button
             type="button"
             @click="generateScript"
-            class="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            class="inline-flex items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345]"
           >
             <Code :size="16" />
             预览脚本
@@ -479,17 +479,17 @@ onMounted(() => {
     </header>
 
     <div v-if="loading" class="flex h-64 items-center justify-center">
-      <p class="text-sm text-gray-500">加载中...</p>
+      <p class="text-sm text-gray-500 dark:text-gray-400">加载中...</p>
     </div>
 
     <div v-else-if="loadFailed" class="flex h-64 items-center justify-center px-6">
-      <div class="rounded-2xl border border-rose-200 bg-white px-6 py-5 text-sm text-rose-600 shadow-sm">
+      <div class="rounded-2xl border border-rose-200 bg-white dark:bg-[#272728] px-6 py-5 text-sm text-rose-600 shadow-sm">
         {{ error || '页面加载失败' }}
       </div>
     </div>
 
     <main v-else class="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8">
-      <div v-if="error" class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+      <div v-if="error" class="mb-4 rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800">
         {{ error }}
       </div>
 
@@ -498,9 +498,9 @@ onMounted(() => {
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 class="text-xl font-extrabold tracking-tight">录制步骤</h2>
-              <p class="text-sm text-gray-500">默认显示摘要信息，点击任一步骤可展开查看详细定位诊断。</p>
+              <p class="text-sm text-gray-500 dark:text-gray-400">默认显示摘要信息，点击任一步骤可展开查看详细定位诊断。</p>
             </div>
-            <div class="rounded-full bg-white px-4 py-1.5 text-xs font-bold text-[#831bd7] shadow-sm ring-1 ring-[#831bd7]/10">
+            <div class="rounded-full bg-white dark:bg-[#272728] px-4 py-1.5 text-xs font-bold text-[#831bd7] shadow-sm ring-1 ring-[#831bd7]/10">
               共 {{ steps.length }} 步
             </div>
           </div>
@@ -509,8 +509,8 @@ onMounted(() => {
             <article
               v-for="(step, idx) in steps"
               :key="step.id"
-              class="overflow-hidden rounded-3xl border bg-white shadow-sm transition-all"
-              :class="expandedStepIndex === idx ? 'border-[#831bd7]/30 shadow-lg shadow-[#831bd7]/10' : 'border-gray-200'"
+              class="overflow-hidden rounded-3xl border bg-white dark:bg-[#272728] shadow-sm transition-all"
+              :class="expandedStepIndex === idx ? 'border-[#831bd7]/30 shadow-lg shadow-[#831bd7]/10' : 'border-gray-200 dark:border-gray-700'"
             >
               <div
                 class="cursor-pointer px-4 py-4 sm:px-5"
@@ -519,7 +519,7 @@ onMounted(() => {
                 <div class="flex items-start gap-4">
                   <div
                     class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-xs font-extrabold"
-                    :class="expandedStepIndex === idx ? 'bg-[#831bd7] text-white' : 'bg-gray-100 text-gray-500'"
+                    :class="expandedStepIndex === idx ? 'bg-[#831bd7] text-white' : 'bg-gray-100 dark:bg-[#444345] text-gray-500 dark:text-gray-400'"
                   >
                     {{ String(idx + 1).padStart(2, '0') }}
                   </div>
@@ -541,18 +541,18 @@ onMounted(() => {
                       </span>
                       <span
                         v-if="getFrameHint(step)"
-                        class="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100"
+                        class="rounded-full bg-violet-50 dark:bg-violet-900/30 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100"
                       >
                         {{ getFrameHint(step) }}
                       </span>
                     </div>
 
-                    <h3 class="mt-2 text-sm font-bold text-gray-900 sm:text-[15px]">
+                    <h3 class="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100 sm:text-[15px]">
                       {{ getStepTitle(step) }}
                     </h3>
 
-                    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-500">
-                      <span class="min-w-0 max-w-full truncate font-mono text-gray-600">
+                    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-500 dark:text-gray-400">
+                      <span class="min-w-0 max-w-full truncate font-mono text-gray-600 dark:text-gray-400">
                         {{ getStepLocatorSummary(step) }}
                       </span>
                       <span v-if="getValuePreview(step)">{{ getValuePreview(step) }}</span>
@@ -562,7 +562,7 @@ onMounted(() => {
 
                   <button
                     type="button"
-                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 transition-colors hover:bg-gray-50"
+                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345]"
                     @click.stop="toggleStep(idx)"
                   >
                     <ChevronUp v-if="expandedStepIndex === idx" :size="18" />
@@ -573,21 +573,21 @@ onMounted(() => {
 
               <div
                 v-if="expandedStepIndex === idx"
-                class="border-t border-gray-100 bg-[#faf7fd] px-4 py-4 sm:px-5"
+                class="border-t border-gray-100 dark:border-gray-800 bg-[#faf7fd] dark:bg-[#3d3846] px-4 py-4 sm:px-5"
                 @click.stop
               >
-                <div class="grid gap-3 rounded-2xl bg-white p-4 ring-1 ring-[#831bd7]/10">
-                  <div class="grid gap-2 text-sm text-gray-600">
+                <div class="grid gap-3 rounded-2xl bg-white dark:bg-[#272728] p-4 ring-1 ring-[#831bd7]/10">
+                  <div class="grid gap-2 text-sm text-gray-600 dark:text-gray-400">
                     <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400">主定位器</span>
-                      <span class="break-all font-mono text-xs text-gray-700">{{ formatLocator(step.target) }}</span>
+                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">主定位器</span>
+                      <span class="break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatLocator(step.target) }}</span>
                     </div>
                     <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400">框架层级</span>
-                      <span class="break-all font-mono text-xs text-gray-700">{{ formatFramePath(step.frame_path) }}</span>
+                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">框架层级</span>
+                      <span class="break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatFramePath(step.frame_path) }}</span>
                     </div>
                     <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400">校验结果</span>
+                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">校验结果</span>
                       <div class="flex flex-wrap items-center gap-2">
                         <span
                           v-if="step.validation?.status"
@@ -596,15 +596,15 @@ onMounted(() => {
                         >
                           {{ getValidationLabel(step.validation.status) }}
                         </span>
-                        <span class="text-xs text-gray-600">{{ step.validation?.details || '无额外说明' }}</span>
+                        <span class="text-xs text-gray-600 dark:text-gray-400">{{ step.validation?.details || '无额外说明' }}</span>
                       </div>
                     </div>
                   </div>
 
                   <div v-if="step.locator_candidates?.length" class="space-y-2">
                     <div class="flex items-center justify-between">
-                      <p class="text-sm font-bold text-gray-900">候选定位器</p>
-                      <p class="text-xs text-gray-400">只在当前展开步骤中显示完整列表</p>
+                      <p class="text-sm font-bold text-gray-900 dark:text-gray-100">候选定位器</p>
+                      <p class="text-xs text-gray-400 dark:text-gray-500">只在当前展开步骤中显示完整列表</p>
                     </div>
 
                     <div class="space-y-2">
@@ -612,15 +612,15 @@ onMounted(() => {
                         v-for="(candidate, candidateIndex) in step.locator_candidates"
                         :key="`${step.id}-${candidateIndex}`"
                         class="flex flex-col gap-2 rounded-2xl border px-3 py-3 md:flex-row md:items-start md:justify-between md:gap-4"
-                        :class="candidate.selected ? 'border-[#831bd7]/30 bg-[#fbf7ff]' : 'border-gray-200 bg-white'"
+                        :class="candidate.selected ? 'border-[#831bd7]/30 bg-[#fbf7ff]' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728]'"
                       >
                         <div class="min-w-0 flex-1">
                           <div class="flex flex-wrap items-center gap-2 text-[11px]">
-                            <span class="rounded-full bg-gray-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-gray-600">
+                            <span class="rounded-full bg-gray-100 dark:bg-[#444345] px-2 py-0.5 font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
                               {{ candidate.kind || 'locator' }}
                             </span>
-                            <span class="text-gray-400">分数 {{ candidate.score ?? '-' }}</span>
-                            <span class="text-gray-400">严格 {{ candidate.strict_match_count ?? '-' }}</span>
+                            <span class="text-gray-400 dark:text-gray-500">分数 {{ candidate.score ?? '-' }}</span>
+                            <span class="text-gray-400 dark:text-gray-500">严格 {{ candidate.strict_match_count ?? '-' }}</span>
                             <span
                               v-if="candidate.selected"
                               class="rounded-full bg-[#831bd7] px-2 py-0.5 font-semibold text-white"
@@ -628,14 +628,14 @@ onMounted(() => {
                               当前使用
                             </span>
                           </div>
-                          <p class="mt-1 break-all font-mono text-xs text-gray-700">{{ formatLocator(candidate.locator) }}</p>
-                          <p v-if="candidate.reason" class="mt-1 text-[11px] text-gray-500">{{ candidate.reason }}</p>
+                          <p class="mt-1 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatLocator(candidate.locator) }}</p>
+                          <p v-if="candidate.reason" class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">{{ candidate.reason }}</p>
                         </div>
 
                         <button
                           type="button"
                           class="shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors"
-                          :class="candidate.selected ? 'cursor-default border-gray-200 text-gray-400' : 'border-[#831bd7]/25 text-[#831bd7] hover:bg-[#831bd7]/5'"
+                          :class="candidate.selected ? 'cursor-default border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500' : 'border-[#831bd7]/25 text-[#831bd7] hover:bg-[#831bd7]/5'"
                           :disabled="candidate.selected || promotingStepIndex === idx"
                           @click.stop="promoteLocator(idx, candidateIndex)"
                         >
@@ -648,14 +648,14 @@ onMounted(() => {
               </div>
             </article>
 
-            <div v-if="steps.length === 0" class="rounded-3xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400">
+            <div v-if="steps.length === 0" class="rounded-3xl border border-dashed border-gray-300 dark:border-gray-600 bg-white dark:bg-[#272728] px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
               当前没有可配置的录制步骤。
             </div>
           </div>
         </section>
 
         <aside class="space-y-4 xl:sticky xl:top-24 xl:self-start">
-          <section class="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+          <section class="rounded-3xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] p-5 shadow-sm">
             <div class="flex items-center gap-3">
               <div class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f4eaff] text-[#831bd7]">
                 <Settings :size="18" />
@@ -667,24 +667,24 @@ onMounted(() => {
 
             <div class="mt-4 space-y-4">
               <div class="space-y-1.5">
-                <label class="text-xs font-semibold text-gray-500">技能名称</label>
+                <label class="text-xs font-semibold text-gray-500 dark:text-gray-400">技能名称</label>
                 <input
                   v-model="skillName"
-                  class="w-full rounded-2xl border border-gray-200 bg-[#fafafa] px-3 py-2.5 text-sm outline-none transition-colors focus:border-[#831bd7] focus:bg-white"
+                  class="w-full rounded-2xl border border-gray-200 dark:border-gray-700 bg-[#fafafa] dark:bg-[#383739] px-3 py-2.5 text-sm outline-none transition-colors focus:border-[#831bd7] focus:bg-white"
                 />
               </div>
               <div class="space-y-1.5">
-                <label class="text-xs font-semibold text-gray-500">描述</label>
+                <label class="text-xs font-semibold text-gray-500 dark:text-gray-400">描述</label>
                 <textarea
                   v-model="skillDescription"
                   rows="3"
-                  class="w-full resize-none rounded-2xl border border-gray-200 bg-[#fafafa] px-3 py-2.5 text-sm outline-none transition-colors focus:border-[#831bd7] focus:bg-white"
+                  class="w-full resize-none rounded-2xl border border-gray-200 dark:border-gray-700 bg-[#fafafa] dark:bg-[#383739] px-3 py-2.5 text-sm outline-none transition-colors focus:border-[#831bd7] focus:bg-white"
                 />
               </div>
             </div>
           </section>
 
-          <section class="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
+          <section class="rounded-3xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] p-5 shadow-sm">
             <div class="flex items-start gap-3">
               <div class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f4eaff] text-[#831bd7]">
                 <Tag :size="18" />
@@ -698,34 +698,34 @@ onMounted(() => {
               <div
                 v-for="param in params"
                 :key="param.id"
-                class="rounded-2xl border border-gray-200 bg-[#fafafa] p-3"
+                class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-[#fafafa] dark:bg-[#383739] p-3"
               >
                 <div class="flex items-center gap-3">
                   <input
                     v-model="param.enabled"
                     type="checkbox"
-                    class="h-4 w-4 rounded border-gray-300 accent-[#831bd7]"
+                    class="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-[#831bd7]"
                   />
                   <input
                     v-model="param.name"
-                    class="min-w-0 flex-1 border-0 bg-transparent text-sm font-semibold text-gray-800 outline-none"
+                    class="min-w-0 flex-1 border-0 bg-transparent text-sm font-semibold text-gray-800 dark:text-gray-200 outline-none"
                     placeholder="参数名"
                   />
                   <span
                     class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                    :class="param.sensitive ? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-slate-100 text-slate-700'"
+                    :class="param.sensitive ? 'bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-700 dark:text-fuchsia-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'"
                   >
                     {{ param.sensitive ? '敏感' : '普通' }}
                   </span>
                 </div>
 
-                <p class="mt-2 text-[11px] text-gray-500">{{ param.label }}</p>
+                <p class="mt-2 text-[11px] text-gray-500 dark:text-gray-400">{{ param.label }}</p>
 
                 <div class="mt-3">
                   <select
                     v-if="param.sensitive"
                     v-model="param.credential_id"
-                    class="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none transition-colors focus:border-[#831bd7]"
+                    class="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none transition-colors focus:border-[#831bd7]"
                   >
                     <option value="">选择凭据...</option>
                     <option
@@ -739,14 +739,14 @@ onMounted(() => {
                   <input
                     v-else
                     v-model="param.current_value"
-                    class="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none transition-colors focus:border-[#831bd7]"
+                    class="w-full rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-3 py-2 text-sm text-gray-700 dark:text-gray-300 outline-none transition-colors focus:border-[#831bd7]"
                     placeholder="默认值"
                   />
                 </div>
               </div>
             </div>
 
-            <div v-else class="mt-4 rounded-2xl border border-dashed border-gray-200 bg-[#fafafa] px-4 py-6 text-center text-sm text-gray-400">
+            <div v-else class="mt-4 rounded-2xl border border-dashed border-gray-200 dark:border-gray-700 bg-[#fafafa] dark:bg-[#383739] px-4 py-6 text-center text-sm text-gray-400 dark:text-gray-500">
               当前没有可参数化的输入步骤。
             </div>
           </section>
@@ -756,7 +756,7 @@ onMounted(() => {
 
     <Dialog :open="isScriptDrawerOpen" @update:open="(open: boolean) => { isScriptDrawerOpen = open }">
       <DialogContent
-        class="left-auto right-0 top-0 h-screen w-[min(760px,100vw)] max-h-none max-w-none translate-x-0 translate-y-0 overflow-hidden rounded-none border-l border-gray-200 bg-[#0f1115] p-0"
+        class="left-auto right-0 top-0 h-screen w-[min(760px,100vw)] max-h-none max-w-none translate-x-0 translate-y-0 overflow-hidden rounded-none border-l border-gray-200 dark:border-gray-700 bg-[#0f1115] p-0"
       >
         <div class="flex h-full flex-col">
           <DialogHeader class="border-b border-white/10 px-6 py-4 text-left">
