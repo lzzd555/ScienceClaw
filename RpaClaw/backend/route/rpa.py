@@ -673,9 +673,9 @@ async def test_script(
         # Docker 模式：使用原有逻辑
         docker_kwargs: Dict[str, Any] = {"_ai_token": _ai_token}
         if body.params:
-            docker_kwargs = await inject_credentials(
+            docker_kwargs.update(await inject_credentials(
                 str(current_user.id), body.params, {}
-            )
+            ))
         result = await executor.execute(
             browser,
             script,
