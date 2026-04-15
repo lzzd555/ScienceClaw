@@ -13,7 +13,7 @@ type DesktopWindowControls = {
 
 type DesktopWindowApi = NonNullable<Window['electronAPI']>['desktopWindow'];
 
-const getDesktopWindowApi = () => window.electronAPI?.desktopWindow;
+const getDesktopWindowApi = (target: Window = window) => target.electronAPI?.desktopWindow;
 const REQUIRED_METHODS = ['minimize', 'toggleMaximize', 'close', 'isMaximized', 'onStateChanged'] as const;
 
 const warnUnavailable = () => {
@@ -37,6 +37,10 @@ const isSupportedDesktopWindowApi = (
     desktopWindow &&
     REQUIRED_METHODS.every((method) => typeof desktopWindow[method] === 'function')
   );
+
+export function hasDesktopWindowControls(target: Window = window): boolean {
+  return isSupportedDesktopWindowApi(getDesktopWindowApi(target));
+}
 
 export function createDesktopWindowControls(): DesktopWindowControls {
   const desktopWindow = getDesktopWindowApi();
