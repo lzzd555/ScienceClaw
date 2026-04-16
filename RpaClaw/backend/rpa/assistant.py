@@ -313,9 +313,141 @@ Rules:
 14. When operation is present, omit the code field unless custom Playwright code is strictly necessary.
 15. If the same action was already attempted (shown in Recent actions) and the page state did not change, do NOT repeat it. Try a different approach, adjust the target, or set action to "done" with whatever partial result is available.
 16. Do NOT issue a navigate step immediately after a click that already caused a page navigation. If a link click changed the URL, the navigation is already complete — proceed to the next task instead of navigating again.
+17. CRITICAL: When the sub-goal context contains "前序 locate 步骤的结果", you MUST reference those results in your actions. Do NOT observe the page and hardcode specific names, URLs, or text values that were supposed to be found dynamically. Instead:
+    - Use operation=ai_command with action=execute for page operations
+    - Write prompts that describe the semantic goal using the locate result — e.g. "click the link named {locate_result_name}" NOT "click public-apis/public-apis"
+    - The locate results are provided in the sub-goal context — USE them as the authoritative answer, do not re-derive from the page snapshot.
+18. When navigating to a target identified by a previous locate step, use ai_command(execute) with a prompt referencing the locate result, NOT operation=navigate with a hardcoded URL.
 """
 
+TASK_PLANNER_PROMPT = """You are an RPA task planner. Given a user goal and current page context, break the task into high-level macro steps.
 
+Each macro step must be one of three types:
+- "locate": Find or identify a specific element or data on the page (conditional lookup, filtering, sorting to locate a target)
+- "operate": Perform a page interaction (navigate, click, fill input, switch tab, scroll, etc.)
+- "extract": Read or collect data from the page (read text, gather a list, produce structured output)
+
+Output a JSON array. Each element must have:
+- "type": "locate" | "operate" | "extract"
+- "description": a concise Chinese summary of this step
+- "sub_goal": a specific instruction for the execution agent to carry out this step
+- "result_key": (required for locate/extract steps) a short ASCII snake_case key for storing the result, e.g. "top_repo", "latest_issue_title"
+- "depends_on": (optional) description of a previous step whose result this step uses
+
+Critical rules:
+1. When a locate step identifies a target (e.g. "find the project with most stars"), include "result_key" so the result can be referenced later.
+2. When an operate step depends on a locate step's result, include "depends_on" and write the sub_goal to explicitly reference the previous result, e.g. "点击前一步找到的star数最高的项目链接进入该项目".
+3. NEVER hardcode concrete values in sub_goals. Use phrases like "前一步找到的项目" instead of "public-apis/public-apis".
+4. An operate step that depends on a locate result should instruct the agent to use ai_command(execute) rather than navigating to a hardcoded URL.
+
+Example output for "查找star最多的项目并获取最新issue标题":
+[
+  {"type": "locate", "description": "找到star最多的项目", "sub_goal": "在当前页面分析所有项目的star数，找到star数最高的项目，返回其名称和链接", "result_key": "top_repo"},
+  {"type": "operate", "description": "进入star最多的项目", "sub_goal": "点击前一步找到的star数最高的项目链接进入该项目详情页", "depends_on": "找到star最多的项目"},
+  {"type": "operate", "description": "打开Issues页面", "sub_goal": "在该项目详情页中点击Issues标签页"},
+  {"type": "extract", "description": "提取最新issue标题", "sub_goal": "提取issues列表中第一个issue的标题", "result_key": "latest_issue_title"}
+]
+"""
+
+# Simple heuristics to decide if a goal needs planning
+_SIMPLE_ACTION_PATTERNS = re.compile(
+    r"^(点击|打开|输入|按下|跳转|导航|click|open|navigate|fill|press|go\s+to)\b",
+    re.IGNORECASE,
+)
+_COMPLEX_CONNECTORS = re.compile(r"(并|然后|接着|而且|之后|再|之后|以后|，.*?(点击|进入|查找|读取|提取|输出|收集|获取))", re.IGNORECASE)
+
+
+def _should_plan(goal: str) -> bool:
+    """Return True if the goal is complex enough to warrant a planning step."""
+    goal = goal.strip()
+    if not goal:
+        return False
+    # Short, single-action goals skip planning
+    if len(goal) < 20 and not _COMPLEX_CONNECTORS.search(goal):
+        return False
+    if _SIMPLE_ACTION_PATTERNS.match(goal) and not _COMPLEX_CONNECTORS.search(goal):
+        return False
+    return True
+
+
+async def _plan_macro_steps(
+    goal: str,
+    page_context: str,
+    model_config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Call LLM to break a goal into macro steps (locate/operate/extract)."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    _fallback = [{"type": "operate", "description": goal, "sub_goal": goal}]
+
+    print(f"[_plan_macro_steps] Called with goal={goal!r:.80}, page_context_len={len(page_context)}", flush=True)
+
+    try:
+        system_msg = SystemMessage(content=TASK_PLANNER_PROMPT)
+        user_parts = [f"用户目标：{goal}"]
+        if page_context:
+            user_parts.append(f"\n当前页面状态：\n{page_context[:8000]}")
+        user_msg = HumanMessage(content="\n".join(user_parts))
+
+        model = get_llm_model(config=model_config, streaming=False)
+        print(f"[_plan_macro_steps] Got model: {type(model).__name__}, invoking...", flush=True)
+        response = await model.ainvoke([system_msg, user_msg])
+        text = _extract_llm_response_text(response).strip()
+
+        logger.info("Planner raw response (%d chars): %s", len(text), text[:500])
+    except Exception as exc:
+        logger.warning("Planner LLM call failed: %s", exc)
+        return _fallback
+
+    if not text:
+        logger.warning("Planner returned empty response")
+        return _fallback
+
+    # Strip markdown fences if present
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract a JSON array from the text
+        arr_match = re.search(r"\[.*\]", text, re.DOTALL)
+        if arr_match:
+            try:
+                parsed = json.loads(arr_match.group(0))
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse planner output: %s", text[:200])
+                return _fallback
+        else:
+            logger.warning("Failed to parse planner output (no JSON array found): %s", text[:200])
+            return _fallback
+
+    if not isinstance(parsed, list) or not parsed:
+        logger.warning("Planner output is not a non-empty list: %s", type(parsed))
+        return _fallback
+
+    # Validate and normalize each step
+    valid_types = {"locate", "operate", "extract"}
+    steps: List[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        step_type = str(item.get("type", "operate")).lower()
+        if step_type not in valid_types:
+            step_type = "operate"
+        steps.append({
+            "type": step_type,
+            "description": str(item.get("description", goal)),
+            "sub_goal": str(item.get("sub_goal", item.get("description", goal))),
+        })
+
+    if not steps:
+        return _fallback
+
+    logger.info("Planner produced %d macro steps: %s", len(steps),
+                [s["type"] + ": " + s["description"][:30] for s in steps])
+    return steps
 
 
 class RPAReActAgent:
@@ -351,7 +483,7 @@ class RPAReActAgent:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         self._aborted = False
         self._recent_actions = []
-        steps_done = 0
+        self._history = []
 
         # Append new user goal to persistent history
         steps_summary = ""
@@ -360,7 +492,140 @@ class RPAReActAgent:
             steps_summary = "\nExisting steps:\n" + "\n".join(lines) + "\n"
         self._history.append({"role": "user", "content": f"Goal: {goal}{steps_summary}"})
 
-        for iteration in range(self.MAX_STEPS):
+        # Decide whether to plan macro steps
+        should_plan = _should_plan(goal)
+        print(f"[RPAReActAgent] _should_plan({goal!r:.80}) = {should_plan}", flush=True)
+        logger.warning("ReAct agent _should_plan(%r) = %s", goal[:80], should_plan)
+
+        if should_plan:
+            # Capture page context for planner
+            current_page = page_provider() if page_provider else page
+            page_context = ""
+            if current_page:
+                try:
+                    snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
+                    page_context = "\n".join(_snapshot_frame_lines(snapshot))
+                except Exception:
+                    page_context = ""
+
+            try:
+                macro_steps = await _plan_macro_steps(goal, page_context, model_config)
+            except Exception as plan_exc:
+                print(f"[RPAReActAgent] Planner FAILED: {plan_exc}", flush=True)
+                logger.warning("Planner failed entirely, falling back to simple mode: %s", plan_exc)
+                macro_steps = [{"type": "operate", "description": goal, "sub_goal": goal}]
+
+            print(f"[RPAReActAgent] Planner returned {len(macro_steps)} steps: {macro_steps}", flush=True)
+
+            # If planner only returned 1 step, no point in macro grouping
+            if len(macro_steps) <= 1:
+                print(f"[RPAReActAgent] Single step, using simple ReAct loop", flush=True)
+                async for event in self._run_sub_goal(
+                    session_id=session_id,
+                    page=page,
+                    sub_goal=goal,
+                    model_config=model_config,
+                    page_provider=page_provider,
+                    max_steps=self.MAX_STEPS,
+                ):
+                    yield event
+                return
+
+            print(f"[RPAReActAgent] Starting macro execution with {len(macro_steps)} steps", flush=True)
+            yield {"event": "macro_plan", "data": {"steps": macro_steps}}
+
+            total_steps_done = 0
+            # Track locate results across macro steps for context injection
+            _locate_results: Dict[str, str] = {}
+            for i, macro in enumerate(macro_steps):
+                if self._aborted:
+                    yield {"event": "agent_aborted", "data": {"reason": "用户中止"}}
+                    return
+
+                yield {
+                    "event": "macro_step_start",
+                    "data": {
+                        "index": i,
+                        "type": macro["type"],
+                        "description": macro["description"],
+                        "sub_goal": macro["sub_goal"],
+                    },
+                }
+
+                # Build sub-goal context with locate results if available
+                _sub_goal_text = f"Sub-goal ({i+1}/{len(macro_steps)}): {macro['sub_goal']}"
+                if macro["type"] != "locate" and _locate_results:
+                    _locate_summary = "\n".join(
+                        f"- {k}: {v[:200]}" for k, v in _locate_results.items()
+                    )
+                    _sub_goal_text += f"\n\n前序 locate 步骤的结果（请引用这些结果，不要硬编码页面上的具体值）：\n{_locate_summary}"
+
+                # Inject sub-goal into history
+                self._history.append({
+                    "role": "user",
+                    "content": _sub_goal_text,
+                })
+
+                sub_done = False
+                async for event in self._run_sub_goal(
+                    session_id=session_id,
+                    page=page,
+                    sub_goal=macro["sub_goal"],
+                    model_config=model_config,
+                    page_provider=page_provider,
+                    max_steps=self.MAX_STEPS // max(len(macro_steps), 1),
+                ):
+                    evt_type = event["event"]
+                    if evt_type == "agent_done":
+                        total_steps_done += event["data"].get("total_steps", 0)
+                        sub_done = True
+                        # Don't yield agent_done for sub-goals; we handle it at macro level
+                        continue
+                    if evt_type == "agent_step_done":
+                        event["data"]["macro_step_index"] = i
+                        event["data"]["macro_step_type"] = macro["type"]
+                        event["data"]["macro_step_desc"] = macro["description"]
+                        # Collect locate results for context injection into later steps
+                        if macro["type"] == "locate":
+                            _step = event["data"].get("step") or {}
+                            _rk = _step.get("result_key") or macro.get("result_key")
+                            _output = event["data"].get("output", "")
+                            if _rk and _output:
+                                _locate_results[_rk] = _output
+                    if evt_type == "agent_aborted":
+                        yield event
+                        return
+                    yield event
+
+                yield {"event": "macro_step_done", "data": {"index": i}}
+
+            # Final agent_done after all macro steps
+            yield {"event": "agent_done", "data": {"total_steps": total_steps_done}}
+        else:
+            # Simple goal — run single ReAct loop
+            async for event in self._run_sub_goal(
+                session_id=session_id,
+                page=page,
+                sub_goal=goal,
+                model_config=model_config,
+                page_provider=page_provider,
+                max_steps=self.MAX_STEPS,
+            ):
+                yield event
+
+    async def _run_sub_goal(
+        self,
+        session_id: str,
+        page: Page,
+        sub_goal: str,
+        model_config: Optional[Dict[str, Any]] = None,
+        page_provider: Optional[Callable[[], Optional[Page]]] = None,
+        max_steps: int = 20,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Execute a single sub-goal via the observe → think → act loop."""
+        steps_done = 0
+
+        for iteration in range(max_steps):
             if self._aborted:
                 yield {"event": "agent_aborted", "data": {"reason": "用户中止"}}
                 return
@@ -390,7 +655,7 @@ class RPAReActAgent:
             thought = parsed.get("thought", "")
             action = parsed.get("action", "execute")
             final_output = parsed.get("final_output")
-            structured_intent = self._extract_structured_execute_intent(parsed, goal)
+            structured_intent = self._extract_structured_execute_intent(parsed, sub_goal)
             code = parsed.get("code", "")
             description = parsed.get("description", "Execute step")
             risk = parsed.get("risk", "none")
@@ -477,7 +742,7 @@ class RPAReActAgent:
                     "source": "ai",
                     "value": code,
                     "description": description,
-                    "prompt": goal,
+                    "prompt": sub_goal,
                 }
                 output = result.get("output", "")
                 # If there's meaningful output, append to description for visibility

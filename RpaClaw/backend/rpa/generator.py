@@ -41,16 +41,14 @@ async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None,
     if _script_log:
         _script_log(f"[AI] {{mode}}: {{prompt[:100]}}")
     _target_url = url or _AI_COMMAND_URL
-    _ctx = ""
+    try:
+        _ctx = await page.inner_text("body")
+        if len(_ctx) > 50000:
+            _ctx = _ctx[:50000]
+    except Exception:
+        _ctx = ""
     if context is not None:
-        _ctx = context
-    else:
-        try:
-            _ctx = await page.inner_text("body")
-            if len(_ctx) > 50000:
-                _ctx = _ctx[:50000]
-        except Exception:
-            pass
+        _ctx = _ctx + "\\n\\n--- 补充上下文 ---\\n" + str(context)
     if _script_log:
         _script_log(f"[AI] context={{len(_ctx)}} chars, url={{_target_url}}")
     _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
@@ -154,16 +152,14 @@ async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None,
     if _script_log:
         _script_log(f"[AI] {{mode}}: {{prompt[:100]}}")
     _target_url = url or _AI_COMMAND_URL
-    _ctx = ""
+    try:
+        _ctx = await page.inner_text("body")
+        if len(_ctx) > 50000:
+            _ctx = _ctx[:50000]
+    except Exception:
+        _ctx = ""
     if context is not None:
-        _ctx = context
-    else:
-        try:
-            _ctx = await page.inner_text("body")
-            if len(_ctx) > 50000:
-                _ctx = _ctx[:50000]
-        except Exception:
-            pass
+        _ctx = _ctx + "\\n\\n--- 补充上下文 ---\\n" + str(context)
     if _script_log:
         _script_log(f"[AI] context={{len(_ctx)}} chars, url={{_target_url}}")
     _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
@@ -279,8 +275,12 @@ class StepExecutionError(Exception):
         has_data_collection = False
         has_explicit_summary_step = False
         original_goal = ""
+        # Track locate result_keys per macro step group for context injection
+        # macro_locate_context[macro_step_index] = [(result_key, description), ...]
+        macro_locate_context: Dict[int, List[tuple]] = {}
         for s in deduped:
             act = s.get("action", "")
+            macro_idx = s.get("macro_step_index")
             if act == "ai_script":
                 code = s.get("value", "")
                 if ("page.evaluate(" in code or ".evaluate(" in code
@@ -293,7 +293,7 @@ class StepExecutionError(Exception):
                 if rm in {"data_only", "operation_and_data"}:
                     has_data_collection = True
                     if not original_goal:
-                        original_goal = s.get("prompt") or s.get("description") or ""
+                        original_goal = s.get("prompt") or s.get("prompt") or s.get("description") or ""
                 context_mode = (s.get("data_context_mode") or "").strip().lower()
                 if context_mode in {"literal", "collected"}:
                     has_explicit_summary_step = True
@@ -303,6 +303,13 @@ class StepExecutionError(Exception):
                 has_data_collection = True
                 if not original_goal:
                     original_goal = s.get("prompt") or s.get("description") or ""
+
+            # Collect locate context for any action type (not just ai_command)
+            if macro_idx is not None and s.get("macro_step_type") == "locate" and not s.get("is_final_summary"):
+                rk = s.get("result_key") or s.get("output_variable")
+                if rk:
+                    macro_locate_context.setdefault(macro_idx, []).append(
+                        (rk, s.get("macro_step_desc") or s.get("description") or ""))
 
         lines = [
             "",
@@ -332,7 +339,19 @@ class StepExecutionError(Exception):
                 lines.append("")
                 prev_url = first_url
 
+        _macro_type_labels = {"locate": "条件查找", "operate": "页面操作", "extract": "数据提取"}
+        _prev_macro_index = None
+
         for step_index, step in enumerate(deduped):
+            # Macro step separator
+            _macro_idx = step.get("macro_step_index")
+            if _macro_idx is not None and _macro_idx != _prev_macro_index:
+                _macro_type = step.get("macro_step_type", "operate")
+                _macro_desc = step.get("macro_step_desc", "")
+                _macro_label = _macro_type_labels.get(_macro_type, "操作")
+                lines.append(f"    # ─── 步骤 {_macro_idx + 1}: {_macro_desc} [{_macro_label}] ───")
+                _prev_macro_index = _macro_idx
+
             action = step.get("action", "")
             target = step.get("target", "")
             value = step.get("value", "")
@@ -348,7 +367,10 @@ class StepExecutionError(Exception):
             # AI-generated script — decide between _ai_command and raw embed
             if action == "ai_script":
                 ai_code = step.get("value", "")
-                if ai_code and self._should_use_ai_command(step):
+                _script_ctx = self._build_macro_context_suffix(step, macro_locate_context)
+                # When in a macro group with locate context, force dynamic replay
+                # because hardcoded code cannot reference dynamic locate results
+                if ai_code and (self._should_use_ai_command(step) or _script_ctx):
                     # Dynamic scenario: use _ai_command for runtime AI-driven replay
                     effective_prompt = self._escape(
                         step.get("description") or step.get("prompt") or ""
@@ -367,11 +389,11 @@ class StepExecutionError(Exception):
                         result_key = output_var or f"ai_data_{step_index + 1}"
                         if is_data:
                             step_lines.append(
-                                f'    _collected["step_{step_index + 1}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)'
+                                f'    _collected["step_{step_index + 1}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_script_ctx})'
                             )
                         else:
                             step_lines.append(
-                                f'    await _ai_command("{effective_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)'
+                                f'    await _ai_command("{effective_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_script_ctx})'
                             )
                         lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                         lines.append("")
@@ -390,26 +412,14 @@ class StepExecutionError(Exception):
 
             # AI command — call _ai_command(prompt, mode, page, token)
             if action == "ai_command":
-                # Final summary step: use collected data + page context, set _results directly
+                # Final summary step: use collected data as context, set _results directly
                 if step.get("is_final_summary"):
                     effective_prompt = self._escape(
                         step.get("data_prompt") or step.get("prompt") or ""
                     )
-                    step_lines.append("    _summary_ctx_parts = []")
-                    step_lines.append("    try:")
-                    step_lines.append("        _page_text = await current_page.inner_text(\"body\")")
-                    step_lines.append("        if _page_text:")
-                    step_lines.append("            _summary_ctx_parts.append(\"当前页面内容：\\n\" + _page_text[:25000])")
-                    step_lines.append("    except Exception:")
-                    step_lines.append("        pass")
                     step_lines.append("    if _collected:")
-                    step_lines.append("        _summary_ctx_parts.append(\"已收集的数据：\\n\" + _json.dumps(_collected, ensure_ascii=False, default=str)[:25000])")
-                    step_lines.append("    _summary_ctx = \"\\n\\n\".join(_summary_ctx_parts) if _summary_ctx_parts else None")
-                    step_lines.append(f'    _summary_text = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)')
-                    step_lines.append("    try:")
-                    step_lines.append("        _results = _json.loads(_summary_text)")
-                    step_lines.append("    except Exception:")
-                    step_lines.append("        _results = _summary_text")
+                    step_lines.append("        _summary_ctx = _json.dumps(_collected, ensure_ascii=False, default=str)")
+                    step_lines.append(f'        _results = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)')
                     lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                     lines.append("")
                     continue
@@ -426,8 +436,11 @@ class StepExecutionError(Exception):
                 legacy_mode = step.get("ai_mode", "data")
                 replay_mode = (step.get("replay_mode") or "").strip().lower()
 
+                # Build macro context suffix for this step
+                _ac_ctx = self._build_macro_context_suffix(step, macro_locate_context)
+
                 if not operation_code and legacy_mode == "execute":
-                    step_lines.append(f'    await _ai_command("{prompt_text}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    step_lines.append(f'    await _ai_command("{prompt_text}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_ac_ctx})')
                     lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                     lines.append("")
                     continue
@@ -443,7 +456,7 @@ class StepExecutionError(Exception):
                             step_lines.append(f"    {code_line}" if code_line.strip() else "")
                     else:
                         operation_prompt = operation_summary or prompt_text
-                        step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                        step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_ac_ctx})')
 
                 # Stability wait between operation and data extraction
                 if has_operation and has_data:
@@ -469,7 +482,7 @@ class StepExecutionError(Exception):
                         step_lines.append("    _step_context = _json.dumps(_collected, ensure_ascii=False, default=str)")
                         step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_step_context)')
                     else:
-                        step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                        step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_ac_ctx})')
                     if data_context_mode in {"literal", "collected"}:
                         step_lines.append(f'    _results = _collected["{result_key}"]')
 
@@ -479,8 +492,14 @@ class StepExecutionError(Exception):
 
             # Navigation
             if action == "navigate" or (action == "goto" and url):
-                step_lines.append(f'    await current_page.goto("{url}")')
-                step_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
+                _nav_ctx = self._build_macro_context_suffix(step, macro_locate_context)
+                if _nav_ctx:
+                    _nav_desc = self._escape(step.get("description") or f"导航到目标页面")
+                    step_lines.append(f'    await _ai_command("{_nav_desc}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_nav_ctx})')
+                    step_lines.append("    await current_page.wait_for_timeout(500)")
+                else:
+                    step_lines.append(f'    await current_page.goto("{url}")')
+                    step_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
                 prev_url = url
                 prev_action = "navigate"
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
@@ -529,11 +548,12 @@ class StepExecutionError(Exception):
             # replay_mode=ai: use _ai_command instead of hardcoded locators
             if step.get("replay_mode") == "ai" and action in {"click", "fill", "press", "extract_text", "navigate_click", "navigate_press"}:
                 ai_prompt = self._escape(step.get("description") or step.get("prompt") or action)
+                _ai_ctx = self._build_macro_context_suffix(step, macro_locate_context)
                 if action == "extract_text":
                     result_key = step.get("result_key") or step.get("output_variable") or f"extract_text_{step_index + 1}"
-                    step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{ai_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{ai_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_ai_ctx})')
                 else:
-                    step_lines.append(f'    await _ai_command("{ai_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    step_lines.append(f'    await _ai_command("{ai_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_ai_ctx})')
                     step_lines.append("    await current_page.wait_for_timeout(500)")
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                 lines.append("")
@@ -595,15 +615,27 @@ class StepExecutionError(Exception):
                 continue
 
             if action == "navigate_click":
-                step_lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
-                step_lines.append(f"        await {locator}.click()")
+                _nc_ctx = self._build_macro_context_suffix(step, macro_locate_context)
+                if _nc_ctx:
+                    _nc_desc = self._escape(step.get("description") or "点击目标链接")
+                    step_lines.append(f'    await _ai_command("{_nc_desc}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_nc_ctx})')
+                    step_lines.append("    await current_page.wait_for_timeout(500)")
+                else:
+                    step_lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
+                    step_lines.append(f"        await {locator}.click()")
             elif action == "navigate_press":
                 step_lines.append(f"    async with current_page.expect_navigation(wait_until='domcontentloaded', timeout={RPA_NAVIGATION_TIMEOUT_MS}):")
                 step_lines.append(f'        await {locator}.press("{value}")')
             elif action == "click":
-                step_lines.append(f"    await {locator}.click()")
-                # After non-navigation click, wait briefly for UI changes
-                step_lines.append("    await current_page.wait_for_timeout(500)")
+                _c_ctx = self._build_macro_context_suffix(step, macro_locate_context)
+                if _c_ctx:
+                    _c_desc = self._escape(step.get("description") or "点击目标")
+                    step_lines.append(f'    await _ai_command("{_c_desc}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url{_c_ctx})')
+                    step_lines.append("    await current_page.wait_for_timeout(500)")
+                else:
+                    step_lines.append(f"    await {locator}.click()")
+                    # After non-navigation click, wait briefly for UI changes
+                    step_lines.append("    await current_page.wait_for_timeout(500)")
             elif action == "download_click":
                 # Click that triggers a file download — wrap with expect_download
                 safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', (value or "file").split('.')[0]) or "file"
@@ -645,7 +677,7 @@ class StepExecutionError(Exception):
             lines.append("    if _collected:")
             lines.append("        _summary_ctx = _json.dumps(_collected, ensure_ascii=False, default=str)")
             lines.append(
-                f'        _results["summary"] = await _ai_command("{goal_text}\\n请将以下分步收集的数据整合为最终的JSON格式结果", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)'
+                f'        _results = await _ai_command("{goal_text}\\n请将以下分步收集的数据整合为最终的结果", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)'
             )
             lines.append("")
 
@@ -895,7 +927,15 @@ class StepExecutionError(Exception):
             prev = result[-1]
             # Same action and same target → replace with the later one
             # (keeps the final/complete value for fill actions)
-            # BUT: never deduplicate AI steps (each AI instruction is unique)
+            # BUT: never deduplicate navigate/ai_script (each is unique)
+            # ai_command: deduplicate if same macro group and similar description
+            if step.get("action") == "ai_command" and prev.get("action") == "ai_command":
+                _s_macro = step.get("macro_step_index")
+                if (_s_macro is not None
+                        and _s_macro == prev.get("macro_step_index")):
+                    # Same macro group — keep the later step (which may have corrected mode)
+                    result[-1] = step
+                    continue
             if (step.get("action") == prev.get("action")
                     and step.get("target") == prev.get("target")
                     and step.get("action") not in ("navigate", "ai_script", "ai_command")):
@@ -1083,6 +1123,33 @@ class StepExecutionError(Exception):
 
         effective_value = files[0] if files else value
         return self._maybe_parameterize(str(effective_value or ""), params)
+
+    @staticmethod
+    def _build_macro_context_suffix(step: Dict[str, Any], macro_locate_context: Dict[int, List[tuple]]) -> str:
+        """Build context=_json.dumps({...}) suffix for steps with preceding locate results.
+
+        Collects ALL locate results from groups with index <= current step's group,
+        not just the same group — since locate (group 0) and operate (group 1)
+        are in different macro groups.
+
+        Skip locate-type steps themselves — they are the producers and should not
+        reference their own _collected values before assignment.
+        """
+        macro_idx = step.get("macro_step_index")
+        if macro_idx is None:
+            return ""
+        # Skip locate steps themselves (they produce the data, not consume it)
+        if step.get("macro_step_type") == "locate":
+            return ""
+        # Accumulate locate results from ALL groups up to and including this one
+        all_locate: List[tuple] = []
+        for idx in sorted(macro_locate_context.keys()):
+            if idx <= macro_idx:
+                all_locate.extend(macro_locate_context[idx])
+        if not all_locate:
+            return ""
+        dict_items = ', '.join(f'"{rk}": _collected["{rk}"]' for rk, _ in all_locate)
+        return f', context=_json.dumps({{{dict_items}}}, ensure_ascii=False, default=str)'
 
     @classmethod
     def _should_use_ai_command(cls, step: Dict[str, Any]) -> bool:

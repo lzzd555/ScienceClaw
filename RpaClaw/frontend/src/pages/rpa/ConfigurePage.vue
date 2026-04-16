@@ -9,7 +9,6 @@ import {
   Tag,
   ChevronDown,
   ChevronUp,
-  Wand2,
 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -76,6 +75,9 @@ interface StepItem {
   replay_mode?: string;  // "ai" | "code"
   status?: 'pending' | 'error' | 'completed';
   localOnly?: boolean;
+  macro_step_index?: number;
+  macro_step_type?: string;  // "locate" | "operate" | "extract"
+  macro_step_desc?: string;
 }
 
 interface ParamItem {
@@ -105,12 +107,6 @@ const credentials = ref<CredentialItem[]>([]);
 const promotingStepIndex = ref<number | null>(null);
 const expandedStepIndex = ref<number | null>(null);
 const isScriptDrawerOpen = ref(false);
-
-// AI Command dialog state
-const showAICommandDialog = ref(false);
-const aiCommandPrompt = ref('');
-const aiCommandOutputVar = ref('');
-const aiCommandLoading = ref(false);
 
 const createPendingAIStep = (prompt: string, outputVariable: string): StepItem => ({
   id: `pending-ai-${Date.now()}`,
@@ -238,6 +234,81 @@ const getActionColor = (action: string) => {
   return map[action] || 'bg-gray-100 text-gray-700';
 };
 
+// Macro step type helpers
+const getMacroTypeLabel = (type?: string) => {
+  const map: Record<string, string> = {
+    locate: '条件查找',
+    operate: '页面操作',
+    extract: '数据提取',
+  };
+  return map[type || ''] || '操作';
+};
+
+const getMacroTypeColor = (type?: string) => {
+  const map: Record<string, string> = {
+    locate: 'bg-blue-100 text-blue-700 ring-1 ring-blue-200',
+    operate: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200',
+    extract: 'bg-purple-100 text-purple-700 ring-1 ring-purple-200',
+  };
+  return map[type || ''] || 'bg-gray-100 text-gray-700 ring-1 ring-gray-200';
+};
+
+// Group steps by macro_step_index for hierarchical display
+interface MacroGroup {
+  index: number;           // macro step index (or -1 for ungrouped)
+  type: string;            // locate | operate | extract
+  description: string;     // macro step description
+  steps: { step: StepItem; originalIndex: number }[];
+  expanded: boolean;
+}
+
+const macroExpandedGroups = ref<Set<number>>(new Set());
+
+const toggleMacroGroup = (groupIndex: number) => {
+  if (macroExpandedGroups.value.has(groupIndex)) {
+    macroExpandedGroups.value.delete(groupIndex);
+  } else {
+    macroExpandedGroups.value.add(groupIndex);
+  }
+};
+
+const macroGroups = computed<MacroGroup[]>(() => {
+  const hasMacro = steps.value.some(s => s.macro_step_index !== undefined);
+  if (!hasMacro) {
+    // No macro grouping — single flat group
+    return [{
+      index: -1,
+      type: 'operate',
+      description: '',
+      steps: steps.value.map((step, i) => ({ step, originalIndex: i })),
+      expanded: true,
+    }];
+  }
+
+  const groups: MacroGroup[] = [];
+  const groupMap = new Map<number, MacroGroup>();
+
+  for (let i = 0; i < steps.value.length; i++) {
+    const step = steps.value[i];
+    const macroIdx = step.macro_step_index ?? -1;
+
+    if (!groupMap.has(macroIdx)) {
+      const group: MacroGroup = {
+        index: macroIdx,
+        type: step.macro_step_type || 'operate',
+        description: step.macro_step_desc || '',
+        steps: [],
+        expanded: macroExpandedGroups.value.has(macroIdx),
+      };
+      groupMap.set(macroIdx, group);
+      groups.push(group);
+    }
+    groupMap.get(macroIdx)!.steps.push({ step, originalIndex: i });
+  }
+
+  return groups;
+});
+
 const getValuePreview = (step: StepItem) => {
   if (!step.value) return '';
   const display = step.sensitive ? '******' : String(step.value);
@@ -322,7 +393,44 @@ const promoteLocator = async (stepIndex: number, candidateIndex: number) => {
 const toggleReplayMode = async (stepIndex: number, mode: string) => {
   if (!sessionId.value) return;
   error.value = null;
+  const step = steps.value[stepIndex];
   try {
+    // Handle ai_command ↔ ai_script conversion
+    if (step.action === 'ai_command' && mode === 'code') {
+      // ai_command → ai_script: convert AI result data into fixed script
+      const scriptValue = (step as any).operation_code
+        || (step as any).data_value
+        || `# ${step.description || (step as any).prompt || ''}`;
+      step.action = 'ai_script';
+      (step as any).value = scriptValue;
+      (step as any).source = 'ai';
+      step.replay_mode = 'code';
+      // Remove ai_command-specific fields
+      delete (step as any).ai_mode;
+      delete (step as any).ai_result_mode;
+      delete (step as any).data_prompt;
+      delete (step as any).data_value;
+      delete (step as any).data_summary;
+      delete (step as any).data_context_mode;
+      delete (step as any).operation_code;
+      delete (step as any).operation_summary;
+      await apiClient.patch(`/rpa/session/${sessionId.value}/step/${stepIndex}`, step);
+      return;
+    }
+    if (step.action === 'ai_script' && mode === 'ai') {
+      // ai_script → ai_command: convert script description into AI command
+      const hasData = Boolean((step as any).output_variable || (step as any).data_value);
+      step.action = 'ai_command';
+      (step as any).ai_mode = hasData ? 'data' : 'execute';
+      (step as any).ai_result_mode = hasData ? 'data_only' : 'operation_only';
+      (step as any).data_prompt = (step as any).prompt || step.description;
+      (step as any).data_context_mode = 'page';
+      step.replay_mode = 'ai';
+      // Remove ai_script-specific fields
+      delete (step as any).value;
+      await apiClient.patch(`/rpa/session/${sessionId.value}/step/${stepIndex}`, step);
+      return;
+    }
     await apiClient.patch(`/rpa/session/${sessionId.value}/step/${stepIndex}/replay-mode`, {
       replay_mode: mode,
     });
@@ -492,50 +600,6 @@ const goToTest = () => {
   });
 };
 
-const submitAICommand = async () => {
-  if (!sessionId.value || !aiCommandPrompt.value.trim()) return;
-  const prompt = aiCommandPrompt.value.trim();
-  const outputVariable = aiCommandOutputVar.value.trim();
-  const pendingStep = createPendingAIStep(prompt, outputVariable);
-  steps.value = [...steps.value, pendingStep];
-  showAICommandDialog.value = false;
-  aiCommandPrompt.value = '';
-  aiCommandOutputVar.value = '';
-  aiCommandLoading.value = true;
-  try {
-    const resp = await apiClient.post(`/rpa/session/${sessionId.value}/ai-command`, {
-      prompt,
-      output_variable: outputVariable,
-    }, {
-      timeout: 0,
-    });
-    // Remove pending step — ReAct may produce multiple steps, loadSession will refresh
-    steps.value = steps.value.filter((s) => s !== pendingStep);
-    // Show error/abort info (ReAct or legacy mode)
-    if (resp.data?.status === 'error') {
-      alert(`AI 命令执行出错: ${resp.data.error || resp.data.execute_error || '未知错误'}`);
-    } else if (resp.data?.execute_error) {
-      alert(`AI 命令执行出错: ${resp.data.execute_error}`);
-    } else if (resp.data?.status === 'aborted') {
-      alert(`AI 命令被中止: ${resp.data.reason || ''}`);
-    }
-    // Reload session to include all new steps
-    await loadSession();
-  } catch (err) {
-    console.error('Failed to execute AI command:', err);
-    const errorMessage =
-      (err as any)?.details?.detail ||
-      (err as any)?.message ||
-      '未知错误';
-    pendingStep.description = 'AI 命令执行失败';
-    pendingStep.value = errorMessage;
-    pendingStep.status = 'error';
-    alert(`AI 命令执行失败: ${errorMessage}`);
-  } finally {
-    aiCommandLoading.value = false;
-  }
-};
-
 onMounted(() => {
   loadSession();
   loadCredentials();
@@ -605,129 +669,163 @@ onMounted(() => {
           </div>
 
           <div class="space-y-3">
-            <article
-              v-for="(step, idx) in steps"
-              :key="step.id"
-              class="overflow-hidden rounded-3xl border bg-white shadow-sm transition-all"
-              :class="expandedStepIndex === idx ? 'border-[#831bd7]/30 shadow-lg shadow-[#831bd7]/10' : 'border-gray-200'"
-            >
+            <!-- Macro-grouped step rendering -->
+            <template v-for="(group, gIdx) in macroGroups" :key="gIdx">
+              <!-- Macro group header (only shown when there are multiple groups) -->
               <div
-                class="cursor-pointer px-4 py-4 sm:px-5"
-                @click="toggleStep(idx)"
+                v-if="macroGroups.length > 1 && group.steps.length > 0"
+                class="cursor-pointer rounded-2xl border bg-gray-50 px-4 py-3 transition-all"
+                :class="group.expanded ? 'border-gray-300 shadow-sm' : 'border-gray-200 hover:border-gray-300'"
+                @click="toggleMacroGroup(group.index)"
               >
-                <div class="flex items-start gap-4">
-                  <div
-                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-xs font-extrabold"
-                    :class="expandedStepIndex === idx ? 'bg-[#831bd7] text-white' : 'bg-gray-100 text-gray-500'"
-                  >
-                    {{ String(idx + 1).padStart(2, '0') }}
+                <div class="flex items-center gap-3">
+                  <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-xs font-extrabold bg-white text-gray-600 shadow-sm">
+                    {{ String(gIdx + 1).padStart(2, '0') }}
                   </div>
-
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span
-                        class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
-                        :class="getActionColor(step.action)"
-                      >
-                        {{ getActionLabel(step.action) }}
-                      </span>
-                      <span
-                        v-if="step.status === 'pending' || step.status === 'error'"
-                        class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
-                        :class="step.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'"
-                      >
-                        {{ step.status === 'pending' ? '执行中' : '失败' }}
-                      </span>
-                      <span
-                        v-if="step.validation?.status"
-                        class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
-                        :class="getValidationClass(step.validation.status)"
-                      >
-                        {{ getValidationLabel(step.validation.status) }}
-                      </span>
-                      <span
-                        v-if="getFrameHint(step)"
-                        class="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100"
-                      >
-                        {{ getFrameHint(step) }}
-                      </span>
-                      <span
-                        v-if="step.replay_mode === 'ai'"
-                        class="rounded-full bg-gradient-to-r from-purple-500 to-pink-500 px-2.5 py-1 text-[10px] font-bold text-white"
-                      >
-                        AI 动态
-                      </span>
-                    </div>
-
-                    <h3 class="mt-2 text-sm font-bold text-gray-900 sm:text-[15px]">
-                      {{ getStepTitle(step) }}
-                    </h3>
-
-                    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-500">
-                      <span class="min-w-0 max-w-full truncate font-mono text-gray-600">
-                        {{ getStepLocatorSummary(step) }}
-                      </span>
-                      <span v-if="getValuePreview(step)">{{ getValuePreview(step) }}</span>
-                      <span v-if="getCandidateSummary(step)">{{ getCandidateSummary(step) }}</span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 transition-colors hover:bg-gray-50"
-                    @click.stop="toggleStep(idx)"
+                  <span
+                    class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
+                    :class="getMacroTypeColor(group.type)"
                   >
-                    <ChevronUp v-if="expandedStepIndex === idx" :size="18" />
-                    <ChevronDown v-else :size="18" />
-                  </button>
+                    {{ getMacroTypeLabel(group.type) }}
+                  </span>
+                  <span class="flex-1 text-sm font-semibold text-gray-800 truncate">{{ group.description }}</span>
+                  <span class="text-[10px] text-gray-400">{{ group.steps.length }} 个操作</span>
+                  <component :is="group.expanded ? ChevronUp : ChevronDown" :size="16" class="text-gray-400" />
                 </div>
               </div>
 
-              <div
-                v-if="expandedStepIndex === idx"
-                class="border-t border-gray-100 bg-[#faf7fd] px-4 py-4 sm:px-5"
-                @click.stop
-              >
-                <div class="grid gap-3 rounded-2xl bg-white p-4 ring-1 ring-[#831bd7]/10">
-                  <div class="grid gap-2 text-sm text-gray-600">
-                    <!-- AI Command specific fields -->
-                    <template v-if="step.action === 'ai_command'">
-                      <div v-if="hasAIOperation(step)" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">回放模式</span>
-                        <div class="flex items-center gap-1">
-                          <button
-                            type="button"
-                            class="rounded-l-lg px-3 py-1.5 text-xs font-semibold transition-colors"
-                            :class="step.replay_mode === 'code' ? 'bg-purple-700 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
-                            @click.stop="toggleReplayMode(idx, 'code')"
-                          >固定代码</button>
-                          <button
-                            type="button"
-                            class="rounded-r-lg px-3 py-1.5 text-xs font-semibold transition-colors"
-                            :class="step.replay_mode !== 'code' ? 'bg-gradient-to-r from-purple-600 to-pink-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
-                            @click.stop="toggleReplayMode(idx, 'ai')"
-                          >AI 动态</button>
-                          <span class="ml-2 text-[10px] text-gray-400">{{ step.replay_mode === 'code' ? '直接执行录制期生成的 Playwright 代码' : '运行时由 AI 根据当前页面状态生成操作' }}</span>
+              <!-- Steps inside the macro group -->
+              <template v-if="macroGroups.length <= 1 || group.expanded">
+                <article
+                  v-for="{ step, originalIndex: idx } in group.steps"
+                  :key="step.id"
+                  class="overflow-hidden rounded-3xl border bg-white shadow-sm transition-all"
+                  :class="{
+                    'border-[#831bd7]/30 shadow-lg shadow-[#831bd7]/10': expandedStepIndex === idx,
+                    'border-gray-200': expandedStepIndex !== idx,
+                    'ml-4 border-l-2': macroGroups.length > 1,
+                    'border-l-blue-300': macroGroups.length > 1 && group.type === 'locate',
+                    'border-l-emerald-300': macroGroups.length > 1 && group.type === 'operate',
+                    'border-l-purple-300': macroGroups.length > 1 && group.type === 'extract',
+                  }"
+                >
+                  <div
+                    class="cursor-pointer px-4 py-4 sm:px-5"
+                    @click="toggleStep(idx)"
+                  >
+                    <div class="flex items-start gap-4">
+                      <div
+                        class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-xs font-extrabold"
+                        :class="expandedStepIndex === idx ? 'bg-[#831bd7] text-white' : 'bg-gray-100 text-gray-500'"
+                      >
+                        {{ String(idx + 1).padStart(2, '0') }}
+                      </div>
+
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <span
+                            class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
+                            :class="getActionColor(step.action)"
+                          >
+                            {{ getActionLabel(step.action) }}
+                          </span>
+                          <span
+                            v-if="step.status === 'pending' || step.status === 'error'"
+                            class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
+                            :class="step.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'"
+                          >
+                            {{ step.status === 'pending' ? '执行中' : '失败' }}
+                          </span>
+                          <span
+                            v-if="step.validation?.status"
+                            class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
+                            :class="getValidationClass(step.validation.status)"
+                          >
+                            {{ getValidationLabel(step.validation.status) }}
+                          </span>
+                          <span
+                            v-if="getFrameHint(step)"
+                            class="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100"
+                          >
+                            {{ getFrameHint(step) }}
+                          </span>
+                          <span
+                            v-if="step.replay_mode === 'ai'"
+                            class="rounded-full bg-gradient-to-r from-purple-500 to-pink-500 px-2.5 py-1 text-[10px] font-bold text-white"
+                          >
+                            AI 动态
+                          </span>
+                        </div>
+
+                        <h3 class="mt-2 text-sm font-bold text-gray-900 sm:text-[15px]">
+                          {{ getStepTitle(step) }}
+                        </h3>
+
+                        <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-500">
+                          <span class="min-w-0 max-w-full truncate font-mono text-gray-600">
+                            {{ getStepLocatorSummary(step) }}
+                          </span>
+                          <span v-if="getValuePreview(step)">{{ getValuePreview(step) }}</span>
+                          <span v-if="getCandidateSummary(step)">{{ getCandidateSummary(step) }}</span>
                         </div>
                       </div>
-                      <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">提示词</span>
-                        <span class="break-all text-xs text-gray-700 whitespace-pre-wrap">{{ (step as any).prompt || step.description }}</span>
-                      </div>
-                      <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">结果类型</span>
-                        <div class="flex flex-wrap gap-2 text-xs">
-                          <span v-if="hasAIOperation(step)" class="rounded bg-orange-100 px-1.5 py-0.5 font-semibold text-orange-700">操作</span>
-                          <span v-if="hasAIData(step)" class="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">数据</span>
-                          <span v-if="!hasAIOperation(step) && !hasAIData(step)" class="text-gray-500">无显式结果</span>
-                        </div>
-                      </div>
-                      <div v-if="step.output_variable" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">输出变量</span>
-                        <span class="break-all font-mono text-xs text-purple-700">{{ step.output_variable }}</span>
-                      </div>
-                      <div v-if="hasAIOperation(step)" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">操作结果</span>
+
+                      <button
+                        type="button"
+                        class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-500 transition-colors hover:bg-gray-50"
+                        @click.stop="toggleStep(idx)"
+                      >
+                        <ChevronUp v-if="expandedStepIndex === idx" :size="18" />
+                        <ChevronDown v-else :size="18" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="expandedStepIndex === idx"
+                    class="border-t border-gray-100 bg-[#faf7fd] px-4 py-4 sm:px-5"
+                    @click.stop
+                  >
+                    <div class="grid gap-3 rounded-2xl bg-white p-4 ring-1 ring-[#831bd7]/10">
+                      <div class="grid gap-2 text-sm text-gray-600">
+                        <!-- AI Command specific fields -->
+                        <template v-if="step.action === 'ai_command'">
+                          <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                            <span class="text-xs font-bold uppercase tracking-wide text-gray-400">回放模式</span>
+                            <div class="flex items-center gap-1">
+                              <button
+                                type="button"
+                                class="rounded-l-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                                :class="step.replay_mode === 'code' ? 'bg-purple-700 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                                @click.stop="toggleReplayMode(idx, 'code')"
+                              >固定代码</button>
+                              <button
+                                type="button"
+                                class="rounded-r-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                                :class="step.replay_mode !== 'code' ? 'bg-gradient-to-r from-purple-600 to-pink-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                                @click.stop="toggleReplayMode(idx, 'ai')"
+                              >AI 动态</button>
+                              <span class="ml-2 text-[10px] text-gray-400">{{ step.replay_mode === 'code' ? '直接执行录制期生成的 Playwright 代码' : '运行时由 AI 根据当前页面状态生成操作' }}</span>
+                            </div>
+                          </div>
+                          <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                            <span class="text-xs font-bold uppercase tracking-wide text-gray-400">提示词</span>
+                            <span class="break-all text-xs text-gray-700 whitespace-pre-wrap">{{ (step as any).prompt || step.description }}</span>
+                          </div>
+                          <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                            <span class="text-xs font-bold uppercase tracking-wide text-gray-400">结果类型</span>
+                            <div class="flex flex-wrap gap-2 text-xs">
+                              <span v-if="hasAIOperation(step)" class="rounded bg-orange-100 px-1.5 py-0.5 font-semibold text-orange-700">操作</span>
+                              <span v-if="hasAIData(step)" class="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">数据</span>
+                              <span v-if="!hasAIOperation(step) && !hasAIData(step)" class="text-gray-500">无显式结果</span>
+                            </div>
+                          </div>
+                          <div v-if="step.output_variable" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                            <span class="text-xs font-bold uppercase tracking-wide text-gray-400">输出变量</span>
+                            <span class="break-all font-mono text-xs text-purple-700">{{ step.output_variable }}</span>
+                          </div>
+                          <div v-if="hasAIOperation(step)" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                            <span class="text-xs font-bold uppercase tracking-wide text-gray-400">操作结果</span>
                         <div class="rounded-lg bg-orange-50 p-2">
                           <p v-if="step.operation_summary" class="break-all text-xs text-gray-700 whitespace-pre-wrap">{{ step.operation_summary }}</p>
                           <pre v-if="step.operation_code" class="mt-1 break-all text-xs text-gray-700 whitespace-pre-wrap font-mono">{{ step.operation_code }}</pre>
@@ -833,19 +931,12 @@ onMounted(() => {
                 </div>
               </div>
             </article>
+              </template>
+            </template>
 
             <div v-if="steps.length === 0" class="rounded-3xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center text-sm text-gray-400">
               当前没有可配置的录制步骤。
             </div>
-
-            <!-- Add AI Command Button -->
-            <button
-              @click="showAICommandDialog = true"
-              class="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-colors bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200"
-            >
-              <Wand2 :size="16" />
-              添加 AI 命令
-            </button>
           </div>
         </section>
 
@@ -967,54 +1058,5 @@ onMounted(() => {
         </div>
       </DialogContent>
     </Dialog>
-
-    <!-- AI Command Dialog -->
-    <div v-if="showAICommandDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="showAICommandDialog = false">
-      <div class="bg-white rounded-2xl shadow-2xl w-[420px] p-6 space-y-4">
-        <h3 class="text-lg font-bold text-gray-900 flex items-center gap-2">
-          <Wand2 :size="20" class="text-purple-700" />
-          添加 AI 命令
-        </h3>
-
-        <p class="text-[10px] text-gray-400 -mt-2">
-          AI 会先判断是否需要执行页面操作，再决定是否提取数据；操作结果和数据结果都可能为空。
-        </p>
-
-        <div>
-          <label class="block text-xs font-semibold text-gray-600 mb-1">提示词 *</label>
-          <textarea
-            v-model="aiCommandPrompt"
-            class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400/40 resize-none"
-            rows="3"
-            placeholder="例如：先筛选价格最低的商品，再提取商品标题和价格"
-            :disabled="aiCommandLoading"
-          ></textarea>
-        </div>
-        <div>
-          <label class="block text-xs font-semibold text-gray-600 mb-1">输出变量名</label>
-          <input
-            v-model="aiCommandOutputVar"
-            class="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400/40"
-            placeholder="例如 product_info"
-            :disabled="aiCommandLoading"
-          />
-          <p class="mt-1 text-[10px] text-gray-400">如果 AI 最终有数据产出，会写入该变量；纯操作场景可以留空。</p>
-        </div>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            @click="showAICommandDialog = false"
-            class="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-100"
-            :disabled="aiCommandLoading"
-          >取消</button>
-          <button
-            @click="submitAICommand"
-            class="px-4 py-2 text-sm rounded-lg bg-purple-700 text-white hover:bg-purple-800 disabled:opacity-50"
-            :disabled="!aiCommandPrompt.trim() || aiCommandLoading"
-          >
-            {{ aiCommandLoading ? 'AI 正在思考...' : '执行' }}
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>

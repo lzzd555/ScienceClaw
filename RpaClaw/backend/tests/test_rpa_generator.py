@@ -302,7 +302,7 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         # Data extraction stored in _collected
         self.assertIn('_collected["detail_title"] = await _ai_command("读取当前详情页标题", "data"', script)
         # Summary step consolidates _collected into _results
-        self.assertIn('_results["summary"]', script)
+        self.assertIn('_results = await _ai_command', script)
 
     def test_generate_script_ai_command_code_mode_embeds_recorded_operation_code(self):
         generator = PlaywrightGenerator()
@@ -1008,7 +1008,7 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         # Summary step at end consolidates _collected into _results
         self.assertIn('if _collected:', script)
         self.assertIn('_summary_ctx = _json.dumps(_collected', script)
-        self.assertIn('_results["summary"]', script)
+        self.assertIn('_results = await _ai_command', script)
         self.assertIn('context=_summary_ctx', script)
 
     def test_generate_script_ai_script_with_evaluate_uses_data_mode(self):
@@ -1084,6 +1084,202 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn('await _ai_command("提取 README 内容", "data"', script)
         self.assertIn('_collected["readme"]', script)
         self.assertNotIn("markdown-body", script)
+
+
+    def test_navigate_step_uses_ai_command_with_locate_context(self):
+        """Navigate step within a macro group that has locate results uses _ai_command instead of goto."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "找出star最高的项目名称和链接",
+                "ai_result_mode": "data_only",
+                "output_variable": "top_repo",
+                "macro_step_index": 0,
+                "macro_step_type": "locate",
+                "macro_step_desc": "找到star最多的项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+            {
+                "action": "navigate",
+                "url": "https://github.com/public-apis/public-apis",
+                "description": "导航到star最高的项目",
+                "macro_step_index": 0,
+                "macro_step_type": "operate",
+                "macro_step_desc": "进入star最多的项目",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # Should NOT have hardcoded goto
+        self.assertNotIn('goto("https://github.com/public-apis/public-apis")', script)
+        # Should use _ai_command with context from locate result
+        self.assertIn('_collected["top_repo"]', script)
+        self.assertIn('_ai_command("导航到star最高的项目", "execute"', script)
+
+    def test_navigate_step_without_locate_context_uses_goto(self):
+        """Navigate step outside a macro group with locate results uses normal goto."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "url": "https://github.com/trending",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('goto("https://github.com/trending")', script)
+        # No _ai_command calls (function definition in template doesn't count)
+        self.assertNotIn('await _ai_command("', script)
+
+    def test_click_step_uses_ai_command_with_locate_context(self):
+        """Click step within a macro group that has locate results uses _ai_command instead of hardcoded locator."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "找出star最高的项目",
+                "ai_result_mode": "data_only",
+                "output_variable": "top_repo",
+                "macro_step_index": 0,
+                "macro_step_type": "locate",
+                "macro_step_desc": "找到star最多的项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "public-apis/public-apis"}),
+                "description": "点击star最高的项目链接进入项目",
+                "macro_step_index": 0,
+                "macro_step_type": "operate",
+                "macro_step_desc": "点击进入项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # Should NOT have hardcoded locator click
+        self.assertNotIn("get_by_role", script)
+        # Should use _ai_command with context from locate result
+        self.assertIn('_collected["top_repo"]', script)
+        self.assertIn('_ai_command("点击star最高的项目链接进入项目", "execute"', script)
+
+    def test_navigate_click_step_uses_ai_command_with_locate_context(self):
+        """Navigate_click step within a macro group that has locate results uses _ai_command."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "找出star最高的项目",
+                "ai_result_mode": "data_only",
+                "output_variable": "top_repo",
+                "macro_step_index": 0,
+                "macro_step_type": "locate",
+                "macro_step_desc": "找到star最多的项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+            {
+                "action": "navigate_click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "public-apis/public-apis"}),
+                "description": "点击进入star最高的项目详情页",
+                "macro_step_index": 0,
+                "macro_step_type": "operate",
+                "macro_step_desc": "进入项目详情",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertNotIn("expect_navigation", script)
+        self.assertIn('_collected["top_repo"]', script)
+        self.assertIn('_ai_command("点击进入star最高的项目详情页", "execute"', script)
+
+    def test_replay_mode_ai_click_with_locate_context_includes_context(self):
+        """Replay_mode=ai click step within a macro group with locate results includes context param."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "找出star最高的项目",
+                "ai_result_mode": "data_only",
+                "output_variable": "top_repo",
+                "macro_step_index": 0,
+                "macro_step_type": "locate",
+                "macro_step_desc": "找到star最多的项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+            {
+                "action": "click",
+                "description": "点击star最高的项目",
+                "macro_step_index": 0,
+                "macro_step_type": "operate",
+                "macro_step_desc": "点击进入",
+                "replay_mode": "ai",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # The _ai_command call should include context param referencing locate result
+        self.assertIn('_collected["top_repo"]', script)
+        self.assertIn('_ai_command("点击star最高的项目", "execute"', script)
+
+    def test_locate_context_cumulative_across_macro_groups(self):
+        """Locate context from earlier macro groups should flow to later groups."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "找出star最高的项目",
+                "ai_result_mode": "data_only",
+                "output_variable": "top_repo",
+                "macro_step_index": 0,
+                "macro_step_type": "locate",
+                "macro_step_desc": "找到star最多的项目",
+                "tab_id": "tab-1",
+                "url": "https://github.com/trending",
+            },
+            # Step in group 0: should use locate context
+            {
+                "action": "navigate",
+                "url": "https://github.com/public-apis/public-apis",
+                "macro_step_index": 0,
+                "macro_step_type": "operate",
+                "macro_step_desc": "进入项目",
+                "tab_id": "tab-1",
+            },
+            # Step in group 1: should ALSO use locate context from group 0 (cumulative)
+            {
+                "action": "navigate",
+                "url": "https://example.com",
+                "macro_step_index": 1,
+                "macro_step_type": "operate",
+                "macro_step_desc": "访问其他页面",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # Group 0 operate step should use _ai_command with context
+        self.assertIn('_collected["top_repo"]', script)
+        # Group 1 operate step should also get context (cumulative across groups)
+        # Count that context appears at least twice (group 0 operate + group 1 operate)
+        self.assertGreaterEqual(script.count('context=_json.dumps({"top_repo": _collected["top_repo"]}'), 2)
 
 
 if __name__ == "__main__":

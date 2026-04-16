@@ -11,6 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 RPA_ROUTE_MODULE = importlib.import_module("backend.route.rpa")
+ASSISTANT_MODULE = importlib.import_module("backend.rpa.assistant")
 
 
 class _FakePage:
@@ -233,6 +234,35 @@ class _FakeManager:
     async def add_step(self, _session_id, step_data):
         self.events.append("add_step")
         return _FakeStep(step_data)
+
+
+class ShouldPlanTests(unittest.TestCase):
+    def test_simple_click_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("点击提交按钮"))
+
+    def test_simple_open_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("打开百度"))
+
+    def test_simple_fill_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("输入用户名"))
+
+    def test_complex_connector_triggers_planning(self):
+        self.assertTrue(ASSISTANT_MODULE._should_plan("打开百度并搜索最新新闻"))
+
+    def test_multi_step_goal_triggers_planning(self):
+        self.assertTrue(ASSISTANT_MODULE._should_plan("查看当前页面star最多的项目，点击进去，查看最新的issue并输出其标题"))
+
+    def test_empty_goal_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan(""))
+
+    def test_short_goal_without_connector_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("点击"))
+
+    def test_english_simple_open_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("open google.com"))
+
+    def test_english_navigate_skips_planning(self):
+        self.assertFalse(ASSISTANT_MODULE._should_plan("navigate to login page"))
 
 
 class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -618,6 +648,136 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary_step["description"], "AI 最终总结")
         self.assertIsNone(summary_step["data_value"])
         self.assertIn("用户原始请求", summary_step["data_prompt"])
+
+    async def test_macro_plan_events_attach_metadata_to_steps(self):
+        """Steps produced within macro groups carry macro_step_index/type/desc."""
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="查找star最多的项目并进入详情页，获取最新issue标题",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        class _MacroAwareAgent:
+            async def run(self, **_kwargs):
+                # Plan
+                yield {
+                    "event": "macro_plan",
+                    "data": {
+                        "steps": [
+                            {"type": "locate", "description": "找到star最多的项目", "sub_goal": "找到star最多的项目"},
+                            {"type": "operate", "description": "进入项目详情页", "sub_goal": "点击进入该项目"},
+                            {"type": "extract", "description": "获取最新issue标题", "sub_goal": "提取最新issue标题"},
+                        ],
+                    },
+                }
+                # Macro step 0: locate
+                yield {"event": "macro_step_start", "data": {"index": 0, "type": "locate", "description": "找到star最多的项目", "sub_goal": "找到star最多的项目"}}
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "ai_command",
+                            "description": "分析并找到star最多的项目",
+                            "prompt": "找到star最多的项目",
+                            "result_key": "top_project",
+                            "data_format": "json",
+                        },
+                        "output": '{"name":"top-repo"}',
+                        "macro_step_index": 0,
+                        "macro_step_type": "locate",
+                        "macro_step_desc": "找到star最多的项目",
+                    },
+                }
+                yield {"event": "macro_step_done", "data": {"index": 0}}
+                # Macro step 1: operate
+                yield {"event": "macro_step_start", "data": {"index": 1, "type": "operate", "description": "进入项目详情页", "sub_goal": "点击进入该项目"}}
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "click",
+                            "target": '{"method":"role","role":"link","name":"top-repo"}',
+                            "frame_path": [],
+                            "description": "点击进入项目",
+                            "source": "ai",
+                        },
+                        "output": "ok",
+                        "macro_step_index": 1,
+                        "macro_step_type": "operate",
+                        "macro_step_desc": "进入项目详情页",
+                    },
+                }
+                yield {"event": "macro_step_done", "data": {"index": 1}}
+                # Macro step 2: extract
+                yield {"event": "macro_step_start", "data": {"index": 2, "type": "extract", "description": "获取最新issue标题", "sub_goal": "提取最新issue标题"}}
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "ai_command",
+                            "description": "提取最新issue标题",
+                            "prompt": "提取最新issue标题",
+                            "result_key": "latest_issue_title",
+                            "data_format": "text",
+                        },
+                        "output": "Fix critical bug",
+                        "macro_step_index": 2,
+                        "macro_step_type": "extract",
+                        "macro_step_desc": "获取最新issue标题",
+                    },
+                }
+                yield {"event": "macro_step_done", "data": {"index": 2}}
+                # Final done
+                yield {
+                    "event": "agent_done",
+                    "data": {
+                        "total_steps": 3,
+                        "final_output": "Fix critical bug",
+                    },
+                }
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _MacroAwareAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        # 3 steps + 1 summary = 4
+        self.assertEqual(len(result["steps"]), 4)
+
+        # Step 0: locate
+        self.assertEqual(result["steps"][0]["macro_step_index"], 0)
+        self.assertEqual(result["steps"][0]["macro_step_type"], "locate")
+        self.assertEqual(result["steps"][0]["macro_step_desc"], "找到star最多的项目")
+        self.assertEqual(result["steps"][0]["action"], "ai_command")
+
+        # Step 1: operate
+        self.assertEqual(result["steps"][1]["macro_step_index"], 1)
+        self.assertEqual(result["steps"][1]["macro_step_type"], "operate")
+        self.assertEqual(result["steps"][1]["action"], "click")
+
+        # Step 2: extract
+        self.assertEqual(result["steps"][2]["macro_step_index"], 2)
+        self.assertEqual(result["steps"][2]["macro_step_type"], "extract")
+        self.assertEqual(result["steps"][2]["data_value"], "Fix critical bug")
+
+        # Step 3: summary (no macro index)
+        self.assertEqual(result["steps"][3]["description"], "AI 最终总结")
+        self.assertNotIn("macro_step_index", result["steps"][3])
+
+        # macro_steps returned
+        self.assertEqual(len(result["macro_steps"]), 3)
+        self.assertEqual(result["macro_steps"][0]["type"], "locate")
 
 
 if __name__ == "__main__":

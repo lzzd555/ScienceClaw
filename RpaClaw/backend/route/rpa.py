@@ -931,7 +931,28 @@ async def chat_with_assistant(
                         evt_type = event.get("event", "message")
                         evt_data = event.get("data", {})
                         if evt_type == "agent_step_done" and evt_data.get("step"):
-                            await rpa_manager.add_step(session_id, evt_data["step"])
+                            step = evt_data["step"]
+                            _macro_type = evt_data.get("macro_step_type") or step.get("macro_step_type", "")
+                            _macro_desc = evt_data.get("macro_step_desc", "")
+                            # Override hardcoded prompts with planner's generic description
+                            if _macro_type not in ("locate", "") and _macro_desc:
+                                step["prompt"] = _macro_desc
+                                step["description"] = _macro_desc
+                            # Attach ai_mode based on macro_step_type for ai_command steps
+                            if step.get("action") == "ai_command":
+                                if _macro_type == "operate":
+                                    step["ai_mode"] = "execute"
+                                    step["ai_result_mode"] = "operation_only"
+                                    step.setdefault("operation_summary", _macro_desc or step.get("description") or "")
+                                else:
+                                    step.setdefault("ai_mode", "data")
+                                    step.setdefault("ai_result_mode", "data_only")
+                            # Persist macro metadata on step
+                            step["macro_step_type"] = _macro_type
+                            if _macro_desc:
+                                step["macro_step_desc"] = _macro_desc
+                            step["macro_step_index"] = evt_data.get("macro_step_index")
+                            await rpa_manager.add_step(session_id, step)
                         if evt_type == "agent_aborted":
                             _active_agents.pop(session_id, None)
                         yield {
@@ -1093,6 +1114,7 @@ async def session_ai_command(
             agent = RPAReActAgent()
             collected_steps: list[dict] = []
             agent_log: list[dict] = []
+            macro_steps_plan: list[dict] = []
             final_output = None
 
             try:
@@ -1138,6 +1160,27 @@ async def session_ai_command(
                             "description": step_desc,
                             "output_preview": step_output,
                         })
+                    elif evt_type == "macro_plan":
+                        macro_steps_plan = evt_data.get("steps", [])
+                        logger.info(
+                            "ReAct agent macro_plan session=%s steps=%d",
+                            session_id, len(macro_steps_plan),
+                        )
+                        agent_log.append({
+                            "phase": "macro_plan",
+                            "steps": macro_steps_plan,
+                        })
+                    elif evt_type in {"macro_step_start", "macro_step_done"}:
+                        macro_idx = evt_data.get("index")
+                        logger.info(
+                            "ReAct agent %s session=%s index=%s",
+                            evt_type, session_id, macro_idx,
+                        )
+                        agent_log.append({
+                            "phase": evt_type,
+                            "index": macro_idx,
+                            **({"type": evt_data.get("type"), "description": evt_data.get("description")} if evt_type == "macro_step_start" else {}),
+                        })
 
                     if evt_type == "agent_step_done":
                         original_step = evt_data.get("step") or {}
@@ -1151,26 +1194,57 @@ async def session_ai_command(
 
                         if action == "ai_command":
                             # Native ai_command from agent — record directly
-                            step_data = {
-                                "action": "ai_command",
-                                "prompt": original_step.get("prompt") or request.prompt,
-                                "value": None,
-                                "output_variable": output_variable or original_step.get("result_key") or None,
-                                "include_page_context": True,
-                                "ai_mode": "data",
-                                "ai_result_mode": "data_only",
-                                "data_prompt": original_step.get("description") or original_step.get("prompt") or request.prompt,
-                                "data_value": output,
-                                "data_summary": original_step.get("description") or None,
-                                "data_format": original_step.get("data_format") or ("json" if _looks_like_json_text(output) else "text"),
-                                "data_context_mode": "page",
-                                "source": "ai",
-                                "description": original_step.get("description") or "AI 数据采集",
-                                "result_key": original_step.get("result_key"),
-                                "assistant_diagnostics": {
-                                    "auto_persist_strategy": "native_ai_command",
-                                },
-                            }
+                            _macro_type = original_step.get("macro_step_type", "")
+                            _macro_desc = original_step.get("macro_step_desc") or request.prompt
+                            # Override hardcoded prompt with planner's generic description for non-locate steps
+                            _effective_prompt = _macro_desc if _macro_type not in ("locate", "") else (original_step.get("prompt") or request.prompt)
+                            _effective_desc = _macro_desc if _macro_type not in ("locate", "") else (original_step.get("description") or "AI 页面操作")
+                            if _macro_type == "operate":
+                                # Operate step → execute mode
+                                step_data = {
+                                    "action": "ai_command",
+                                    "prompt": _effective_prompt,
+                                    "value": None,
+                                    "output_variable": output_variable or original_step.get("result_key") or None,
+                                    "include_page_context": True,
+                                    "ai_mode": "execute",
+                                    "ai_result_mode": "operation_only",
+                                    "operation_summary": _effective_desc,
+                                    "source": "ai",
+                                    "description": _effective_desc,
+                                    "result_key": original_step.get("result_key"),
+                                    "macro_step_index": original_step.get("macro_step_index"),
+                                    "macro_step_type": _macro_type,
+                                    "macro_step_desc": _macro_desc,
+                                    "assistant_diagnostics": {
+                                        "auto_persist_strategy": "native_ai_command_operate",
+                                    },
+                                }
+                            else:
+                                # Locate/extract step → data mode
+                                step_data = {
+                                    "action": "ai_command",
+                                    "prompt": original_step.get("prompt") or request.prompt,
+                                    "value": None,
+                                    "output_variable": output_variable or original_step.get("result_key") or None,
+                                    "include_page_context": True,
+                                    "ai_mode": "data",
+                                    "ai_result_mode": "data_only",
+                                    "data_prompt": original_step.get("description") or original_step.get("prompt") or request.prompt,
+                                    "data_value": output,
+                                    "data_summary": original_step.get("description") or None,
+                                    "data_format": original_step.get("data_format") or ("json" if _looks_like_json_text(output) else "text"),
+                                    "data_context_mode": "page",
+                                    "source": "ai",
+                                    "description": original_step.get("description") or "AI 数据采集",
+                                    "result_key": original_step.get("result_key"),
+                                    "macro_step_index": original_step.get("macro_step_index"),
+                                    "macro_step_type": _macro_type or None,
+                                    "macro_step_desc": original_step.get("macro_step_desc"),
+                                    "assistant_diagnostics": {
+                                        "auto_persist_strategy": "native_ai_command",
+                                    },
+                                }
                         elif action == "extract_text":
                             # Keep as native extract_text — no conversion
                             step_data = dict(original_step)
@@ -1204,6 +1278,13 @@ async def session_ai_command(
                                 "source": "ai",
                                 "replay_mode": "ai",
                             })
+
+                        # Attach macro step metadata if present
+                        _macro_idx = evt_data.get("macro_step_index")
+                        if _macro_idx is not None:
+                            step_data["macro_step_index"] = _macro_idx
+                            step_data["macro_step_type"] = evt_data.get("macro_step_type", "operate")
+                            step_data["macro_step_desc"] = evt_data.get("macro_step_desc", "")
 
                         step = await rpa_manager.add_step(session_id, step_data)
                         collected_steps.append(step.model_dump())
@@ -1253,6 +1334,7 @@ async def session_ai_command(
                             "ai_mode": "auto",
                             "final_output": final_output,
                             "final_output_validation": _validate_auto_final_output_contract(request.prompt, final_output),
+                            "macro_steps": macro_steps_plan,
                             "agent_log": agent_log,
                         }
 

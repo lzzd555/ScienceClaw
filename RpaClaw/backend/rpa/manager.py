@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from playwright.async_api import Page, BrowserContext
 
 from .cdp_connector import get_cdp_connector
@@ -20,6 +20,7 @@ RPA_PAGE_TIMEOUT_MS = 60000
 
 
 class RPAStep(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     action: str
     target: Optional[str] = None
