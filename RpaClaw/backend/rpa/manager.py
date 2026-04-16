@@ -51,10 +51,13 @@ class RPAStep(BaseModel):
     data_value: Optional[str] = None
     data_summary: Optional[str] = None
     data_format: str = "text"  # text | json | empty
+    data_context: Optional[str] = None
+    data_context_mode: Optional[str] = None  # page | literal | collected
     collection_hint: Dict[str, Any] = Field(default_factory=dict)
     item_hint: Dict[str, Any] = Field(default_factory=dict)
     ordinal: Optional[str] = None
     assistant_diagnostics: Dict[str, Any] = Field(default_factory=dict)
+    replay_mode: Optional[str] = None  # "ai" (use _ai_command at runtime) or "code" (hardcoded Playwright)
     sequence: Optional[int] = None
     event_timestamp_ms: Optional[int] = None
 
@@ -951,6 +954,18 @@ class RPASessionManager:
                 step.validation["details"] = selected_candidate["reason"]
         await self._broadcast_step(session_id, step)
         return step
+
+    async def update_step_field(self, session_id: str, step_index: int, field: str, value: Any) -> RPAStep:
+        session = self.sessions.get(session_id)
+        if not session or step_index < 0 or step_index >= len(session.steps):
+            raise ValueError("Invalid step index")
+        step = session.steps[step_index]
+        step_dict = step.model_dump()
+        step_dict[field] = value
+        updated = RPAStep(**step_dict)
+        session.steps[step_index] = updated
+        await self._broadcast_step(session_id, updated)
+        return updated
 
     def pause_recording(self, session_id: str):
         """Pause event recording (used during AI execution)."""

@@ -276,9 +276,9 @@ Return exactly one JSON object per turn, not wrapped in markdown.
 
 Preferred format:
 {
-  "thought": "brief reasoning about the current page and next step",
+  "thought": "one short sentence about the current page and next step",
   "action": "execute|done|abort",
-  "operation": "navigate|click|fill|extract_text|press",
+  "operation": "navigate|click|fill|extract_text|press|ai_command",
   "description": "short action summary",
   "result_key": "short_ascii_snake_case_key_for_extracted_value",
   "target_hint": {
@@ -289,7 +289,9 @@ Preferred format:
     "kind": "search_results|table_rows|cards"
   },
   "ordinal": "first|last|1|2|3",
-  "value": "text to fill or key to press when relevant",
+  "value": "text to fill or key to press when relevant, or extraction prompt for ai_command",
+  "data_format": "text|json (required for ai_command, specifies output format)",
+  "final_output": "required when action=done and the user asked for a final answer format",
   "risk": "none|high",
   "risk_reason": "required when risk is high"
 }
@@ -301,10 +303,16 @@ Rules:
 4. The backend resolves iframe context automatically from the snapshot. Do not invent iframe selectors unless the user explicitly names a frame.
 5. Only use the code field for custom Playwright code when the action cannot be expressed as one atomic structured action.
 6. For irreversible operations such as submit, delete, pay, or authorize, set risk to high.
-7. For extraction tasks, use operation=extract_text, describe what data is being extracted, and include result_key as a short ASCII snake_case key such as latest_issue_title.
-8. Do not mark the task done just because the data is visible on the page.
-9. Execute the extraction step first and return the extracted value.
-10. For example, if the user asks to get or read a title, first run extract_text on the target element, set result_key to something like latest_issue_title, then summarize the extracted value in description.
+7. For data extraction, data collection, or any task that requires reading and summarizing page content, prefer operation=ai_command. Set value to a clear description of what data to extract, data_format to "json" for structured output or "text" for plain text, and result_key to a short ASCII snake_case key.
+8. Only use extract_text when you need to read a specific element's text as part of a navigation or action decision. For general data collection tasks, use ai_command instead.
+9. Do not mark the task done just because the data is visible on the page.
+10. Execute the extraction step first and return the extracted value.
+11. Keep thought to a single short sentence. Do not use bullet lists, raw line breaks, or long prose in thought.
+12. If the user requires a strict final format such as a JSON array, keep the control object wrapper and put the exact final answer in final_output.
+13. If the user asks for all items, a table, multiple records, or a strict JSON array of objects, use operation=ai_command with data_format="json" to collect the full dataset.
+14. When operation is present, omit the code field unless custom Playwright code is strictly necessary.
+15. If the same action was already attempted (shown in Recent actions) and the page state did not change, do NOT repeat it. Try a different approach, adjust the target, or set action to "done" with whatever partial result is available.
+16. Do NOT issue a navigate step immediately after a click that already caused a page navigation. If a link click changed the URL, the navigation is already complete — proceed to the next task instead of navigating again.
 """
 
 
@@ -320,6 +328,7 @@ class RPAReActAgent:
         self._confirm_approved: bool = False
         self._aborted: bool = False
         self._history: List[Dict[str, str]] = []  # persists across turns
+        self._recent_actions: List[str] = []
 
     def resolve_confirm(self, approved: bool) -> None:
         self._confirm_approved = approved
@@ -341,6 +350,7 @@ class RPAReActAgent:
         page_provider: Optional[Callable[[], Optional[Page]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         self._aborted = False
+        self._recent_actions = []
         steps_done = 0
 
         # Append new user goal to persistent history
@@ -361,7 +371,7 @@ class RPAReActAgent:
                 yield {"event": "agent_aborted", "data": {"reason": "No active page available"}}
                 return
             snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
-            obs = self._build_observation(snapshot, steps_done)
+            obs = self._build_observation(snapshot, steps_done, self._recent_actions[-5:])
             self._history.append({"role": "user", "content": obs})
 
             # Think — stream LLM response
@@ -379,6 +389,7 @@ class RPAReActAgent:
 
             thought = parsed.get("thought", "")
             action = parsed.get("action", "execute")
+            final_output = parsed.get("final_output")
             structured_intent = self._extract_structured_execute_intent(parsed, goal)
             code = parsed.get("code", "")
             description = parsed.get("description", "Execute step")
@@ -391,7 +402,10 @@ class RPAReActAgent:
             yield {"event": "agent_thought", "data": {"text": thought}}
 
             if action == "done":
-                yield {"event": "agent_done", "data": {"total_steps": steps_done}}
+                event_data = {"total_steps": steps_done}
+                if final_output is not None:
+                    event_data["final_output"] = final_output
+                yield {"event": "agent_done", "data": event_data}
                 return
 
             if action == "abort":
@@ -416,6 +430,17 @@ class RPAReActAgent:
                     self._history.append({"role": "user", "content": "User rejected that step. Continue with a safer next step or finish."})
                     continue
 
+            # Duplicate action detection — skip if same as the last action
+            if structured_intent:
+                action_sig = self._action_signature(structured_intent)
+            else:
+                action_sig = f"code:{description[:50]}"
+            if self._recent_actions and self._recent_actions[-1] == action_sig:
+                self._history.append({"role": "user", "content":
+                    f"WARNING: You just attempted '{action_sig}' and the page may not have changed. "
+                    f"Try a different approach or declare done."})
+                continue
+
             # Act
             yield {
                 "event": "agent_action",
@@ -428,14 +453,25 @@ class RPAReActAgent:
             if current_page is None:
                 yield {"event": "agent_aborted", "data": {"reason": "No active page available"}}
                 return
-            if structured_intent:
-                resolved_intent = resolve_structured_intent(snapshot, structured_intent)
-                result = await execute_structured_intent(current_page, resolved_intent)
-            else:
-                executable = self._wrap_code(code)
-                result = await _execute_on_page(current_page, executable)
+            try:
+                if structured_intent and structured_intent.get("action") == "ai_command":
+                    result = await self._execute_ai_command(current_page, structured_intent, model_config)
+                elif structured_intent:
+                    resolved_intent = resolve_structured_intent(snapshot, structured_intent)
+                    result = await execute_structured_intent(current_page, resolved_intent)
+                else:
+                    executable = self._wrap_code(code)
+                    result = await _execute_on_page(current_page, executable)
+            except Exception as act_exc:
+                import traceback as _tb
+                result = {"success": False, "error": f"{type(act_exc).__name__}: {act_exc}\n{_tb.format_exc()[:500]}"}
             if result["success"]:
                 steps_done += 1
+                # Track action for duplicate detection
+                if structured_intent:
+                    self._recent_actions.append(self._action_signature(structured_intent))
+                else:
+                    self._recent_actions.append(f"code:{description[:50]}")
                 step_data = result.get("step") or {
                     "action": "ai_script",
                     "source": "ai",
@@ -457,13 +493,79 @@ class RPAReActAgent:
 
         yield {"event": "agent_done", "data": {"total_steps": steps_done}}
 
+    async def _execute_ai_command(
+        self,
+        page: Page,
+        intent: Dict[str, Any],
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Execute ai_command: extract data from page using LLM.
+
+        Consistent with the runtime _ai_command helper in generated scripts,
+        which reads page.inner_text("body") as context.
+        """
+        prompt = intent.get("value") or intent.get("description") or intent.get("prompt") or ""
+        data_format = intent.get("data_format", "text")
+
+        # Build page context (same as runtime _ai_command behavior)
+        try:
+            context = await page.inner_text("body")
+            if len(context) > 50000:
+                context = context[:50000]
+        except Exception:
+            context = ""
+
+        # Build LLM messages
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        messages: List[Any] = []
+        if context:
+            system_text = f"以下是当前页面的文本内容：\n\n{context}"
+            if data_format == "json":
+                system_text += "\n请以合法 JSON 格式输出结果，不要包含 markdown 标记。"
+            messages.append(SystemMessage(content=system_text))
+        elif data_format == "json":
+            messages.append(SystemMessage(content="请以合法 JSON 格式输出结果，不要包含 markdown 标记。"))
+        messages.append(HumanMessage(content=prompt))
+
+        model = get_llm_model(config=model_config, streaming=False)
+        response = await model.ainvoke(messages)
+        output = response.content if hasattr(response, "content") else str(response)
+        output = output.strip()
+
+        return {
+            "success": True,
+            "output": output,
+            "step": {
+                "action": "ai_command",
+                "source": "ai",
+                "value": None,
+                "description": intent.get("description") or prompt,
+                "prompt": intent.get("prompt") or prompt,
+                "result_key": intent.get("result_key"),
+                "data_format": data_format,
+            },
+        }
+
     @staticmethod
-    def _build_observation(snapshot: Dict[str, Any], steps_done: int) -> str:
+    def _action_signature(intent: Dict[str, Any]) -> str:
+        operation = intent.get("action", "")
+        target_hint = intent.get("target_hint") or {}
+        name = str(target_hint.get("name") or target_hint.get("text") or target_hint.get("value") or "")[:30]
+        value = str(intent.get("value") or "")[:30]
+        return f"{operation}|{name}|{value}"
+
+    @staticmethod
+    def _build_observation(snapshot: Dict[str, Any], steps_done: int, recent_actions: Optional[List[str]] = None) -> str:
         frame_lines = _snapshot_frame_lines(snapshot)
+        recent_section = ""
+        if recent_actions:
+            lines = [f"  {i+1}. {action}" for i, action in enumerate(recent_actions)]
+            recent_section = "\nRecent actions:\n" + "\n".join(lines) + "\n"
         return f"""Current page state:
 URL: {snapshot.get('url', '')}
 Title: {snapshot.get('title', '')}
-Completed steps: {steps_done}
+Completed steps: {steps_done}{recent_section}
 
 Current page snapshot:
 {chr(10).join(frame_lines) or "(no observable elements)"}
@@ -474,7 +576,7 @@ Return the next JSON action."""
     def _extract_structured_execute_intent(parsed: Dict[str, Any], prompt: str) -> Optional[Dict[str, Any]]:
         action = str(parsed.get("action", "") or "").strip().lower()
         operation = str(parsed.get("operation", "") or "").strip().lower()
-        atomic_actions = {"navigate", "click", "fill", "extract_text", "press"}
+        atomic_actions = {"navigate", "click", "fill", "extract_text", "press", "ai_command"}
 
         if action in atomic_actions:
             operation = action
@@ -488,7 +590,7 @@ Return the next JSON action."""
             "description": parsed.get("description", operation),
             "prompt": prompt,
         }
-        for key in ("target_hint", "collection_hint", "ordinal", "value", "result_key"):
+        for key in ("target_hint", "collection_hint", "ordinal", "value", "result_key", "data_format"):
             value = parsed.get(key)
             if value is not None:
                 intent[key] = value
@@ -496,27 +598,160 @@ Return the next JSON action."""
 
     @staticmethod
     def _parse_json(text: str) -> Optional[Dict[str, Any]]:
-        # Try raw JSON first
         text = text.strip()
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
+        candidates: List[str] = [text]
         # Try extracting from code block
         m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
         if m:
+            candidates.append(m.group(1).strip())
+        balanced = RPAReActAgent._extract_balanced_json(text)
+        if balanced:
+            candidates.append(balanced)
+        stripped_code = RPAReActAgent._drop_trailing_code_field(text)
+        if stripped_code:
+            candidates.append(stripped_code)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
             try:
-                return json.loads(m.group(1).strip())
+                payload = json.loads(candidate)
             except Exception:
-                pass
-        # Try finding { ... } block
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                pass
+                continue
+            coerced = RPAReActAgent._coerce_parsed_response(payload)
+            if coerced:
+                return coerced
+
+        return RPAReActAgent._salvage_terminal_response(text)
+
+    @staticmethod
+    def _coerce_parsed_response(payload: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, list):
+            return {
+                "thought": "",
+                "action": "done",
+                "description": "Return final output",
+                "final_output": payload,
+                "risk": "none",
+                "risk_reason": "",
+            }
         return None
+
+    @staticmethod
+    def _extract_balanced_json(text: str) -> Optional[str]:
+        start = -1
+        opening = ""
+        closing = ""
+        for idx, char in enumerate(text):
+            if char == "{":
+                start = idx
+                opening = "{"
+                closing = "}"
+                break
+            if char == "[":
+                start = idx
+                opening = "["
+                closing = "]"
+                break
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(text)):
+            char = text[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+        return None
+
+    @staticmethod
+    def _extract_simple_json_string(text: str, field: str) -> Optional[str]:
+        pattern = rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            return None
+        try:
+            return json.loads(f'"{match.group(1)}"')
+        except Exception:
+            return match.group(1)
+
+    @staticmethod
+    def _drop_trailing_code_field(text: str) -> Optional[str]:
+        if '"code"' not in text:
+            return None
+        sanitized = re.sub(r',\s*"code"\s*:\s*".*$', "}", text, flags=re.DOTALL)
+        if sanitized != text:
+            return sanitized
+        sanitized = re.sub(r'"code"\s*:\s*".*$', "}", text, flags=re.DOTALL)
+        if sanitized != text:
+            return sanitized
+        return None
+
+    @staticmethod
+    def _extract_balanced_field_value(text: str, field: str) -> Any:
+        match = re.search(rf'"{re.escape(field)}"\s*:\s*', text)
+        if not match:
+            return None
+        remainder = text[match.end():].lstrip()
+        extracted = RPAReActAgent._extract_balanced_json(remainder)
+        if not extracted:
+            return None
+        try:
+            return json.loads(extracted)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _salvage_terminal_response(text: str) -> Optional[Dict[str, Any]]:
+        action = RPAReActAgent._extract_simple_json_string(text, "action")
+        if action not in {"execute", "done", "abort"}:
+            return None
+        parsed: Dict[str, Any] = {
+            "thought": RPAReActAgent._extract_simple_json_string(text, "thought") or "",
+            "action": action,
+            "description": RPAReActAgent._extract_simple_json_string(text, "description") or "",
+            "risk": RPAReActAgent._extract_simple_json_string(text, "risk") or "none",
+            "risk_reason": RPAReActAgent._extract_simple_json_string(text, "risk_reason") or "",
+        }
+        operation = RPAReActAgent._extract_simple_json_string(text, "operation")
+        if operation:
+            parsed["operation"] = operation
+        result_key = RPAReActAgent._extract_simple_json_string(text, "result_key")
+        if result_key:
+            parsed["result_key"] = result_key
+        value = RPAReActAgent._extract_simple_json_string(text, "value")
+        if value:
+            parsed["value"] = value
+        final_output = RPAReActAgent._extract_balanced_field_value(text, "final_output")
+        if final_output is not None:
+            parsed["final_output"] = final_output
+        target_hint = RPAReActAgent._extract_balanced_field_value(text, "target_hint")
+        if isinstance(target_hint, dict):
+            parsed["target_hint"] = target_hint
+        collection_hint = RPAReActAgent._extract_balanced_field_value(text, "collection_hint")
+        if isinstance(collection_hint, dict):
+            parsed["collection_hint"] = collection_hint
+        return parsed
 
     @staticmethod
     def _wrap_code(code: str) -> str:
@@ -831,6 +1066,3 @@ class RPAAssistant:
 
     async def _execute_on_page(self, page: Page, code: str) -> Dict[str, Any]:
         return await _execute_on_page(page, code)
-
-
-

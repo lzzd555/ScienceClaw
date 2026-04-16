@@ -18,7 +18,7 @@ class ScriptExecutor:
         browser: Browser,
         script: str,
         on_log: Optional[Callable[[str], None]] = None,
-        timeout: float = 90.0,
+        timeout: Optional[float] = None,
         session_id: Optional[str] = None,
         page_registry: Optional[Any] = None,
         session_manager: Optional[Any] = None,
@@ -99,18 +99,24 @@ class ScriptExecutor:
                 error_str = str(e)
                 if "STEP_FAILED:" in error_str:
                     try:
-                        parts = error_str.split("STEP_FAILED:", 1)[1].split(":", 1)
-                        failed_step_index = int(parts[0])
-                        original_error = parts[1] if len(parts) > 1 else error_str
+                        after_prefix = error_str.split("STEP_FAILED:", 1)[1]
+                        colon_pos = after_prefix.find(":")
+                        if colon_pos != -1:
+                            failed_step_index = int(after_prefix[:colon_pos])
+                            original_error = after_prefix[colon_pos + 1:]
+                        else:
+                            original_error = error_str
                     except (ValueError, IndexError):
                         pass
 
-                output = f"SKILL_ERROR: {original_error}"
+                # Truncate very long errors (e.g. full tracebacks) for display
+                display_error = original_error[:500] if len(original_error) > 500 else original_error
+                output = f"SKILL_ERROR: {display_error}"
                 if on_log:
                     if failed_step_index is not None:
-                        on_log(f"Step {failed_step_index + 1} failed: {original_error}")
+                        on_log(f"Step {failed_step_index + 1} failed: {display_error}")
                     else:
-                        on_log(f"Execution failed: {original_error}")
+                        on_log(f"Execution failed: {display_error}")
                 return {
                     "success": False,
                     "output": output,

@@ -293,15 +293,90 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         script = generator.generate_script(steps, is_local=True, test_mode=True)
 
         # Operation uses _ai_command("execute", ...) instead of embedded code
-        self.assertIn('await _ai_command("打开详情页", "execute", current_page, kwargs.get("_ai_token", ""))', script)
+        self.assertIn('await _ai_command("打开详情页", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)', script)
         # Hardcoded operation code should NOT appear
         self.assertNotIn("await current_page.get_by_role('link', name='详情').click()", script)
         # Stability wait between operation and data: initial delay before load-state checks
         self.assertIn('wait_for_timeout(500)', script)
         self.assertIn('wait_for_load_state("domcontentloaded"', script)
-        # Data extraction
-        self.assertIn('detail_title = await _ai_command("读取当前详情页标题", "data", current_page, kwargs.get("_ai_token", ""))', script)
-        self.assertIn('_results["detail_title"] = detail_title', script)
+        # Data extraction stored in _collected
+        self.assertIn('_collected["detail_title"] = await _ai_command("读取当前详情页标题", "data"', script)
+        # Summary step consolidates _collected into _results
+        self.assertIn('_results["summary"]', script)
+
+    def test_generate_script_ai_command_code_mode_embeds_recorded_operation_code(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "打开详情页并读取标题",
+                "operation_code": "await page.get_by_role('link', name='详情').click()",
+                "operation_summary": "打开详情页",
+                "data_prompt": "读取当前详情页标题",
+                "output_variable": "detail_title",
+                "ai_result_mode": "operation_and_data",
+                "replay_mode": "code",
+                "description": "AI 命令",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+
+        self.assertIn('await current_page.get_by_role(\'link\', name=\'详情\').click()', script)
+        self.assertNotIn('await _ai_command("打开详情页", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)', script)
+        self.assertIn('_collected["detail_title"] = await _ai_command("读取当前详情页标题", "data"', script)
+
+    def test_generate_script_ai_command_ai_mode_uses_runtime_operation_prompt(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "打开详情页并读取标题",
+                "operation_code": "await page.get_by_role('link', name='详情').click()",
+                "operation_summary": "打开详情页",
+                "data_prompt": "读取当前详情页标题",
+                "output_variable": "detail_title",
+                "ai_result_mode": "operation_and_data",
+                "replay_mode": "ai",
+                "description": "AI 命令",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+
+        self.assertIn('await _ai_command("打开详情页", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)', script)
+        self.assertNotIn('await current_page.get_by_role(\'link\', name=\'详情\').click()', script)
+
+    def test_generate_script_ai_command_summary_step_can_use_collected_context(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_command",
+                "prompt": "提取当前项目简介",
+                "data_prompt": "提取当前项目简介",
+                "output_variable": "repo_summary",
+                "ai_result_mode": "data_only",
+                "description": "提取项目简介",
+            },
+            {
+                "action": "ai_command",
+                "prompt": "帮我查看这周 github 最火的项目，并帮我简单介绍下",
+                "data_prompt": "帮我查看这周 github 最火的项目，并帮我简单介绍下",
+                "data_context_mode": "collected",
+                "output_variable": "weekly_trending_summary",
+                "ai_result_mode": "data_only",
+                "description": "AI 最终总结",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True, test_mode=True)
+
+        self.assertIn('_collected["repo_summary"] = await _ai_command("提取当前项目简介", "data"', script)
+        self.assertIn('_step_context = _json.dumps(_collected, ensure_ascii=False, default=str)', script)
+        self.assertIn('context=_step_context', script)
+        self.assertIn('_collected["weekly_trending_summary"] = await _ai_command("帮我查看这周 github 最火的项目，并帮我简单介绍下", "data"', script)
+        self.assertIn('_results = _collected["weekly_trending_summary"]', script)
+        self.assertNotIn('_results["summary"]', script)
 
     def test_generate_script_switches_back_to_existing_tab(self):
         generator = PlaywrightGenerator()
@@ -617,7 +692,8 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertEqual(script.count('_results["preview"] = preview'), 1)
 
 
-    def test_generate_script_does_not_prefix_for_loop_over_page_frames_with_await(self):
+    def test_generate_script_ai_script_with_for_loop_uses_ai_command_execute(self):
+        """ai_script steps with for/if loops should use _ai_command for dynamic replay."""
         generator = PlaywrightGenerator()
         steps = [
             {
@@ -637,8 +713,36 @@ class PlaywrightGeneratorTests(unittest.TestCase):
 
         script = generator.generate_script(steps, is_local=True)
 
-        self.assertIn('for frame in page.frames:', script)
-        self.assertNotIn('await for frame in page.frames:', script)
+        # Dynamic loop step should use _ai_command("execute", ...) instead of raw code
+        self.assertIn('await _ai_command("loop frames", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)', script)
+        # Raw for-loop code should NOT be embedded
+        self.assertNotIn('for frame in page.frames:', script)
+
+    def test_generate_script_replays_dynamic_data_collection_via_ai_command_step(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "description": "打开 PR 列表页",
+                "url": "https://github.com/example/repo/pulls?q=is%3Apr",
+            },
+            {
+                "action": "ai_command",
+                "source": "ai",
+                "description": "批量收集 PR 标题",
+                "prompt": "收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+                "ai_mode": "data",
+                "ai_result_mode": "data_only",
+                "data_prompt": "批量收集 PR 标题",
+                "output_variable": "all_pr_titles",
+                "url": "https://github.com/example/repo/pulls?q=is%3Apr",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await current_page.goto("https://github.com/example/repo/pulls?q=is%3Apr")', script)
+        self.assertIn('_collected["all_pr_titles"] = await _ai_command("批量收集 PR 标题", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)', script)
 
     def test_generate_script_uses_collection_item_locator_for_first_structured_collection(self):
         generator = PlaywrightGenerator()
@@ -856,6 +960,130 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         parts = str(err).split("STEP_FAILED:", 1)[1].split(":", 1)
         self.assertEqual(int(parts[0]), 1)
         self.assertEqual(parts[1], "Timeout 30000ms")
+
+    def test_generate_script_pagination_keeps_natural_flow_with_summary(self):
+        """Pagination steps stay as natural flow, data collected into _collected, summary at end."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "description": "打开PR列表",
+                "url": "https://github.com/example/repo/pulls?q=is%3Apr",
+            },
+            {
+                "action": "ai_script",
+                "source": "ai",
+                "description": "收集当前页面所有PR的标题和创建人",
+                "prompt": "收集PR信息",
+                "value": 'pr_items = await page.evaluate(\'\'\'() => { return document.querySelectorAll("a").length }\'\'\')',
+                "url": "https://github.com/example/repo/pulls?q=is%3Apr",
+                "tab_id": "tab-1",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "link", "name": "Page 2"}),
+                "description": "点击Page 2链接查看更多PR",
+                "tag": "A",
+                "url": "https://github.com/example/repo/pulls?page=2",
+                "tab_id": "tab-1",
+            },
+            {
+                "action": "ai_script",
+                "source": "ai",
+                "description": "收集第二页PR数据并输出完整结果",
+                "prompt": "收集PR信息",
+                "value": 'page2_prs = await page.evaluate(\'\'\'() => { return document.querySelectorAll("a").length }\'\'\')',
+                "url": "https://github.com/example/repo/pulls?page=2",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # Natural flow preserved: click Page 2 stays
+        self.assertIn('await current_page.get_by_role("link", name="Page 2"', script)
+        # Both data collections use "data" mode and store in _collected
+        self.assertIn('_collected["step_2"] = await _ai_command("收集当前页面所有PR的标题和创建人", "data"', script)
+        self.assertIn('_collected["step_4"] = await _ai_command("收集第二页PR数据并输出完整结果", "data"', script)
+        # Summary step at end consolidates _collected into _results
+        self.assertIn('if _collected:', script)
+        self.assertIn('_summary_ctx = _json.dumps(_collected', script)
+        self.assertIn('_results["summary"]', script)
+        self.assertIn('context=_summary_ctx', script)
+
+    def test_generate_script_ai_script_with_evaluate_uses_data_mode(self):
+        """ai_script with page.evaluate should use 'data' mode even without output_variable."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_script",
+                "source": "ai",
+                "description": "收集当前页面所有PR的标题",
+                "prompt": "收集PR信息",
+                "value": 'pr_items = await page.evaluate(\'\'\'() => { return [] }\'\'\')',
+                "url": "https://github.com/example/repo/pulls",
+                "tab_id": "tab-1",
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # Should use "data" mode, not "execute"
+        self.assertIn('"data"', script)
+        # Should capture result into _collected
+        self.assertIn("_collected[", script)
+        # Should NOT use "execute" mode
+        self.assertNotIn('await _ai_command("收集当前页面所有PR的标题", "execute"', script)
+
+    def test_generate_script_replay_mode_ai_uses_ai_command_for_click(self):
+        """When replay_mode='ai', click steps should use _ai_command instead of hardcoded locator."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "url": "https://github.com/trending",
+                "description": "打开 GitHub trending",
+                "tab_id": "tab-1",
+            },
+            {
+                "action": "click",
+                "target": json.dumps({"method": "css", "value": "article:first-child h2 a"}),
+                "description": "点击最火的项目",
+                "prompt": "点击最火的项目",
+                "source": "ai",
+                "replay_mode": "ai",
+                "url": "https://github.com/trending",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await _ai_command("点击最火的项目", "execute"', script)
+        self.assertNotIn("article:first-child", script)
+
+    def test_generate_script_replay_mode_ai_uses_ai_command_for_extract_text(self):
+        """When replay_mode='ai', extract_text steps should use _ai_command data mode."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "extract_text",
+                "target": json.dumps({"method": "css", "value": "article.markdown-body"}),
+                "description": "提取 README 内容",
+                "prompt": "提取 README",
+                "result_key": "readme",
+                "source": "ai",
+                "replay_mode": "ai",
+                "url": "https://github.com/example/repo",
+                "tab_id": "tab-1",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn('await _ai_command("提取 README 内容", "data"', script)
+        self.assertIn('_collected["readme"]', script)
+        self.assertNotIn("markdown-body", script)
 
 
 if __name__ == "__main__":

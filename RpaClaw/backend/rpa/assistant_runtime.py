@@ -527,6 +527,13 @@ def _sample_name_tokens(collection: Dict[str, Any]) -> set[str]:
     return tokens
 
 
+def _looks_like_navigation_label(value: Optional[str]) -> bool:
+    lowered = _normalize_hint(value)
+    if not lowered:
+        return False
+    return any(token in lowered for token in ["navigation", "menu", "breadcrumb", "sidebar", "toolbar"])
+
+
 def _average_item_name_length(collection: Dict[str, Any]) -> float:
     names = [str(item.get("name", "")).strip() for item in (collection.get("items") or [])[:5] if item.get("name")]
     if not names:
@@ -566,6 +573,12 @@ def _semantic_collection_score(collection: Dict[str, Any], intent: Dict[str, Any
             score += 1
         elif average_name_length >= 40 and not control_requested:
             score -= 1
+
+    if not _has_structural_template(collection) and (primary_item_requested or title_requested):
+        score -= 6
+
+    if any(_looks_like_navigation_label(item.get("name")) for item in (collection.get("items") or [])[:4]) and not control_requested:
+        score -= 8
 
     return score
 
@@ -701,6 +714,8 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
         score += min(len(expected_tokens & haystack_tokens) * 2, 6)
         if "title" in expected_tokens and _normalize_hint(node.get("semantic_kind")) in {"heading", "title"}:
             score += 3
+    if _looks_like_navigation_label(node.get("text")) and not (expected_tokens & {"navigation", "menu", "breadcrumb", "sidebar", "toolbar"}):
+        score -= 8
     if node.get("bbox"):
         score += 1
     return score
@@ -924,14 +939,15 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
 
     locator_payload = resolved["locator"]
     locator = _locator_from_payload(scope, locator_payload)
+    _act_timeout = 10000  # 10s timeout for AI-driven locator actions
     if action == "click":
-        await locator.click()
+        await locator.click(timeout=_act_timeout)
     elif action == "extract_text":
-        output = await locator.inner_text()
+        output = await locator.inner_text(timeout=_act_timeout)
     elif action == "fill":
-        await locator.fill(intent.get("value", ""))
+        await locator.fill(intent.get("value", ""), timeout=_act_timeout)
     elif action == "press":
-        await locator.press(intent.get("value", "Enter"))
+        await locator.press(intent.get("value", "Enter"), timeout=_act_timeout)
     else:
         raise ValueError(f"Unsupported action: {action}")
 
@@ -963,4 +979,3 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         "value": intent.get("value"),
     }
     return {"success": True, "step": step, "output": output}
-

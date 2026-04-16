@@ -26,6 +26,7 @@ import httpx
 from playwright.async_api import async_playwright
 
 _AI_COMMAND_URL = "{ai_command_url}"
+_script_log = None
 
 async def _get_cdp_url() -> str:
     """Fetch CDP WebSocket URL from the local sandbox API."""
@@ -35,38 +36,56 @@ async def _get_cdp_url() -> str:
         return resp.json()["data"]["cdp_url"]
 
 
-async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None):
+async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None, context: str = None):
     """Call AI with prompt. mode='execute' runs Playwright code, mode='data' returns text."""
+    if _script_log:
+        _script_log(f"[AI] {{mode}}: {{prompt[:100]}}")
     _target_url = url or _AI_COMMAND_URL
     _ctx = ""
-    try:
-        _ctx = await page.inner_text("body")
-        if len(_ctx) > 50000:
-            _ctx = _ctx[:50000]
-    except Exception:
-        pass
-    _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
-    async with httpx.AsyncClient(timeout=120) as _c:
-        _r = await _c.post(
-            _target_url,
-            json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
-            headers=_headers
-        )
-        _r.raise_for_status()
+    if context is not None:
+        _ctx = context
+    else:
         try:
-            _payload = _r.json()
-        except Exception as _json_exc:
-            raise RuntimeError(
-                f"AI command returned non-JSON response (status={{_r.status_code}}): {{_r.text[:200]}}"
-            ) from _json_exc
-        _text = _payload["data"]["response"]
-        if mode == "execute":
-            _fn_src = "async def __ai():\\n" + "\\n".join("    " + l for l in _text.strip().split("\\n"))
-            _ns = {{"page": page}}
-            exec(_fn_src, _ns)
-            await _ns["__ai"]()
-            return None
-        return _text
+            _ctx = await page.inner_text("body")
+            if len(_ctx) > 50000:
+                _ctx = _ctx[:50000]
+        except Exception:
+            pass
+    if _script_log:
+        _script_log(f"[AI] context={{len(_ctx)}} chars, url={{_target_url}}")
+    _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
+    try:
+        async with httpx.AsyncClient(timeout=300) as _c:
+            _r = await _c.post(
+                _target_url,
+                json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
+                headers=_headers
+            )
+            _r.raise_for_status()
+            try:
+                _payload = _r.json()
+            except Exception as _json_exc:
+                raise RuntimeError(
+                    f"AI command returned non-JSON response (status={{_r.status_code}}): {{_r.text[:200]}}"
+                ) from _json_exc
+            _text = _payload["data"]["response"]
+            if mode == "execute":
+                if _script_log:
+                    _script_log(f"[AI] execute code: {{_text[:200]}}")
+                _fn_src = "async def __ai():\\n" + "\\n".join("    " + l for l in _text.strip().split("\\n"))
+                _ns = {{"page": page}}
+                exec(_fn_src, _ns)
+                await _ns["__ai"]()
+                if _script_log:
+                    _script_log(f"[AI] execute done")
+                return None
+            if _script_log:
+                _script_log(f"[AI] response ({{len(_text)}} chars): {{_text[:200]}}")
+            return _text
+    except Exception as _e:
+        if _script_log:
+            _script_log(f"[AI] ERROR: {{type(_e).__name__}}: {{str(_e)[:300]}}")
+        raise
 
 
 {execute_skill_func}
@@ -127,40 +146,59 @@ import httpx
 from playwright.async_api import async_playwright
 
 _AI_COMMAND_URL = "{ai_command_url}"
+_script_log = None
 
 
-async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None):
+async def _ai_command(prompt: str, mode: str, page, token: str, url: str = None, context: str = None):
     """Call AI with prompt. mode='execute' runs Playwright code, mode='data' returns text."""
+    if _script_log:
+        _script_log(f"[AI] {{mode}}: {{prompt[:100]}}")
     _target_url = url or _AI_COMMAND_URL
     _ctx = ""
-    try:
-        _ctx = await page.inner_text("body")
-        if len(_ctx) > 50000:
-            _ctx = _ctx[:50000]
-    except Exception:
-        pass
-    _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
-    async with httpx.AsyncClient(timeout=120) as _c:
-        _r = await _c.post(
-            _target_url,
-            json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
-            headers=_headers
-        )
-        _r.raise_for_status()
+    if context is not None:
+        _ctx = context
+    else:
         try:
-            _payload = _r.json()
-        except Exception as _json_exc:
-            raise RuntimeError(
-                f"AI command returned non-JSON response (status={{_r.status_code}}): {{_r.text[:200]}}"
-            ) from _json_exc
-        _text = _payload["data"]["response"]
-        if mode == "execute":
-            _fn_src = "async def __ai():\\n" + "\\n".join("    " + l for l in _text.strip().split("\\n"))
-            _ns = {{"page": page}}
-            exec(_fn_src, _ns)
-            await _ns["__ai"]()
-            return None
-        return _text
+            _ctx = await page.inner_text("body")
+            if len(_ctx) > 50000:
+                _ctx = _ctx[:50000]
+        except Exception:
+            pass
+    if _script_log:
+        _script_log(f"[AI] context={{len(_ctx)}} chars, url={{_target_url}}")
+    _headers = {{"Authorization": f"Bearer {{token}}"}} if token else {{}}
+    try:
+        async with httpx.AsyncClient(timeout=300) as _c:
+            _r = await _c.post(
+                _target_url,
+                json={{"prompt": prompt, "page_context": _ctx, "mode": mode}},
+                headers=_headers
+            )
+            _r.raise_for_status()
+            try:
+                _payload = _r.json()
+            except Exception as _json_exc:
+                raise RuntimeError(
+                    f"AI command returned non-JSON response (status={{_r.status_code}}): {{_r.text[:200]}}"
+                ) from _json_exc
+            _text = _payload["data"]["response"]
+            if mode == "execute":
+                if _script_log:
+                    _script_log(f"[AI] execute code: {{_text[:200]}}")
+                _fn_src = "async def __ai():\\n" + "\\n".join("    " + l for l in _text.strip().split("\\n"))
+                _ns = {{"page": page}}
+                exec(_fn_src, _ns)
+                await _ns["__ai"]()
+                if _script_log:
+                    _script_log(f"[AI] execute done")
+                return None
+            if _script_log:
+                _script_log(f"[AI] response ({{len(_text)}} chars): {{_text[:200]}}")
+            return _text
+    except Exception as _e:
+        if _script_log:
+            _script_log(f"[AI] ERROR: {{type(_e).__name__}}: {{str(_e)[:300]}}")
+        raise
 
 
 {execute_skill_func}
@@ -237,11 +275,46 @@ class StepExecutionError(Exception):
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
 
+        # Scan for data collection steps to determine if _collected + summary is needed
+        has_data_collection = False
+        has_explicit_summary_step = False
+        original_goal = ""
+        for s in deduped:
+            act = s.get("action", "")
+            if act == "ai_script":
+                code = s.get("value", "")
+                if ("page.evaluate(" in code or ".evaluate(" in code
+                        or (s.get("output_variable") and s.get("data_value"))):
+                    has_data_collection = True
+                    if not original_goal:
+                        original_goal = s.get("prompt") or s.get("description") or ""
+            elif act == "ai_command":
+                rm = s.get("ai_result_mode", "")
+                if rm in {"data_only", "operation_and_data"}:
+                    has_data_collection = True
+                    if not original_goal:
+                        original_goal = s.get("prompt") or s.get("description") or ""
+                context_mode = (s.get("data_context_mode") or "").strip().lower()
+                if context_mode in {"literal", "collected"}:
+                    has_explicit_summary_step = True
+                if s.get("is_final_summary"):
+                    has_explicit_summary_step = True
+            elif s.get("replay_mode") == "ai" and act == "extract_text":
+                has_data_collection = True
+                if not original_goal:
+                    original_goal = s.get("prompt") or s.get("description") or ""
+
         lines = [
             "",
             "async def execute_skill(page, **kwargs):",
             '    """Auto-generated skill from RPA recording."""',
+            "    global _script_log",
+            "    _script_log = kwargs.get('_on_log')",
             "    _results = {}",
+        ]
+        if has_data_collection:
+            lines.append("    _collected = {}")
+        lines += [
             "    _ai_cmd_url = kwargs.get('_ai_command_url', _AI_COMMAND_URL)",
             f'    tabs = {{"{root_tab_id}": page}}',
             "    current_page = page",
@@ -272,9 +345,39 @@ class StepExecutionError(Exception):
             if desc:
                 lines.append(f"    # {desc}")
 
-            # AI-generated script — embed directly with sync→async conversion
+            # AI-generated script — decide between _ai_command and raw embed
             if action == "ai_script":
                 ai_code = step.get("value", "")
+                if ai_code and self._should_use_ai_command(step):
+                    # Dynamic scenario: use _ai_command for runtime AI-driven replay
+                    effective_prompt = self._escape(
+                        step.get("description") or step.get("prompt") or ""
+                    )
+                    if effective_prompt:
+                        output_var = step.get("output_variable") or ""
+                        data_value = step.get("data_value")
+                        # 含 page.evaluate 的步骤都是数据收集，始终用 data 模式
+                        has_evaluate = "page.evaluate(" in ai_code or ".evaluate(" in ai_code
+                        is_data = has_evaluate or (
+                            bool(output_var)
+                            and bool(data_value)
+                            and str(data_value).strip() not in {"", "ok", "None"}
+                        )
+                        result_var = output_var or f"ai_result_{step_index + 1}"
+                        result_key = output_var or f"ai_data_{step_index + 1}"
+                        if is_data:
+                            step_lines.append(
+                                f'    _collected["step_{step_index + 1}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)'
+                            )
+                        else:
+                            step_lines.append(
+                                f'    await _ai_command("{effective_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)'
+                            )
+                        lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
+                        lines.append("")
+                        continue
+
+                # Simple/deterministic operation or no prompt: embed raw code
                 if ai_code:
                     converted = self._sync_to_async(ai_code)
                     converted = self._inject_result_capture(converted)
@@ -287,14 +390,41 @@ class StepExecutionError(Exception):
 
             # AI command — call _ai_command(prompt, mode, page, token)
             if action == "ai_command":
+                # Final summary step: use collected data + page context, set _results directly
+                if step.get("is_final_summary"):
+                    effective_prompt = self._escape(
+                        step.get("data_prompt") or step.get("prompt") or ""
+                    )
+                    step_lines.append("    _summary_ctx_parts = []")
+                    step_lines.append("    try:")
+                    step_lines.append("        _page_text = await current_page.inner_text(\"body\")")
+                    step_lines.append("        if _page_text:")
+                    step_lines.append("            _summary_ctx_parts.append(\"当前页面内容：\\n\" + _page_text[:25000])")
+                    step_lines.append("    except Exception:")
+                    step_lines.append("        pass")
+                    step_lines.append("    if _collected:")
+                    step_lines.append("        _summary_ctx_parts.append(\"已收集的数据：\\n\" + _json.dumps(_collected, ensure_ascii=False, default=str)[:25000])")
+                    step_lines.append("    _summary_ctx = \"\\n\\n\".join(_summary_ctx_parts) if _summary_ctx_parts else None")
+                    step_lines.append(f'    _summary_text = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)')
+                    step_lines.append("    try:")
+                    step_lines.append("        _results = _json.loads(_summary_text)")
+                    step_lines.append("    except Exception:")
+                    step_lines.append("        _results = _summary_text")
+                    lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
+                    lines.append("")
+                    continue
+
                 prompt_text = self._escape(step.get("prompt", ""))
                 operation_code = step.get("operation_code") or ""
                 operation_summary = self._escape(step.get("operation_summary") or "")
                 data_prompt = self._escape(step.get("data_prompt") or "")
                 data_value = step.get("data_value")
+                data_context = step.get("data_context") or ""
+                data_context_mode = (step.get("data_context_mode") or "page").strip().lower()
                 output_var = step.get("output_variable") or ""
                 result_mode = step.get("ai_result_mode") or "data_only"
                 legacy_mode = step.get("ai_mode", "data")
+                replay_mode = (step.get("replay_mode") or "").strip().lower()
 
                 if not operation_code and legacy_mode == "execute":
                     step_lines.append(f'    await _ai_command("{prompt_text}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
@@ -308,8 +438,12 @@ class StepExecutionError(Exception):
                 # Operation: call AI at runtime so it can see the actual page state
                 # instead of hardcoding recorded code that may break on page changes.
                 if has_operation:
-                    operation_prompt = operation_summary or prompt_text
-                    step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    if replay_mode == "code" and operation_code:
+                        for code_line in self._normalize_ai_operation_code(operation_code).split("\n"):
+                            step_lines.append(f"    {code_line}" if code_line.strip() else "")
+                    else:
+                        operation_prompt = operation_summary or prompt_text
+                        step_lines.append(f'    await _ai_command("{operation_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
 
                 # Stability wait between operation and data extraction
                 if has_operation and has_data:
@@ -324,13 +458,20 @@ class StepExecutionError(Exception):
                     step_lines.append('        pass')
                     step_lines.append('    await current_page.wait_for_timeout(500)')
 
-                # Data extraction
+                # Data extraction → store in _collected for later summary
                 if has_data and (data_prompt or prompt_text or data_value is not None):
-                    result_var = output_var or f"ai_result_{step_index + 1}"
-                    result_key = output_var or f"ai_command_{step_index + 1}"
+                    result_key = output_var or f"step_{step_index + 1}"
                     effective_prompt = data_prompt or prompt_text
-                    step_lines.append(f'    {result_var} = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
-                    step_lines.append(f'    _results["{result_key}"] = {result_var}')
+                    if data_context_mode == "literal" and data_context:
+                        context_literal = json.dumps(str(data_context), ensure_ascii=False)
+                        step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context={context_literal})')
+                    elif data_context_mode == "collected":
+                        step_lines.append("    _step_context = _json.dumps(_collected, ensure_ascii=False, default=str)")
+                        step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_step_context)')
+                    else:
+                        step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{effective_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    if data_context_mode in {"literal", "collected"}:
+                        step_lines.append(f'    _results = _collected["{result_key}"]')
 
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                 lines.append("")
@@ -383,6 +524,20 @@ class StepExecutionError(Exception):
                 step_lines.append(f'    # If this step appears, manually wrap the triggering click with expect_download()')
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                 lines.append("")
+                continue
+
+            # replay_mode=ai: use _ai_command instead of hardcoded locators
+            if step.get("replay_mode") == "ai" and action in {"click", "fill", "press", "extract_text", "navigate_click", "navigate_press"}:
+                ai_prompt = self._escape(step.get("description") or step.get("prompt") or action)
+                if action == "extract_text":
+                    result_key = step.get("result_key") or step.get("output_variable") or f"extract_text_{step_index + 1}"
+                    step_lines.append(f'    _collected["{result_key}"] = await _ai_command("{ai_prompt}", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                else:
+                    step_lines.append(f'    await _ai_command("{ai_prompt}", "execute", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url)')
+                    step_lines.append("    await current_page.wait_for_timeout(500)")
+                lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
+                lines.append("")
+                prev_action = action
                 continue
 
             scope_var = "current_page"
@@ -484,6 +639,16 @@ class StepExecutionError(Exception):
             lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
             lines.append("")
 
+        # Add summary step if data was collected
+        if has_data_collection and not has_explicit_summary_step:
+            goal_text = self._escape(original_goal) if original_goal else "整合所有数据"
+            lines.append("    if _collected:")
+            lines.append("        _summary_ctx = _json.dumps(_collected, ensure_ascii=False, default=str)")
+            lines.append(
+                f'        _results["summary"] = await _ai_command("{goal_text}\\n请将以下分步收集的数据整合为最终的JSON格式结果", "data", current_page, kwargs.get("_ai_token", ""), url=_ai_cmd_url, context=_summary_ctx)'
+            )
+            lines.append("")
+
         lines.append("    return _results")
 
         # Wrap execute_skill function with the runner boilerplate
@@ -522,7 +687,8 @@ class StepExecutionError(Exception):
         wrapped.append("    except StepExecutionError:")
         wrapped.append("        raise")
         wrapped.append("    except Exception as _e:")
-        wrapped.append(f"        raise StepExecutionError(step_index={step_index}, original_error=str(_e))")
+        wrapped.append(f"        import traceback as _step_tb")
+        wrapped.append(f"        raise StepExecutionError(step_index={step_index}, original_error=f'{{type(_e).__name__}}: {{repr(_e)}}\\n{{_step_tb.format_exc()}}')")
         return wrapped
 
     def _build_extract_result_key(self, step: Dict[str, Any], used_result_keys: Dict[str, int]) -> str:
@@ -918,6 +1084,45 @@ class StepExecutionError(Exception):
         effective_value = files[0] if files else value
         return self._maybe_parameterize(str(effective_value or ""), params)
 
+    @classmethod
+    def _should_use_ai_command(cls, step: Dict[str, Any]) -> bool:
+        """判断 ai_script 步骤是否应使用 _ai_command 动态重放。
+
+        数据收集（page.evaluate）、动态操作（循环/条件判断）等场景
+        需要在运行时根据实际页面状态由 AI 动态生成代码，
+        而不是嵌入录制时的硬编码。
+        """
+        code = step.get("value", "")
+
+        # 有明确的输出变量和数据值 → 数据收集，需动态
+        output_var = step.get("output_variable") or ""
+        data_value = step.get("data_value")
+        if output_var and data_value and str(data_value).strip() not in {"", "ok", "None"}:
+            return True
+
+        # 代码含 page.evaluate → 数据提取，需动态
+        if "page.evaluate(" in code or ".evaluate(" in code:
+            return True
+
+        # 代码含循环/条件 → 动态操作（分页等），需动态
+        for line in code.split("\n"):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("for ") or stripped.startswith("while ") or stripped.startswith("if "):
+                return True
+
+        return False
+
+    @staticmethod
+    def _normalize_ai_operation_code(code: str) -> str:
+        """Embed recorded AI operation code into generated scripts using current_page."""
+        import re as _re
+
+        normalized = code.replace("\r\n", "\n")
+        normalized = _re.sub(r"\bpage\b", "current_page", normalized)
+        return normalized
+
     @staticmethod
     def _sync_to_async(code: str) -> str:
         """Convert Playwright sync API code to async by adding await."""
@@ -974,24 +1179,75 @@ class StepExecutionError(Exception):
 
     @classmethod
     def _inject_result_capture(cls, code: str) -> str:
-        """After data-extraction assignments, inject _results[var] = var."""
+        """After data-extraction assignments, inject _results[var] = var.
+
+        Handles multi-line expressions (e.g. page.evaluate('''JS''')) by
+        tracking triple-quote and parenthesis balance, deferring injection
+        until the complete expression closes.
+        """
         lines = code.split('\n')
         result = []
+        pending_var = None       # Variable name awaiting result capture
+        paren_depth = 0          # Running () balance
+        in_triple_quote = False  # Whether we're inside ''' or """
+        triple_quote_char = None # Which triple quote char is open
+
         for line in lines:
             result.append(line)
             stripped = line.strip()
+
+            # Track triple-quoted string state across lines
+            if not in_triple_quote:
+                for tq in ("'''", '"""'):
+                    count = stripped.count(tq)
+                    if count % 2 == 1:
+                        in_triple_quote = True
+                        triple_quote_char = tq
+                        break
+            else:
+                if triple_quote_char and triple_quote_char in stripped:
+                    count = stripped.count(triple_quote_char)
+                    if count % 2 == 1:
+                        in_triple_quote = False
+                        triple_quote_char = None
+
+            # Track parenthesis balance (only outside triple-quoted strings)
+            if not in_triple_quote:
+                paren_depth += stripped.count('(') - stripped.count(')')
+
+            # If we're tracking a pending variable, check if expression is complete
+            if pending_var:
+                if not in_triple_quote and paren_depth <= 0:
+                    # Expression complete — inject result capture
+                    indent = line[:len(line) - len(line.lstrip())]
+                    result.append(f'{indent}_results["{pending_var}"] = {pending_var}')
+                    pending_var = None
+                    paren_depth = 0
+                continue
+
+            # Skip detection inside triple-quoted strings
+            if in_triple_quote:
+                continue
+
+            # Check if this line starts a new assignment
             m = cls._ASSIGN_RE.match(stripped)
             if not m:
                 continue
             var_name = m.group(1)
-            # Find the last method call in the line
             last_call = re.search(r'\.(\w+)\([^)]*\)\s*$', stripped)
             if last_call and last_call.group(1) in cls._LOCATOR_BUILDER_METHODS:
                 continue
             if last_call and last_call.group(1) in cls._ACTION_METHODS:
                 continue
-            indent = line[:len(line) - len(line.lstrip())]
-            result.append(f'{indent}_results["{var_name}"] = {var_name}')
+
+            # Single-line expression: inject immediately
+            if paren_depth <= 0 and not in_triple_quote:
+                indent = line[:len(line) - len(line.lstrip())]
+                result.append(f'{indent}_results["{var_name}"] = {var_name}')
+            else:
+                # Multi-line expression: defer injection until it completes
+                pending_var = var_name
+
         return '\n'.join(result)
 
     @classmethod

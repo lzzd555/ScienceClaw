@@ -119,6 +119,46 @@ class _FakeActionPage(_FakePage):
 
 
 class RPAReActAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_json_wraps_top_level_array_as_done_response(self):
+        parsed = ASSISTANT_MODULE.RPAReActAgent._parse_json(
+            '[{"author":"alice","title":"Fix bug"},{"author":"bob","title":"Add feature"}]'
+        )
+
+        self.assertEqual(parsed["action"], "done")
+        self.assertEqual(
+            parsed["final_output"],
+            [
+                {"author": "alice", "title": "Fix bug"},
+                {"author": "bob", "title": "Add feature"},
+            ],
+        )
+
+    def test_parse_json_salvages_terminal_action_from_invalid_json(self):
+        parsed = ASSISTANT_MODULE.RPAReActAgent._parse_json(
+            '{\n'
+            '"thought": "I now have all PR data.\n- PR #1 by alice",\n'
+            '"action": "done",\n'
+            '"description": "return final answer"\n'
+            '}'
+        )
+
+        self.assertEqual(parsed["action"], "done")
+        self.assertEqual(parsed["description"], "return final answer")
+
+    def test_parse_json_salvages_execute_response_with_broken_trailing_code_field(self):
+        parsed = ASSISTANT_MODULE.RPAReActAgent._parse_json(
+            '{\n'
+            '"thought": "页面显示3个Open PR和24个Closed PR，需要分别收集，先提取当前页面的Open PR信息",\n'
+            '"action": "execute",\n'
+            '"operation": "extract_text",\n'
+            '"description": "收集当前页面Open PR的标题和作者",\n'
+            '"code": "async () => { const result'
+        )
+
+        self.assertEqual(parsed["action"], "execute")
+        self.assertEqual(parsed["operation"], "extract_text")
+        self.assertEqual(parsed["description"], "收集当前页面Open PR的标题和作者")
+
     async def test_stream_llm_preserves_whitespace_between_stream_chunks(self):
         response_text = 'await page.goto("https://github.com/trending?since=weekly")\n'
         stream_chunks = [
@@ -760,6 +800,50 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(resolved["resolved"]["locator"]["method"], "text")
         self.assertEqual(resolved["resolved"]["content_node"]["semantic_kind"], "heading")
+
+    async def test_resolve_structured_intent_extract_text_avoids_navigation_heading_noise(self):
+        snapshot = {
+            "frames": [],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "nav-1",
+                    "frame_path": [],
+                    "container_id": "nav",
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "text": "Navigation Menu",
+                    "bbox": {"x": 10, "y": 10, "width": 120, "height": 24},
+                    "locator": {"method": "text", "value": "Navigation Menu"},
+                    "element_snapshot": {"tag": "h2", "text": "Navigation Menu"},
+                },
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "container_id": "card-1",
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "text": "Improve PR list extraction",
+                    "bbox": {"x": 20, "y": 80, "width": 220, "height": 24},
+                    "locator": {"method": "text", "value": "Improve PR list extraction"},
+                    "element_snapshot": {"tag": "h2", "text": "Improve PR list extraction"},
+                },
+            ],
+            "containers": [],
+        }
+
+        resolved = ASSISTANT_MODULE.resolve_structured_intent(
+            snapshot,
+            {
+                "action": "extract_text",
+                "description": "提取 PR 标题",
+                "prompt": "提取当前 PR 标题",
+                "target_hint": {"name": "pr title"},
+                "result_key": "pr_title",
+            },
+        )
+
+        self.assertEqual(resolved["resolved"]["locator"]["value"], "Improve PR list extraction")
 
     async def test_execute_structured_click_does_not_mark_local_expansion_in_single_pass_mode(self):
         page = _FakeActionPage()

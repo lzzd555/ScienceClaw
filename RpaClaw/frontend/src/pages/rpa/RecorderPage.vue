@@ -642,21 +642,53 @@ const sendMessage = async (e?: Event) => {
         signal: aiCommandAbortController.signal,
       });
       const result = resp.data;
-      // Build result summary
-      const parts: string[] = [];
-      if (result.operation_code) {
-        parts.push(`操作: ${result.ai_result_mode === 'operation_only' ? '已完成' : '已执行'}`);
+      // Handle ReAct multi-step response (auto mode)
+      if (result.steps && Array.isArray(result.steps) && result.steps.length > 0) {
+        const hasFinalOutput = result.final_output !== undefined && result.final_output !== null;
+        const totalSteps = result.steps.length;
+        const extractSteps = result.steps.filter((s: any) => s.data_value);
+        const opSteps = totalSteps - extractSteps.length;
+        const parts: string[] = [];
+        if (result.status === 'aborted') {
+          parts.push(`⚠️ Agent 已停止: ${result.reason || ''}`);
+          if (totalSteps > 0) parts.push(`已执行步骤: ${totalSteps} 步`);
+        } else if (result.status === 'error') {
+          parts.push(`⚠️ 执行出错: ${result.error || '未知错误'}`);
+          if (totalSteps > 0) parts.push(`已执行步骤: ${totalSteps} 步`);
+        } else if (hasFinalOutput) {
+          parts.push(
+            typeof result.final_output === 'string'
+              ? result.final_output
+              : JSON.stringify(result.final_output),
+          );
+        } else {
+          parts.push(`任务完成，共执行 ${totalSteps} 步`);
+          if (opSteps > 0) parts.push(`操作步骤: ${opSteps} 个`);
+          if (extractSteps.length > 0) {
+            const extractedValues = extractSteps.map((s: any) => s.data_value).filter(Boolean);
+            if (extractedValues.length > 0) {
+              parts.push(`提取数据: ${extractedValues.join(', ')}`);
+            }
+          }
+        }
+        chatMessages.value[msgIdx].text = parts.join('\n');
+      } else {
+        // Legacy single-step response (execute/data mode)
+        const parts: string[] = [];
+        if (result.operation_code) {
+          parts.push(`操作: ${result.ai_result_mode === 'operation_only' ? '已完成' : '已执行'}`);
+        }
+        if (result.data_value) {
+          parts.push(`数据: ${result.data_value}`);
+        }
+        if (result.execute_error) {
+          parts.push(`⚠️ 执行警告: ${result.execute_error.split('\n').slice(-3).join('\n')}`);
+        }
+        if (parts.length === 0) {
+          parts.push('指令已处理');
+        }
+        chatMessages.value[msgIdx].text = parts.join('\n');
       }
-      if (result.data_value) {
-        parts.push(`数据: ${result.data_value}`);
-      }
-      if (result.execute_error) {
-        parts.push(`⚠️ 执行警告: ${result.execute_error.split('\n').slice(-3).join('\n')}`);
-      }
-      if (parts.length === 0) {
-        parts.push('指令已处理');
-      }
-      chatMessages.value[msgIdx].text = parts.join('\n');
       chatMessages.value[msgIdx].status = 'done';
       // Refresh steps
       pendingAISteps.value = pendingAISteps.value.filter((step) => step !== pendingStep);

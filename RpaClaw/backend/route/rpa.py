@@ -209,6 +209,100 @@ async def _invoke_ai_command_model(messages: list[tuple[str, str]], model_config
     return response.content if hasattr(response, "content") else str(response)
 
 
+def _validate_auto_extract_output(prompt: str, output: Any) -> dict[str, Any]:
+    text = str(output or "").strip()
+    normalized_prompt = (prompt or "").lower()
+    normalized_output = text.lower()
+    warnings: list[str] = []
+
+    if any(token in normalized_prompt for token in ["pr", "pull request", "标题", "title", "创建人", "author"]):
+        suspicious_tokens = ["terms", "navigation menu", "sidebar", "breadcrumb", "privacy policy"]
+        for token in suspicious_tokens:
+            if token in normalized_output:
+                warnings.append(f'extract output looks like page chrome noise: "{token}"')
+                break
+
+    return {
+        "ok": not warnings,
+        "warnings": warnings,
+        "kind": "extract_output",
+    }
+
+
+def _validate_auto_final_output_contract(prompt: str, final_output: Any) -> dict[str, Any]:
+    normalized = (prompt or "").lower()
+    asks_for_array = any(token in normalized for token in ["数组", "array", "json"])
+    asks_for_title = any(token in normalized for token in ["标题", "title"])
+    asks_for_author = any(token in normalized for token in ["创建人", "author", "creator"])
+    errors: list[str] = []
+
+    if asks_for_array and not isinstance(final_output, list):
+        errors.append("final_output does not satisfy the requested array format")
+
+    if isinstance(final_output, list) and (asks_for_title or asks_for_author):
+        for index, item in enumerate(final_output):
+            if not isinstance(item, dict):
+                errors.append(f"final_output[{index}] is not an object")
+                continue
+            keys = {str(key).lower() for key in item.keys()}
+            if asks_for_title and "title" not in keys and "标题" not in item:
+                errors.append(f"final_output[{index}] is missing title")
+            if asks_for_author and not ({"author", "creator"} & keys or "创建人" in item):
+                errors.append(f"final_output[{index}] is missing creator/author")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "kind": "final_output_contract",
+    }
+
+
+def _looks_like_json_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("{") or text.startswith("[")
+
+
+def _is_data_collection_ai_script(step: Dict[str, Any], output: Any) -> bool:
+    text = str(output or "").strip()
+    if not text or text in {"ok", "None"}:
+        return False
+
+    signal_text = " ".join(
+        str(part or "").lower()
+        for part in [
+            step.get("description"),
+            step.get("prompt"),
+            step.get("result_key"),
+        ]
+    )
+    keywords = [
+        "提取", "收集", "读取", "获取", "输出", "返回",
+        "extract", "collect", "read", "fetch", "return",
+        "title", "author", "creator", "json", "array",
+    ]
+    return _looks_like_json_text(text) or any(keyword in signal_text for keyword in keywords)
+
+
+def _stringify_ai_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _has_persisted_data_step(steps: list[dict[str, Any]]) -> bool:
+    for step in steps:
+        action = step.get("action")
+        if action == "ai_command" and step.get("ai_result_mode") in {"data_only", "operation_and_data"}:
+            return True
+        if action == "extract_text":
+            return True
+        if step.get("data_value") not in (None, "", "ok", "None"):
+            return True
+    return False
+
+
 class StartSessionRequest(BaseModel):
     sandbox_session_id: str
 
@@ -250,6 +344,10 @@ class NavigateRequest(BaseModel):
 
 class PromoteLocatorRequest(BaseModel):
     candidate_index: int
+
+
+class ReplayModeRequest(BaseModel):
+    replay_mode: str  # "ai" or "code"
 
 
 async def _get_ws_user(websocket: WebSocket) -> User | None:
@@ -605,6 +703,31 @@ async def promote_step_locator(
     return {"status": "success", "step": step}
 
 
+@router.patch("/session/{session_id}/step/{step_index}/replay-mode")
+async def update_step_replay_mode(
+    session_id: str,
+    step_index: int,
+    request: ReplayModeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    session = await rpa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    mode = request.replay_mode.strip().lower()
+    if mode not in {"ai", "code"}:
+        raise HTTPException(status_code=400, detail="replay_mode must be 'ai' or 'code'")
+
+    try:
+        step = await rpa_manager.update_step_field(session_id, step_index, "replay_mode", mode)
+    except (ValueError, IndexError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"status": "success", "step": step}
+
+
 @router.post("/session/{session_id}/generate")
 async def generate_script(
     session_id: str,
@@ -654,8 +777,9 @@ async def test_script(
 
     # 本地模式：通过 pw_loop_runner 确保 Playwright 操作在正确的事件循环里执行
     _ai_token = _extract_request_auth_token(http_request)
+    _on_log_fn = lambda msg: logs.append(msg)
     if is_local_mode:
-        test_kwargs: Dict[str, Any] = {"_downloads_dir": downloads_dir, "_ai_token": _ai_token}
+        test_kwargs: Dict[str, Any] = {"_downloads_dir": downloads_dir, "_ai_token": _ai_token, "_on_log": _on_log_fn}
         if body.params:
             test_kwargs.update(await inject_credentials(str(current_user.id), body.params, {}))
         result = await executor.execute(
@@ -671,7 +795,7 @@ async def test_script(
         )
     else:
         # Docker 模式：使用原有逻辑
-        docker_kwargs: Dict[str, Any] = {"_ai_token": _ai_token}
+        docker_kwargs: Dict[str, Any] = {"_ai_token": _ai_token, "_on_log": _on_log_fn}
         if body.params:
             docker_kwargs.update(await inject_credentials(
                 str(current_user.id), body.params, {}
@@ -962,6 +1086,207 @@ async def session_ai_command(
         )
 
         output_variable = (request.output_variable or "").strip()
+        steps = [step.model_dump() for step in session.steps]
+
+        # ── auto mode: ReAct agent (observe → think → act loop) ──────────
+        if legacy_mode == "auto":
+            agent = RPAReActAgent()
+            collected_steps: list[dict] = []
+            agent_log: list[dict] = []
+            final_output = None
+
+            try:
+                async for event in agent.run(
+                    session_id=session_id,
+                    page=page,
+                    goal=request.prompt,
+                    existing_steps=steps,
+                    model_config=model_config,
+                    page_provider=lambda: rpa_manager.get_page(session_id),
+                ):
+                    evt_type = event.get("event", "")
+                    evt_data = event.get("data", {})
+
+                    # ── Log intermediate thinking/action steps ──────────
+                    if evt_type == "agent_thought":
+                        thought_text = evt_data.get("text", "")
+                        if thought_text:
+                            logger.info(
+                                "ReAct agent think session=%s: %s",
+                                session_id, thought_text[:300],
+                            )
+                            agent_log.append({"phase": "thought", "text": thought_text})
+                    elif evt_type == "agent_action":
+                        action_desc = evt_data.get("description", "")
+                        logger.info(
+                            "ReAct agent act session=%s: %s",
+                            session_id, action_desc[:300],
+                        )
+                        agent_log.append({"phase": "action", "description": action_desc})
+                    elif evt_type == "agent_step_done":
+                        original_step = evt_data.get("step") or {}
+                        step_desc = original_step.get("description", "")
+                        step_action = original_step.get("action", "")
+                        step_output = str(evt_data.get("output", ""))[:200]
+                        logger.info(
+                            "ReAct agent step_done session=%s action=%s desc=%s output=%s",
+                            session_id, step_action, step_desc[:100], step_output,
+                        )
+                        agent_log.append({
+                            "phase": "step_done",
+                            "action": step_action,
+                            "description": step_desc,
+                            "output_preview": step_output,
+                        })
+
+                    if evt_type == "agent_step_done":
+                        original_step = evt_data.get("step") or {}
+                        output = evt_data.get("output", "")
+                        action = original_step.get("action", "")
+
+                        # Only record concrete replayable steps
+                        _replayable_actions = {"navigate", "click", "fill", "press", "extract_text", "ai_script", "ai_command"}
+                        if action not in _replayable_actions:
+                            continue
+
+                        if action == "ai_command":
+                            # Native ai_command from agent — record directly
+                            step_data = {
+                                "action": "ai_command",
+                                "prompt": original_step.get("prompt") or request.prompt,
+                                "value": None,
+                                "output_variable": output_variable or original_step.get("result_key") or None,
+                                "include_page_context": True,
+                                "ai_mode": "data",
+                                "ai_result_mode": "data_only",
+                                "data_prompt": original_step.get("description") or original_step.get("prompt") or request.prompt,
+                                "data_value": output,
+                                "data_summary": original_step.get("description") or None,
+                                "data_format": original_step.get("data_format") or ("json" if _looks_like_json_text(output) else "text"),
+                                "data_context_mode": "page",
+                                "source": "ai",
+                                "description": original_step.get("description") or "AI 数据采集",
+                                "result_key": original_step.get("result_key"),
+                                "assistant_diagnostics": {
+                                    "auto_persist_strategy": "native_ai_command",
+                                },
+                            }
+                        elif action == "extract_text":
+                            # Keep as native extract_text — no conversion
+                            step_data = dict(original_step)
+                            step_data.update({
+                                "source": "ai",
+                                "ai_mode": "auto",
+                                "output_variable": output_variable or original_step.get("result_key") or None,
+                            })
+                            output_text = str(output or "").strip()
+                            if output_text and output_text not in {"ok", "None", ""}:
+                                step_data["data_value"] = output_text
+                                step_data["data_format"] = "text"
+                            step_data["assistant_diagnostics"] = {
+                                "extract_validation": _validate_auto_extract_output(request.prompt, output),
+                            }
+                        elif action == "ai_script":
+                            # Keep as native ai_script — no conversion
+                            step_data = dict(original_step)
+                            step_data.update({
+                                "source": "ai",
+                                "ai_mode": "auto",
+                                "output_variable": output_variable or None,
+                            })
+                            if output and output not in {"ok", "None"}:
+                                step_data["data_value"] = output
+                                step_data["data_format"] = "text"
+                        else:
+                            # Operation step → keep native action type (navigate/click/fill/press)
+                            step_data = dict(original_step)
+                            step_data.update({
+                                "source": "ai",
+                                "replay_mode": "ai",
+                            })
+
+                        step = await rpa_manager.add_step(session_id, step_data)
+                        collected_steps.append(step.model_dump())
+
+                    elif evt_type == "confirm_required":
+                        # Auto-approve high-risk operations in batch ai_command
+                        agent.resolve_confirm(True)
+
+                    elif evt_type == "agent_done":
+                        final_output = evt_data.get("final_output")
+                        serialized_output = _stringify_ai_output(final_output) if final_output not in (None, "", [], {}) else None
+                        # Always create summary step to confirm whether the goal was met
+                        summary_prompt = (
+                            f"请根据当前页面状态，总结已完成的操作，并判断是否达成了用户的原始目标。"
+                            f"用户原始请求：{request.prompt}"
+                        )
+                        data_step = await rpa_manager.add_step(
+                            session_id,
+                            {
+                                "action": "ai_command",
+                                "prompt": request.prompt,
+                                "value": None,
+                                "output_variable": output_variable or None,
+                                "include_page_context": True,
+                                "ai_mode": "data",
+                                "ai_result_mode": "data_only",
+                                "data_prompt": summary_prompt,
+                                "data_value": serialized_output,
+                                "data_summary": "根据执行上下文和原始目标生成最终总结",
+                                "data_format": "json" if serialized_output and _looks_like_json_text(serialized_output) else "text",
+                                "data_context_mode": "page",
+                                "is_final_summary": True,
+                                "source": "ai",
+                                "description": "AI 最终总结",
+                                "assistant_diagnostics": {
+                                    "auto_persist_strategy": "agent_final_output_data",
+                                    "generated_from": "agent_done.final_output",
+                                    "recorded_final_output": final_output,
+                                },
+                            },
+                        )
+                        collected_steps.append(data_step.model_dump())
+                        return {
+                            "status": "success",
+                            "steps": collected_steps,
+                            "total_steps": evt_data.get("total_steps", len(collected_steps)),
+                            "ai_mode": "auto",
+                            "final_output": final_output,
+                            "final_output_validation": _validate_auto_final_output_contract(request.prompt, final_output),
+                            "agent_log": agent_log,
+                        }
+
+                    elif evt_type == "agent_aborted":
+                        return {
+                            "status": "aborted",
+                            "steps": collected_steps,
+                            "reason": evt_data.get("reason", ""),
+                            "ai_mode": "auto",
+                            "agent_log": agent_log,
+                        }
+            except Exception as agent_exc:
+                logger.exception(
+                    "ReAct agent error in session=%s: %s", session_id, agent_exc,
+                )
+                # Return partial results instead of 500
+                return {
+                    "status": "error",
+                    "steps": collected_steps,
+                    "error": f"{type(agent_exc).__name__}: {agent_exc}",
+                    "ai_mode": "auto",
+                    "agent_log": agent_log,
+                }
+
+            # Should not reach here, but handle gracefully
+            return {
+                "status": "success",
+                "steps": collected_steps,
+                "total_steps": len(collected_steps),
+                "ai_mode": "auto",
+                "agent_log": agent_log,
+            }
+
+        # ── execute / data modes: legacy plan-once-execute pattern ───────
         plan_system_prompt = (
             "你是一个网页自动化与信息提取规划器。"
             "请把用户请求拆解成两个可选部分：operation 和 data。"
@@ -1040,16 +1365,9 @@ async def session_ai_command(
                     session.active_tab_id,
                     duration_ms=AI_COMMAND_NAVIGATION_SUPPRESS_MS,
                 )
-                # Give the event loop a chance to process pending tab
-                # registrations (e.g. from context.on("page") when AI code
-                # opens a new tab via asyncio.create_task).
                 await asyncio.sleep(0.2)
-                # Resolve the effective page FIRST, then wait for stability
-                # on that page — not on the original one.
                 effective_page = await _resolve_ai_command_page(session_id, page)
                 await _wait_for_ai_command_page_stability(effective_page)
-                # Re-resolve: the stability wait may have allowed another
-                # tab transition to complete.
                 final_page = await _resolve_ai_command_page(session_id, effective_page)
                 if final_page is not effective_page:
                     await _wait_for_ai_command_page_stability(final_page)
@@ -1095,7 +1413,7 @@ async def session_ai_command(
             "prompt": request.prompt,
             "value": data_value or operation_code,
             "output_variable": resolved_output_variable or None,
-            "include_page_context": True,  # always capture page context for AI commands
+            "include_page_context": True,
             "ai_mode": legacy_mode,
             "ai_result_mode": ai_result_mode,
             "operation_code": operation_code or None,
@@ -1105,6 +1423,7 @@ async def session_ai_command(
             "data_summary": data_summary or None,
             "data_format": data_format if data_needed else "empty",
             "source": "record",
+            "replay_mode": "ai" if operation_needed else None,
             "description": f"AI 命令: {request.prompt[:40]}",
         }
         step = await rpa_manager.add_step(session_id, step_data)

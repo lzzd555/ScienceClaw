@@ -73,6 +73,7 @@ interface StepItem {
   data_summary?: string;
   data_format?: string;
   source?: string;
+  replay_mode?: string;  // "ai" | "code"
   status?: 'pending' | 'error' | 'completed';
   localOnly?: boolean;
 }
@@ -318,6 +319,19 @@ const promoteLocator = async (stepIndex: number, candidateIndex: number) => {
   }
 };
 
+const toggleReplayMode = async (stepIndex: number, mode: string) => {
+  if (!sessionId.value) return;
+  error.value = null;
+  try {
+    await apiClient.patch(`/rpa/session/${sessionId.value}/step/${stepIndex}/replay-mode`, {
+      replay_mode: mode,
+    });
+    steps.value[stepIndex].replay_mode = mode;
+  } catch (err: any) {
+    error.value = `切换回放模式失败: ${err.response?.data?.detail || err.message}`;
+  }
+};
+
 const loadCredentials = async () => {
   try {
     const resp = await apiClient.get('/credentials');
@@ -495,11 +509,17 @@ const submitAICommand = async () => {
     }, {
       timeout: 0,
     });
-    // Show execute error if any
-    if (resp.data?.execute_error) {
+    // Remove pending step — ReAct may produce multiple steps, loadSession will refresh
+    steps.value = steps.value.filter((s) => s !== pendingStep);
+    // Show error/abort info (ReAct or legacy mode)
+    if (resp.data?.status === 'error') {
+      alert(`AI 命令执行出错: ${resp.data.error || resp.data.execute_error || '未知错误'}`);
+    } else if (resp.data?.execute_error) {
       alert(`AI 命令执行出错: ${resp.data.execute_error}`);
+    } else if (resp.data?.status === 'aborted') {
+      alert(`AI 命令被中止: ${resp.data.reason || ''}`);
     }
-    // Reload session to include the new AI command step
+    // Reload session to include all new steps
     await loadSession();
   } catch (err) {
     console.error('Failed to execute AI command:', err);
@@ -631,6 +651,12 @@ onMounted(() => {
                       >
                         {{ getFrameHint(step) }}
                       </span>
+                      <span
+                        v-if="step.replay_mode === 'ai'"
+                        class="rounded-full bg-gradient-to-r from-purple-500 to-pink-500 px-2.5 py-1 text-[10px] font-bold text-white"
+                      >
+                        AI 动态
+                      </span>
                     </div>
 
                     <h3 class="mt-2 text-sm font-bold text-gray-900 sm:text-[15px]">
@@ -666,6 +692,24 @@ onMounted(() => {
                   <div class="grid gap-2 text-sm text-gray-600">
                     <!-- AI Command specific fields -->
                     <template v-if="step.action === 'ai_command'">
+                      <div v-if="hasAIOperation(step)" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                        <span class="text-xs font-bold uppercase tracking-wide text-gray-400">回放模式</span>
+                        <div class="flex items-center gap-1">
+                          <button
+                            type="button"
+                            class="rounded-l-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                            :class="step.replay_mode === 'code' ? 'bg-purple-700 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                            @click.stop="toggleReplayMode(idx, 'code')"
+                          >固定代码</button>
+                          <button
+                            type="button"
+                            class="rounded-r-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                            :class="step.replay_mode !== 'code' ? 'bg-gradient-to-r from-purple-600 to-pink-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                            @click.stop="toggleReplayMode(idx, 'ai')"
+                          >AI 动态</button>
+                          <span class="ml-2 text-[10px] text-gray-400">{{ step.replay_mode === 'code' ? '直接执行录制期生成的 Playwright 代码' : '运行时由 AI 根据当前页面状态生成操作' }}</span>
+                        </div>
+                      </div>
                       <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
                         <span class="text-xs font-bold uppercase tracking-wide text-gray-400">提示词</span>
                         <span class="break-all text-xs text-gray-700 whitespace-pre-wrap">{{ (step as any).prompt || step.description }}</span>
@@ -701,6 +745,25 @@ onMounted(() => {
                     </template>
                     <!-- Regular step fields (hidden for ai_command) -->
                     <template v-if="step.action !== 'ai_command'">
+                    <!-- Replay mode toggle for AI-sourced steps -->
+                    <div v-if="step.source === 'ai' && ['click', 'fill', 'press', 'extract_text', 'navigate_click'].includes(step.action)" class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
+                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400">回放模式</span>
+                      <div class="flex items-center gap-1">
+                        <button
+                          type="button"
+                          class="rounded-l-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                          :class="step.replay_mode !== 'ai' ? 'bg-purple-700 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                          @click.stop="toggleReplayMode(idx, 'code')"
+                        >固定代码</button>
+                        <button
+                          type="button"
+                          class="rounded-r-lg px-3 py-1.5 text-xs font-semibold transition-colors"
+                          :class="step.replay_mode === 'ai' ? 'bg-gradient-to-r from-purple-600 to-pink-500 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'"
+                          @click.stop="toggleReplayMode(idx, 'ai')"
+                        >AI 动态</button>
+                        <span class="ml-2 text-[10px] text-gray-400">{{ step.replay_mode === 'ai' ? '运行时由 AI 判断执行' : '使用录制时的固定选择器' }}</span>
+                      </div>
+                    </div>
                     <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
                       <span class="text-xs font-bold uppercase tracking-wide text-gray-400">主定位器</span>
                       <span class="break-all font-mono text-xs text-gray-700">{{ formatLocator(step.target) }}</span>

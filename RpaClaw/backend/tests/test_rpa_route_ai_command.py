@@ -96,11 +96,124 @@ class _FakeStep:
         return dict(self._data)
 
 
+class _FakeReActAgent:
+    """Agent that natively produces ai_command steps for data extraction."""
+    async def run(self, **_kwargs):
+        yield {
+            "event": "agent_step_done",
+            "data": {
+                "step": {
+                    "action": "ai_command",
+                    "description": "提取 PR 列表",
+                    "prompt": "收集 PR 信息",
+                    "result_key": "all_prs",
+                    "data_format": "json",
+                },
+                "output": '[{"author":"alice","title":"Fix bug"}]',
+            },
+        }
+        yield {
+            "event": "agent_done",
+            "data": {
+                "total_steps": 1,
+                "final_output": [{"author": "alice", "title": "Fix bug"}],
+            },
+        }
+
+
+class _FakeInvalidFinalOutputAgent:
+    async def run(self, **_kwargs):
+        yield {
+            "event": "agent_done",
+            "data": {
+                "total_steps": 0,
+                "final_output": [{"name": "Fix bug"}],
+            },
+        }
+
+
+class _FakeAIScriptAgent:
+    """Agent that uses ai_script for backward compat testing."""
+    async def run(self, **_kwargs):
+        yield {
+            "event": "agent_step_done",
+            "data": {
+                "step": {
+                    "action": "ai_script",
+                    "description": "批量收集 PR 信息",
+                    "prompt": "收集 PR 信息",
+                    "value": '\n'.join([
+                        'items = await page.locator("article a.Link--primary").all_inner_texts()',
+                        '_results["all_pr_titles"] = items',
+                    ]),
+                },
+                "output": '[{"author":"alice","title":"Fix bug"}]',
+            },
+        }
+        yield {
+            "event": "agent_done",
+            "data": {
+                "total_steps": 1,
+                "final_output": [{"author": "alice", "title": "Fix bug"}],
+            },
+        }
+
+
+class _FakeOperationAgent:
+    async def run(self, **_kwargs):
+        yield {
+            "event": "agent_step_done",
+            "data": {
+                "step": {
+                    "action": "click",
+                    "target": '{"method":"role","role":"link","name":"Trending Repo"}',
+                    "frame_path": [],
+                    "description": "点击本周最火项目",
+                    "prompt": "打开本周最火项目详情页",
+                    "source": "ai",
+                },
+                "output": "ok",
+            },
+        }
+        yield {
+            "event": "agent_done",
+            "data": {
+                "total_steps": 1,
+                "final_output": None,
+            },
+        }
+
+
+class _FakeOperationWithFinalOutputAgent:
+    async def run(self, **_kwargs):
+        yield {
+            "event": "agent_step_done",
+            "data": {
+                "step": {
+                    "action": "click",
+                    "target": '{"method":"role","role":"link","name":"Trending Repo"}',
+                    "frame_path": [],
+                    "description": "点击本周最火项目",
+                    "prompt": "打开本周最火项目详情页",
+                    "source": "ai",
+                },
+                "output": "ok",
+            },
+        }
+        yield {
+            "event": "agent_done",
+            "data": {
+                "total_steps": 2,
+                "final_output": [{"name": "owner/repo", "summary": "一个热门项目"}],
+            },
+        }
+
+
 class _FakeManager:
     def __init__(self):
         self.events = []
         self.page = _FakePage(manager=self)
-        self.session = SimpleNamespace(user_id="user-1", active_tab_id="tab-1")
+        self.session = SimpleNamespace(user_id="user-1", active_tab_id="tab-1", steps=[])
 
     async def get_session(self, _session_id):
         return self.session
@@ -123,6 +236,19 @@ class _FakeManager:
 
 
 class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
+    def test_validate_auto_extract_output_is_independent_from_final_output_contract(self):
+        extract_validation = RPA_ROUTE_MODULE._validate_auto_extract_output(
+            "收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+            "Navigation Menu",
+        )
+        final_validation = RPA_ROUTE_MODULE._validate_auto_final_output_contract(
+            "收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+            [{"author": "alice", "title": "Fix bug"}],
+        )
+
+        self.assertFalse(extract_validation["ok"])
+        self.assertTrue(final_validation["ok"])
+
     def test_extract_request_auth_token_falls_back_to_session_cookie(self):
         request = SimpleNamespace(
             headers={},
@@ -148,16 +274,50 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(url, "http://host.docker.internal:5173/api/v1/rpa/ai-command")
 
     async def test_auto_mode_persists_operation_and_data_before_resuming(self):
+        """Auto mode records operation and data steps, then a summary step."""
         fake_manager = _FakeManager()
         request = RPA_ROUTE_MODULE.SessionAICommandRequest(
             prompt="打开示例页面并读取标题",
             output_variable="page_title",
         )
         current_user = SimpleNamespace(id="user-1", username="tester")
-        plan_response = (
-            '{"operation":{"needed":true,"description":"打开示例页面","code":"await page.evaluate(\'1 + 1\')"},'
-            '"data":{"needed":true,"description":"读取页面标题","extract_prompt":"读取当前页面标题","format":"text","output_variable":"page_title"}}'
-        )
+
+        class _OpAndDataAgent:
+            async def run(self, **_kwargs):
+                # Operation step
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "navigate",
+                            "url": "https://example.com",
+                            "description": "打开示例页面",
+                            "source": "ai",
+                        },
+                        "output": "ok",
+                    },
+                }
+                # Data step
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "ai_command",
+                            "description": "读取页面标题",
+                            "prompt": "读取当前页面标题",
+                            "result_key": "page_title",
+                            "data_format": "text",
+                        },
+                        "output": "Example page title",
+                    },
+                }
+                yield {
+                    "event": "agent_done",
+                    "data": {
+                        "total_steps": 2,
+                        "final_output": "Example page title",
+                    },
+                }
 
         with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
             RPA_ROUTE_MODULE,
@@ -165,8 +325,8 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
             return_value={},
         ), patch.object(
             RPA_ROUTE_MODULE,
-            "get_llm_model",
-            return_value=_FakeModel([plan_response, "Example page title"]),
+            "RPAReActAgent",
+            _OpAndDataAgent,
         ):
             result = await RPA_ROUTE_MODULE.session_ai_command(
                 "session-1",
@@ -175,53 +335,66 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["status"], "success")
+        # pause, add_step (navigate), add_step (ai_command), add_step (summary), resume
         self.assertEqual(
             fake_manager.events,
-            ["pause", ("suppress_navigation", 2000), "add_step", "resume"],
+            ["pause", "add_step", "add_step", "add_step", "resume"],
         )
-        self.assertEqual(result["ai_result_mode"], "operation_and_data")
-        self.assertEqual(result["operation_code"], "await page.evaluate('1 + 1')")
-        self.assertEqual(result["data_value"], "Example page title")
-        self.assertEqual(result["step"]["output_variable"], "page_title")
-        self.assertEqual(result["step"]["data_prompt"], "读取当前页面标题")
-        self.assertGreaterEqual(len(fake_manager.page.evaluate_calls), 4)
-        self.assertIn("window.__rpa_paused = true", fake_manager.page.evaluate_calls)
-        self.assertIn("window.__rpa_paused = false", fake_manager.page.evaluate_calls)
-        self.assertEqual(
-            fake_manager.page.wait_for_load_state_calls,
-            [("domcontentloaded", 5000), ("networkidle", 2000)],
-        )
-        self.assertEqual(len(fake_manager.page.wait_for_function_calls), 1)
-        self.assertIn(300, fake_manager.page.wait_for_timeout_calls)
+        # Two steps: navigate + ai_command data, plus summary
+        self.assertEqual(len(result["steps"]), 3)
+        self.assertEqual(result["steps"][0]["action"], "navigate")
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["data_value"], "Example page title")
+        self.assertEqual(result["steps"][1]["output_variable"], "page_title")
+        self.assertEqual(result["steps"][2]["action"], "ai_command")
+        self.assertEqual(result["steps"][2]["description"], "AI 最终总结")
 
     async def test_auto_mode_extracts_data_from_post_operation_context(self):
+        """Agent extracts data after an operation, the data step records output."""
         fake_manager = _FakeManager()
-        new_page = _FakePage(manager=fake_manager)
-        new_page.snapshot_queue = [
-            {
-                "url": "https://example.com/detail",
-                "title": "Detail Page",
-                "bodyText": "Fresh detail content",
-                "interactiveValues": ["input | keyword | search | keyword | Search | Example"],
-            },
-        ]
-        fake_manager.page.switch_to = new_page
         request = RPA_ROUTE_MODULE.SessionAICommandRequest(
             prompt="打开详情页并读取最新标题",
             output_variable="detail_title",
         )
         current_user = SimpleNamespace(id="user-1", username="tester")
-        plan_response = (
-            '{"operation":{"needed":true,"description":"打开详情页","code":"await page.get_by_role(\'link\', name=\'详情\').click()"},'
-            '"data":{"needed":true,"description":"读取最新详情标题","extract_prompt":"读取当前详情页标题","format":"text","output_variable":"detail_title"}}'
-        )
-        captured_messages = []
 
-        async def _fake_invoke(messages, _model_config):
-            captured_messages.append(messages)
-            if len(captured_messages) == 1:
-                return plan_response
-            return "Detail page title"
+        class _OpThenDataAgent:
+            async def run(self, **_kwargs):
+                # Operation step
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "click",
+                            "target": '{"method":"role","role":"link","name":"详情"}',
+                            "frame_path": [],
+                            "description": "打开详情页",
+                            "source": "ai",
+                        },
+                        "output": "ok",
+                    },
+                }
+                # Data extraction step
+                yield {
+                    "event": "agent_step_done",
+                    "data": {
+                        "step": {
+                            "action": "ai_command",
+                            "description": "读取最新详情标题",
+                            "prompt": "读取当前详情页标题",
+                            "result_key": "detail_title",
+                            "data_format": "text",
+                        },
+                        "output": "Detail page title",
+                    },
+                }
+                yield {
+                    "event": "agent_done",
+                    "data": {
+                        "total_steps": 2,
+                        "final_output": "Detail page title",
+                    },
+                }
 
         with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
             RPA_ROUTE_MODULE,
@@ -229,8 +402,8 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
             return_value={},
         ), patch.object(
             RPA_ROUTE_MODULE,
-            "_invoke_ai_command_model",
-            side_effect=_fake_invoke,
+            "RPAReActAgent",
+            _OpThenDataAgent,
         ):
             result = await RPA_ROUTE_MODULE.session_ai_command(
                 "session-1",
@@ -238,11 +411,213 @@ class SessionAICommandRouteTests(unittest.IsolatedAsyncioTestCase):
                 current_user=current_user,
             )
 
-        self.assertEqual(result["data_value"], "Detail page title")
-        extraction_messages = captured_messages[1]
-        self.assertIn("https://example.com/detail", extraction_messages[0][1])
-        self.assertIn("Fresh detail content", extraction_messages[0][1])
-        self.assertNotIn("Old list content", extraction_messages[0][1])
+        self.assertEqual(result["status"], "success")
+        # click (operation), ai_command (data), ai_command (summary)
+        self.assertEqual(len(result["steps"]), 3)
+        self.assertEqual(result["steps"][0]["action"], "click")
+        self.assertEqual(result["steps"][0]["replay_mode"], "ai")
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["data_value"], "Detail page title")
+        self.assertEqual(result["steps"][1]["output_variable"], "detail_title")
+        self.assertEqual(result["steps"][2]["description"], "AI 最终总结")
+
+    async def test_auto_mode_returns_agent_final_output(self):
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeReActAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["final_output"], [{"author": "alice", "title": "Fix bug"}])
+        self.assertTrue(result["final_output_validation"]["ok"])
+        # First step is the native ai_command from the agent
+        self.assertEqual(result["steps"][0]["data_value"], '[{"author":"alice","title":"Fix bug"}]')
+        self.assertEqual(result["steps"][0]["action"], "ai_command")
+        self.assertEqual(result["steps"][0]["ai_mode"], "data")
+        self.assertEqual(result["steps"][0]["ai_result_mode"], "data_only")
+        self.assertEqual(
+            result["steps"][0]["assistant_diagnostics"]["auto_persist_strategy"],
+            "native_ai_command",
+        )
+        # Summary step is always present (second step)
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["description"], "AI 最终总结")
+
+    async def test_auto_mode_reports_final_output_contract_issues_without_failing_extract_validation(self):
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeInvalidFinalOutputAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(result["final_output_validation"]["ok"])
+        self.assertIn("missing title", result["final_output_validation"]["errors"][0])
+
+    async def test_auto_mode_preserves_native_ai_script_steps(self):
+        """ai_script steps are kept as-is (no forced conversion)."""
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="收集当前仓库所有 PR 的创建人和标题，严格输出数组",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeAIScriptAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        # ai_script is preserved as-is, not converted to ai_command
+        self.assertEqual(result["steps"][0]["action"], "ai_script")
+        self.assertEqual(result["steps"][0]["source"], "ai")
+        self.assertEqual(result["steps"][0]["data_value"], '[{"author":"alice","title":"Fix bug"}]')
+        # Summary step is always present
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["description"], "AI 最终总结")
+
+    async def test_auto_mode_defaults_ai_operation_steps_to_ai_replay(self):
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="打开本周最火项目详情页",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeOperationAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["steps"][0]["action"], "click")
+        self.assertEqual(result["steps"][0]["source"], "ai")
+        self.assertEqual(result["steps"][0]["replay_mode"], "ai")
+        # Summary step is always present (even for pure operation tasks)
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["description"], "AI 最终总结")
+
+    async def test_auto_mode_always_creates_summary_step_with_final_output(self):
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="帮我查看这周 github 最火的项目，并帮我简单介绍下",
+            output_variable="weekly_trending_summary",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeOperationWithFinalOutputAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertEqual(result["steps"][0]["action"], "click")
+        # Summary step with recorded final_output
+        self.assertEqual(result["steps"][1]["action"], "ai_command")
+        self.assertEqual(result["steps"][1]["ai_mode"], "data")
+        self.assertEqual(result["steps"][1]["ai_result_mode"], "data_only")
+        self.assertEqual(result["steps"][1]["output_variable"], "weekly_trending_summary")
+        self.assertIn("用户原始请求", result["steps"][1]["data_prompt"])
+        self.assertEqual(result["steps"][1]["data_context_mode"], "page")
+        self.assertEqual(
+            result["steps"][1]["assistant_diagnostics"]["recorded_final_output"],
+            [{"name": "owner/repo", "summary": "一个热门项目"}],
+        )
+
+    async def test_auto_mode_summary_step_present_when_no_final_output(self):
+        """Summary step is always created, even when agent returns no final_output."""
+        fake_manager = _FakeManager()
+        request = RPA_ROUTE_MODULE.SessionAICommandRequest(
+            prompt="打开本周最火项目详情页",
+        )
+        current_user = SimpleNamespace(id="user-1", username="tester")
+
+        with patch.object(RPA_ROUTE_MODULE, "rpa_manager", fake_manager), patch.object(
+            RPA_ROUTE_MODULE,
+            "_resolve_user_model_config",
+            return_value={},
+        ), patch.object(
+            RPA_ROUTE_MODULE,
+            "RPAReActAgent",
+            _FakeOperationAgent,
+        ):
+            result = await RPA_ROUTE_MODULE.session_ai_command(
+                "session-1",
+                request,
+                current_user=current_user,
+            )
+
+        self.assertEqual(result["status"], "success")
+        # Operation step + summary step
+        self.assertEqual(len(result["steps"]), 2)
+        summary_step = result["steps"][1]
+        self.assertEqual(summary_step["action"], "ai_command")
+        self.assertEqual(summary_step["description"], "AI 最终总结")
+        self.assertIsNone(summary_step["data_value"])
+        self.assertIn("用户原始请求", summary_step["data_prompt"])
 
 
 if __name__ == "__main__":
