@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { TOOL_ICON_MAP, TOOL_NAME_MAP, TOOL_FUNCTION_MAP, TOOL_FUNCTION_ARG_MAP, TOOL_COMPONENT_MAP } from '../constants/tool';
 import SearchIcon from '../components/icons/SearchIcon.vue';
 import ShellIcon from '../components/icons/ShellIcon.vue';
+import { formatMcpToolDisplayName, isMcpToolMeta } from '../utils/mcpUi';
 
 /** 从 args 中提取第一个有意义的参数值作为 functionArg */
 function extractFirstArg(args: any): string {
@@ -32,13 +33,19 @@ export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
   const toolInfo = computed(() => {
     if (!tool || !tool.value) return null;
     
+    const mcpMeta = tool.value.tool_meta?.mcp;
+
     // MCP tool
-    if (tool.value.function.startsWith('mcp_')) {
-      const mcpToolName = tool.value.function.replace(/^mcp_/, '');
+    if (isMcpToolMeta(tool.value.tool_meta)) {
+      const mcpToolName = mcpMeta?.tool_name || tool.value.function;
       return {
         icon: TOOL_ICON_MAP['mcp'] || null,
-        name: t(TOOL_NAME_MAP['mcp'] || 'MCP Tool'),
-        function: mcpToolName,
+        name: mcpMeta?.server_name || t(TOOL_NAME_MAP['mcp'] || 'MCP Tool'),
+        function: formatMcpToolDisplayName({
+          functionName: tool.value.function,
+          fallbackName: mcpToolName,
+          meta: tool.value.tool_meta,
+        }),
         functionArg: extractFirstArg(tool.value.args),
         view: TOOL_COMPONENT_MAP['mcp'] || null
       };

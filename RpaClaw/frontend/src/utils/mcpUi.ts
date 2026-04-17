@@ -1,0 +1,98 @@
+type McpServerLike = {
+  scope?: string;
+  server_key?: string;
+  enabled?: boolean;
+  default_enabled?: boolean;
+  session_mode?: 'inherit' | 'enabled' | 'disabled';
+};
+
+type McpToolMetaLike = {
+  [key: string]: unknown;
+  source?: string;
+  mcp?: {
+    [key: string]: unknown;
+    source?: string;
+    server_name?: string;
+    tool_name?: string;
+  };
+};
+
+type McpToolDisplayInput = {
+  functionName?: string;
+  fallbackName?: string;
+  meta?: McpToolMetaLike | null;
+};
+
+export function groupMcpServers<T extends McpServerLike>(servers: T[]) {
+  return {
+    system: servers.filter((server) => server.scope === 'system'),
+    user: servers.filter((server) => server.scope === 'user'),
+  };
+}
+
+export function computeEffectiveMcpEnabled(server: McpServerLike): boolean {
+  if (!server.enabled) {
+    return false;
+  }
+  if (server.session_mode === 'enabled') {
+    return true;
+  }
+  if (server.session_mode === 'disabled') {
+    return false;
+  }
+  return Boolean(server.default_enabled);
+}
+
+export function isMcpToolMeta(meta?: McpToolMetaLike | null): boolean {
+  if (!meta) {
+    return false;
+  }
+  return meta.source === 'mcp' || meta.mcp?.source === 'mcp';
+}
+
+export function parseHttpHeaderText(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (key && value) {
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+export function stringifyHttpHeaders(headers?: Record<string, string> | null): string {
+  if (!headers) {
+    return '';
+  }
+  return Object.entries(headers)
+    .filter(([key, value]) => key.trim() && value.trim())
+    .map(([key, value]) => `${key.trim()}: ${value.trim()}`)
+    .join('\n');
+}
+
+export function formatMcpToolDisplayName(input: McpToolDisplayInput): string {
+  const mcpMeta = input.meta?.mcp;
+  const serverName = typeof mcpMeta?.server_name === 'string' ? mcpMeta.server_name.trim() : '';
+  const toolName = typeof mcpMeta?.tool_name === 'string' ? mcpMeta.tool_name.trim() : '';
+
+  if (serverName && toolName) {
+    return `${serverName} / ${toolName}`;
+  }
+  if (toolName) {
+    return toolName;
+  }
+  if (serverName) {
+    return serverName;
+  }
+  return input.functionName || input.fallbackName || '';
+}

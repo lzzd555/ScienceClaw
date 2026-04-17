@@ -120,3 +120,32 @@ servers:
 
     assert len(servers) == 1
     assert servers[0].transport == "stdio"
+
+
+def test_load_system_mcp_servers_accepts_http_header_aliases(tmp_path, monkeypatch):
+    config_file = tmp_path / "mcp_servers.yaml"
+    config_file.write_text(
+        """
+servers:
+  - id: pubmed
+    name: PubMed MCP
+    transport: streamable_http
+    url: http://mcp-pubmed:8080/mcp
+    http_headers:
+      Authorization: Bearer token-1
+  - id: arxiv
+    name: Arxiv MCP
+    transport: sse
+    url: http://mcp-arxiv:8080/sse
+    http_header:
+      X-Api-Key: token-2
+""".strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STORAGE_BACKEND", "docker")
+
+    servers = load_system_mcp_servers(config_file)
+
+    assert servers[0].headers == {"Authorization": "Bearer token-1"}
+    assert servers[1].headers == {"X-Api-Key": "token-2"}

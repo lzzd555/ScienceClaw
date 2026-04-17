@@ -1,0 +1,128 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  computeEffectiveMcpEnabled,
+  groupMcpServers,
+  isMcpToolMeta,
+  parseHttpHeaderText,
+  formatMcpToolDisplayName,
+  stringifyHttpHeaders,
+} from './mcpUi';
+
+describe('groupMcpServers', () => {
+  it('splits system and user servers while preserving order', () => {
+    const result = groupMcpServers([
+      { server_key: 'system:pubmed', scope: 'system', name: 'PubMed' },
+      { server_key: 'user:notion', scope: 'user', name: 'Notion' },
+      { server_key: 'system:arxiv', scope: 'system', name: 'Arxiv' },
+    ]);
+
+    expect(result.system.map((server) => server.server_key)).toEqual([
+      'system:pubmed',
+      'system:arxiv',
+    ]);
+    expect(result.user.map((server) => server.server_key)).toEqual([
+      'user:notion',
+    ]);
+  });
+});
+
+describe('computeEffectiveMcpEnabled', () => {
+  it('uses explicit session overrides ahead of defaults', () => {
+    expect(computeEffectiveMcpEnabled({ enabled: true, default_enabled: false, session_mode: 'enabled' })).toBe(true);
+    expect(computeEffectiveMcpEnabled({ enabled: true, default_enabled: true, session_mode: 'disabled' })).toBe(false);
+  });
+
+  it('falls back to default enablement when session mode inherits', () => {
+    expect(computeEffectiveMcpEnabled({ enabled: true, default_enabled: true, session_mode: 'inherit' })).toBe(true);
+    expect(computeEffectiveMcpEnabled({ enabled: true, default_enabled: false, session_mode: 'inherit' })).toBe(false);
+    expect(computeEffectiveMcpEnabled({ enabled: false, default_enabled: true, session_mode: 'enabled' })).toBe(false);
+  });
+});
+
+describe('isMcpToolMeta', () => {
+  it('detects MCP tools from nested mcp metadata', () => {
+    expect(
+      isMcpToolMeta({
+        icon: 'x',
+        category: 'custom',
+        description: 'demo',
+        mcp: {
+          source: 'mcp',
+          server_name: 'PubMed',
+          tool_name: 'search_articles',
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not classify sandbox tools as MCP tools', () => {
+    expect(
+      isMcpToolMeta({
+        icon: 'x',
+        category: 'execution',
+        description: 'demo',
+        sandbox: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('HTTP header text helpers', () => {
+  it('parses one header per line with colon separators', () => {
+    expect(
+      parseHttpHeaderText(`
+Authorization: Bearer token
+X-Api-Key: abc:123
+      `),
+    ).toEqual({
+      Authorization: 'Bearer token',
+      'X-Api-Key': 'abc:123',
+    });
+  });
+
+  it('skips blank lines and invalid rows', () => {
+    expect(parseHttpHeaderText('\nInvalid\nAccept: application/json\n')).toEqual({
+      Accept: 'application/json',
+    });
+  });
+
+  it('stringifies headers back to editable text', () => {
+    expect(stringifyHttpHeaders({ Authorization: 'Bearer token', Accept: 'application/json' })).toBe(
+      'Authorization: Bearer token\nAccept: application/json',
+    );
+  });
+});
+
+describe('formatMcpToolDisplayName', () => {
+  it('uses MCP server name and tool name from metadata', () => {
+    expect(
+      formatMcpToolDisplayName({
+        functionName: 'mcp__mcp_8cf94a8a265a__resolve-library-id',
+        fallbackName: 'mcp__mcp_8cf94a8a265a__resolve-library-id',
+        meta: {
+          mcp: {
+            source: 'mcp',
+            server_name: 'Context7',
+            tool_name: 'resolve-library-id',
+          },
+        },
+      }),
+    ).toBe('Context7 / resolve-library-id');
+  });
+
+  it('falls back to the MCP tool name when server metadata is incomplete', () => {
+    expect(
+      formatMcpToolDisplayName({
+        functionName: 'mcp__mcp_8cf94a8a265a__resolve-library-id',
+        fallbackName: 'mcp__mcp_8cf94a8a265a__resolve-library-id',
+        meta: {
+          mcp: {
+            source: 'mcp',
+            tool_name: 'resolve-library-id',
+          },
+        },
+      }),
+    ).toBe('resolve-library-id');
+  });
+});

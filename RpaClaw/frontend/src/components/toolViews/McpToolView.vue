@@ -12,7 +12,7 @@
       <div class="flex flex-col overflow-auto h-full px-4 py-3">
         <div class="py-3 pt-0">
           <div class="text-[var(--text-primary)] text-sm font-medium mb-2">
-            {{ t('Tool') }}: {{ toolContent.function }}
+            {{ t('Tool') }}: {{ displayName }}
           </div>
           
           <div v-if="toolContent.args && Object.keys(toolContent.args).length > 0" class="mb-4">
@@ -37,14 +37,22 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ToolContent } from '@/types/message';
+import { formatMcpToolDisplayName } from '@/utils/mcpUi';
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   sessionId: string;
   toolContent: ToolContent;
   live: boolean;
 }>();
+
+const displayName = computed(() => formatMcpToolDisplayName({
+  functionName: props.toolContent.function,
+  fallbackName: props.toolContent.name,
+  meta: props.toolContent.tool_meta,
+}));
 </script> 

@@ -100,9 +100,10 @@ def _register_external_tools_in_sse(tools: list) -> None:
         mcp_meta = metadata.get("mcp") if isinstance(metadata, dict) else None
 
         if settings.storage_backend == "local":
-            _clear_protocol_tool_extra_meta(protocol, tool.name)
             if isinstance(mcp_meta, dict):
                 _set_protocol_tool_extra_meta(protocol, tool.name, {"mcp": mcp_meta})
+            else:
+                _clear_protocol_tool_extra_meta(protocol, tool.name)
             continue
 
         if isinstance(mcp_meta, dict):

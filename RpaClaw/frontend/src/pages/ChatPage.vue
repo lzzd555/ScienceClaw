@@ -29,6 +29,14 @@
                   : 'border-gray-200 text-[var(--icon-secondary)] dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 hover:shadow-sm'">
                 <FileSearch :size="16" />
               </button>
+              <button @click="openSessionMcpPanel"
+                class="h-8 rounded-xl inline-flex items-center justify-center border transition-all duration-200 px-3 gap-2"
+                :class="sessionMcpOpen
+                  ? 'border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-400 shadow-sm'
+                  : 'border-gray-200 text-[var(--icon-secondary)] dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 hover:shadow-sm'">
+                <Wrench :size="14" />
+                <span class="text-xs font-medium">MCP</span>
+              </button>
 
             </div>
           </div>
@@ -175,6 +183,52 @@
       <ToolPanel ref="toolPanel" :size="toolPanelSize" :sessionId="sessionId" :realTime="realTime" 
       :isShare="false"
       @jumpToRealTime="jumpToRealTime" />
+      <Teleport to="body">
+        <div v-if="sessionMcpOpen" class="fixed inset-0 z-[9999] flex items-center justify-center px-4">
+          <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="sessionMcpOpen = false"></div>
+          <div class="relative z-10 w-full max-w-3xl rounded-2xl bg-white dark:bg-[#1f1f1f] shadow-2xl border border-gray-200 dark:border-gray-800">
+            <div class="p-6 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-4">
+              <div>
+                <h3 class="text-lg font-semibold text-[var(--text-primary)]">Session MCP</h3>
+                <p class="text-sm text-[var(--text-tertiary)] mt-1">Override MCP availability for this conversation.</p>
+              </div>
+              <button class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800" @click="sessionMcpOpen = false">
+                <X :size="16" />
+              </button>
+            </div>
+            <div class="p-6 max-h-[70vh] overflow-y-auto space-y-3">
+              <div v-if="sessionMcpLoading" class="text-sm text-[var(--text-tertiary)]">Loading MCP servers...</div>
+              <div v-else-if="sessionMcpServers.length === 0" class="text-sm text-[var(--text-tertiary)]">No MCP servers available for this session.</div>
+              <div v-for="server in sessionMcpServers" :key="server.server_key" class="rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50/80 dark:bg-[#141414]">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <h4 class="text-sm font-semibold text-[var(--text-primary)] truncate">{{ server.name }}</h4>
+                      <span class="text-[10px] px-2 py-0.5 rounded-full" :class="server.scope === 'system' ? 'bg-sky-50 text-sky-600 dark:bg-sky-900/20 dark:text-sky-300' : 'bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-300'">
+                        {{ server.scope === 'system' ? 'Platform' : 'Private' }}
+                      </span>
+                      <span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">{{ server.transport }}</span>
+                    </div>
+                    <p class="text-xs text-[var(--text-secondary)] mt-2 line-clamp-2">{{ server.description || 'No description' }}</p>
+                    <p class="text-xs text-[var(--text-tertiary)] mt-2">
+                      {{ server.effective_enabled ? 'Effective: enabled' : 'Effective: disabled' }}
+                    </p>
+                  </div>
+                  <select
+                    :value="server.session_mode"
+                    class="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#1f1f1f] px-3 py-2 text-xs"
+                    @change="updateSessionMcpMode(server.server_key, ($event.target as HTMLSelectElement).value as any)"
+                  >
+                    <option value="inherit">Inherit</option>
+                    <option value="enabled">Enabled</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Teleport>
     </SimpleBar>
   </div>
 </template>
@@ -214,6 +268,7 @@ import { listModels, type ModelConfig } from '../api/models';
 import { useSettingsDialog } from '../composables/useSettingsDialog';
 import { useSessionNotifications } from '../composables/useSessionNotifications';
 import { consumePendingChat } from '../composables/usePendingChat';
+import { listSessionMcpServers, updateSessionMcpServerMode, type SessionMcpServerItem } from '../api/mcp';
 
 import { useMessageGrouper } from '../composables/useMessageGrouper';
 import ProcessMessage from '../components/ProcessMessage.vue';
@@ -318,6 +373,9 @@ const savingSkill = ref(false);
 const pendingToolSave = ref<string | null>(null);
 const pendingToolReplaces = ref<string | null>(null);
 const savingTool = ref(false);
+const sessionMcpOpen = ref(false);
+const sessionMcpLoading = ref(false);
+const sessionMcpServers = ref<SessionMcpServerItem[]>([]);
 
 // 上一轮是否因报错结束（用于显示「推理失败」而非「推理完成」）
 const lastTurnHadError = ref(false);
@@ -1022,6 +1080,47 @@ const restoreSession = async () => {
   agentApi.clearUnreadMessageCount(restoreTarget);
 }
 
+const loadSessionMcpState = async () => {
+  if (!sessionId.value) return;
+  sessionMcpLoading.value = true;
+  try {
+    sessionMcpServers.value = await listSessionMcpServers(sessionId.value);
+  } catch (error) {
+    console.error('Failed to load session MCP', error);
+    showErrorToast(t('Failed to load session MCP'));
+  } finally {
+    sessionMcpLoading.value = false;
+  }
+}
+
+const openSessionMcpPanel = async () => {
+  sessionMcpOpen.value = true;
+  await loadSessionMcpState();
+}
+
+const updateSessionMcpMode = async (
+  serverKey: string,
+  mode: 'inherit' | 'enabled' | 'disabled'
+) => {
+  if (!sessionId.value) return;
+  try {
+    await updateSessionMcpServerMode(sessionId.value, serverKey, mode);
+    sessionMcpServers.value = sessionMcpServers.value.map((server) => {
+      if (server.server_key !== serverKey) return server;
+      const effectiveEnabled = server.enabled && (mode === 'enabled' || (mode === 'inherit' && server.default_enabled));
+      return {
+        ...server,
+        session_mode: mode,
+        effective_enabled: effectiveEnabled,
+      };
+    });
+    showSuccessToast(t('Session MCP updated'));
+  } catch (error) {
+    console.error('Failed to update session MCP mode', error);
+    showErrorToast(t('Failed to update session MCP'));
+  }
+}
+
 
 
 // Initialize active conversation
@@ -1031,6 +1130,7 @@ const restoreSession = async () => {
     console.log('[ChatPage] onMounted, sessionId:', routeParams.sessionId);
     if (routeParams.sessionId) {
       sessionId.value = String(routeParams.sessionId) as string;
+      loadSessionMcpState();
 
       const pending = consumePendingChat();
       if (pending?.message) {

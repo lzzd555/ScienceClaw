@@ -27,6 +27,17 @@ def load_system_mcp_servers(config_path: str | Path | None = None) -> List[McpSe
     for item in raw_servers:
         item = dict(item)
         item["scope"] = "system"
+        headers = item.get("headers")
+        if headers is None:
+            headers = item.pop("http_headers", None)
+        else:
+            item.pop("http_headers", None)
+        if headers is None:
+            headers = item.pop("http_header", None)
+        else:
+            item.pop("http_header", None)
+        if headers is not None:
+            item["headers"] = headers
         item["tool_policy"] = McpToolPolicy(
             allowed_tools=item.pop("allowed_tools", []) or [],
             blocked_tools=item.pop("blocked_tools", []) or [],

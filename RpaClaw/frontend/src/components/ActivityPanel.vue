@@ -177,7 +177,7 @@
                       </div>
                       <LoadingSpinnerIcon v-if="item.tool.status === 'calling' && item.tool.tool_meta?.icon" class="w-3 h-3 animate-spin text-blue-500 flex-shrink-0" />
                       <div class="flex items-center gap-1.5 min-w-0 flex-1 text-[11px] font-mono">
-                        <span class="text-[var(--text-secondary)] font-semibold flex-shrink-0">{{ item.tool.function || item.tool.name }}</span>
+                        <span class="text-[var(--text-secondary)] font-semibold flex-shrink-0">{{ getToolDisplayName(item.tool) }}</span>
                         <span v-if="getToolArg(item.tool) && !expandedToolIds.has(item.id)" class="text-[var(--text-tertiary)] truncate max-w-[180px]">{{ getToolArg(item.tool) }}</span>
                       </div>
                       <span v-if="item.tool.duration_ms != null && item.tool.status === 'called'"
@@ -251,6 +251,7 @@ import { getPreviewMode } from '../utils/sandbox';
 import { useResizeObserver } from '../composables/useResizeObserver';
 import { eventBus } from '../utils/eventBus';
 import { EVENT_SHOW_FILE_PANEL, EVENT_SHOW_TOOL_PANEL, EVENT_SHOW_ACTIVITY_PANEL } from '../constants/event';
+import { formatMcpToolDisplayName, isMcpToolMeta } from '../utils/mcpUi';
 
 export interface ActivityItem {
   id: string;
@@ -395,6 +396,17 @@ const getToolArg = (tool: ToolContent): string => {
   const vals = Object.values(tool.args);
   if (vals.length > 0 && typeof vals[0] === 'string') return (vals[0] as string).slice(0, 80);
   return '';
+};
+
+const getToolDisplayName = (tool: ToolContent): string => {
+  if (isMcpToolMeta(tool.tool_meta)) {
+    return formatMcpToolDisplayName({
+      functionName: tool.function,
+      fallbackName: tool.name,
+      meta: tool.tool_meta,
+    });
+  }
+  return tool.function || tool.name || '';
 };
 
 const formatDuration = (ms: number): string => {

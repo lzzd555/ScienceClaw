@@ -26,6 +26,49 @@ class _BindingRepo:
         return 1
 
 
+class _MemoryRepo:
+    def __init__(self, docs=None):
+        self.docs = {str(doc["_id"]): dict(doc) for doc in (docs or [])}
+        self.calls = []
+
+    async def find_one(self, filter_doc, projection=None):
+        for doc in self.docs.values():
+            if all(doc.get(key) == value for key, value in filter_doc.items()):
+                return dict(doc)
+        return None
+
+    async def find_many(self, filter_doc, projection=None, sort=None, skip=0, limit=0):
+        docs = [
+            dict(doc)
+            for doc in self.docs.values()
+            if all(doc.get(key) == value for key, value in filter_doc.items())
+        ]
+        return docs
+
+    async def update_one(self, filter_doc, update_doc, upsert=False):
+        self.calls.append(
+            {
+                "filter": filter_doc,
+                "update": update_doc,
+                "upsert": upsert,
+            }
+        )
+        for doc_id, doc in self.docs.items():
+            if all(doc.get(key) == value for key, value in filter_doc.items()):
+                updated = dict(doc)
+                updated.update(update_doc.get("$set", {}))
+                self.docs[doc_id] = updated
+                return 1
+        return 0
+
+    async def delete_one(self, filter_doc):
+        for doc_id, doc in list(self.docs.items()):
+            if all(doc.get(key) == value for key, value in filter_doc.items()):
+                del self.docs[doc_id]
+                return 1
+        return 0
+
+
 def _build_app():
     app = FastAPI()
     app.include_router(mcp_route.router, prefix="/api/v1")
@@ -87,7 +130,7 @@ def test_list_mcp_servers_returns_normalized_system_and_user_entries(monkeypatch
     assert set(data[0].keys()) == set(data[1].keys())
     assert "_id" not in data[1]
     assert "user_id" not in data[1]
-    assert "headers" not in data[0]["endpoint_config"]
+    assert data[0]["endpoint_config"]["headers"] == {"Authorization": "Bearer top-secret"}
     assert "env" not in data[0]["endpoint_config"]
     assert data[0]["credential_binding"] == {}
 
@@ -196,6 +239,7 @@ def test_update_session_override_writes_binding_for_owned_session(monkeypatch):
                 name="PubMed",
                 transport="streamable_http",
                 url="https://example.test/mcp",
+                headers={"Authorization": "Bearer top-secret"},
             )
         ],
     )
@@ -316,3 +360,222 @@ def test_update_session_override_rejects_foreign_user_server_key(monkeypatch):
     assert response.status_code == 404
     assert response.json()["detail"] == "MCP server not found"
     assert repo.calls == []
+
+
+def test_get_mcp_server_returns_system_detail_by_server_key(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        mcp_route,
+        "load_system_mcp_servers",
+        lambda: [
+            McpServerDefinition(
+                id="pubmed",
+                name="PubMed",
+                description="System search",
+                transport="streamable_http",
+                default_enabled=True,
+                url="https://example.test/mcp",
+                headers={"Authorization": "Bearer top-secret"},
+                tool_policy={"allowed_tools": ["search_articles"]},
+            )
+        ],
+    )
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", lambda user_id: [])
+
+    response = client.get("/api/v1/mcp/servers/system:pubmed")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["server_key"] == "system:pubmed"
+    assert data["readonly"] is True
+    assert data["endpoint_config"]["headers"] == {"Authorization": "Bearer top-secret"}
+    assert data["tool_policy"]["allowed_tools"] == ["search_articles"]
+
+
+def test_update_mcp_server_updates_owned_user_doc(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    repo = _MemoryRepo(
+        [
+            {
+                "_id": "mcp_user_1",
+                "user_id": "user-1",
+                "name": "Private MCP",
+                "description": "Before",
+                "transport": "streamable_http",
+                "enabled": True,
+                "default_enabled": False,
+                "endpoint_config": {"url": "https://old.example.test/mcp", "timeout_ms": 20000, "env": {}, "headers": {}},
+                "credential_binding": {"credential_id": "", "headers": {}, "env": {}, "query": {}},
+                "tool_policy": {"allowed_tools": [], "blocked_tools": []},
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_route, "get_repository", lambda _: repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/mcp_user_1",
+        json={
+            "name": "Updated MCP",
+            "description": "After",
+            "transport": "streamable_http",
+            "enabled": False,
+            "default_enabled": True,
+            "endpoint_config": {
+                "url": "https://new.example.test/mcp",
+                "timeout_ms": 30000,
+                "headers": {"Authorization": "Bearer user-token"},
+            },
+            "credential_binding": {"credential_id": "cred-1"},
+            "tool_policy": {"allowed_tools": ["search_articles"]},
+        },
+    )
+
+    assert response.status_code == 200
+    assert repo.docs["mcp_user_1"]["name"] == "Updated MCP"
+    assert repo.docs["mcp_user_1"]["enabled"] is False
+    assert repo.docs["mcp_user_1"]["default_enabled"] is True
+    assert repo.docs["mcp_user_1"]["endpoint_config"]["url"] == "https://new.example.test/mcp"
+    assert repo.docs["mcp_user_1"]["endpoint_config"]["headers"] == {"Authorization": "Bearer user-token"}
+    assert repo.docs["mcp_user_1"]["credential_binding"]["credential_id"] == "cred-1"
+
+
+def test_delete_mcp_server_removes_owned_user_doc(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    repo = _MemoryRepo(
+        [
+            {
+                "_id": "mcp_user_1",
+                "user_id": "user-1",
+                "name": "Private MCP",
+                "transport": "sse",
+                "endpoint_config": {"url": "https://user.example.test/sse"},
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_route, "get_repository", lambda _: repo)
+
+    response = client.delete("/api/v1/mcp/servers/mcp_user_1")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"id": "mcp_user_1", "deleted": True}
+    assert repo.docs == {}
+
+
+def test_discover_tools_returns_marshaled_tools(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        mcp_route,
+        "load_system_mcp_servers",
+        lambda: [
+            McpServerDefinition(
+                id="pubmed",
+                name="PubMed",
+                transport="streamable_http",
+                url="https://example.test/mcp",
+                headers={"Authorization": "Bearer top-secret"},
+            )
+        ],
+    )
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", lambda user_id: [])
+
+    class _Runtime:
+        async def list_tools(self):
+            return [
+                {
+                    "name": "search_articles",
+                    "description": "Search PubMed",
+                    "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
+                }
+            ]
+
+    class _RuntimeFactory:
+        def create_runtime(self, server):
+            assert server.id == "pubmed"
+            assert server.headers == {"Authorization": "Bearer top-secret"}
+            return _Runtime()
+
+    monkeypatch.setattr(mcp_route, "McpSdkRuntimeFactory", lambda: _RuntimeFactory())
+
+    response = client.post("/api/v1/mcp/servers/system:pubmed/discover-tools")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["tools"] == [
+        {
+            "name": "search_articles",
+            "description": "Search PubMed",
+            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+        }
+    ]
+
+
+def test_list_session_mcp_returns_session_modes_for_owner(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    async def fake_get_session(session_id: str):
+        return SimpleNamespace(session_id=session_id, user_id="user-1")
+
+    binding_repo = _MemoryRepo(
+        [
+            {
+                "_id": "binding-1",
+                "session_id": "session-123",
+                "user_id": "user-1",
+                "server_key": "user:mcp_user_1",
+                "mode": "disabled",
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_route, "async_get_science_session", fake_get_session)
+    monkeypatch.setattr(
+        mcp_route,
+        "load_system_mcp_servers",
+        lambda: [
+            McpServerDefinition(
+                id="pubmed",
+                name="PubMed",
+                transport="streamable_http",
+                default_enabled=True,
+                url="https://example.test/mcp",
+            )
+        ],
+    )
+
+    async def fake_user_servers(user_id: str):
+        return [
+            {
+                "_id": "mcp_user_1",
+                "user_id": user_id,
+                "name": "Private MCP",
+                "transport": "sse",
+                "default_enabled": True,
+                "endpoint_config": {"url": "https://user.example.test/sse"},
+            }
+        ]
+
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", fake_user_servers)
+    monkeypatch.setattr(
+        mcp_route,
+        "get_repository",
+        lambda collection_name: binding_repo if collection_name == "session_mcp_bindings" else _MemoryRepo(),
+    )
+
+    response = client.get("/api/v1/sessions/session-123/mcp")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert len(data) == 2
+    assert data[0]["server_key"] == "system:pubmed"
+    assert data[0]["session_mode"] == "inherit"
+    assert data[0]["effective_enabled"] is True
+    assert data[1]["server_key"] == "user:mcp_user_1"
+    assert data[1]["session_mode"] == "disabled"
+    assert data[1]["effective_enabled"] is False

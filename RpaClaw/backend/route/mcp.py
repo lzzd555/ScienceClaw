@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime
 from typing import Any, Dict, List
 import uuid
@@ -9,8 +10,9 @@ from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.deepagent.mcp_config_loader import load_system_mcp_servers
+from backend.deepagent.mcp_runtime import McpSdkRuntimeFactory, coerce_mcp_tool_definition
 from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_science_session
-from backend.mcp.models import SessionMcpBindingUpdate, UserMcpServerCreate
+from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
 from backend.storage import get_repository
 from backend.user.dependencies import User, require_user
 
@@ -36,6 +38,12 @@ class McpServerListItem(BaseModel):
     endpoint_config: Dict[str, Any] = Field(default_factory=dict)
     credential_binding: Dict[str, Any] = Field(default_factory=dict)
     tool_policy: Dict[str, Any] = Field(default_factory=dict)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def _list_user_mcp_servers(user_id: str) -> List[Dict[str, Any]]:
@@ -87,7 +95,12 @@ def _normalize_endpoint_config(transport: str, endpoint_config: Any) -> Dict[str
         if not isinstance(url, str) or not url.strip():
             raise HTTPException(status_code=400, detail="endpoint_config.url is required for HTTP/SSE MCP")
         normalized["url"] = url.strip()
-        normalized["headers"] = _normalize_string_map(endpoint_config.get("headers"), "endpoint_config.headers")
+        headers = endpoint_config.get("headers")
+        if headers is None:
+            headers = endpoint_config.get("http_headers")
+        if headers is None:
+            headers = endpoint_config.get("http_header")
+        normalized["headers"] = _normalize_string_map(headers, "endpoint_config.headers")
         return normalized
 
     if transport == "stdio":
@@ -109,17 +122,28 @@ def _normalize_endpoint_config(transport: str, endpoint_config: Any) -> Dict[str
 
 
 async def _server_key_is_accessible(server_key: str, user_id: str) -> bool:
+    server = await _resolve_server_by_key(server_key, user_id)
+    return server is not None
+
+
+async def _resolve_server_by_key(server_key: str, user_id: str) -> Dict[str, Any] | None:
     scope, separator, server_id = server_key.partition(":")
     if not separator or not server_id:
-        return False
+        return None
 
     if scope == "system":
-        return any(server.id == server_id for server in load_system_mcp_servers())
+        for server in load_system_mcp_servers():
+            if server.id == server_id:
+                return _serialize_system_server(server)
+        return None
 
     if scope == "user":
-        return any(str(doc.get("_id")) == server_id for doc in await _list_user_mcp_servers(user_id))
+        for doc in await _maybe_await(_list_user_mcp_servers(user_id)):
+            if str(doc.get("_id")) == server_id:
+                return _serialize_user_server(doc)
+        return None
 
-    return False
+    return None
 
 
 def _serialize_system_server(server: Any) -> Dict[str, Any]:
@@ -128,6 +152,7 @@ def _serialize_system_server(server: Any) -> Dict[str, Any]:
         "command": server.command,
         "args": server.args,
         "cwd": server.cwd,
+        "headers": server.headers,
         "timeout_ms": server.timeout_ms,
     }
     return McpServerListItem(
@@ -163,10 +188,78 @@ def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
     ).model_dump()
 
 
+def _apply_session_mode(server: Dict[str, Any], session_mode: str) -> Dict[str, Any]:
+    effective_enabled = (
+        server.get("enabled", True)
+        and (
+            session_mode == "enabled"
+            or (session_mode == "inherit" and server.get("default_enabled", False))
+        )
+    )
+    payload = dict(server)
+    payload["session_mode"] = session_mode
+    payload["effective_enabled"] = effective_enabled
+    return payload
+
+
+def _to_server_definition(server: Dict[str, Any]):
+    endpoint = server.get("endpoint_config") or {}
+    return McpServerDefinition(
+        id=server["id"],
+        name=server["name"],
+        description=server.get("description", ""),
+        transport=server["transport"],
+        scope=server["scope"],
+        enabled=server.get("enabled", True),
+        default_enabled=server.get("default_enabled", False),
+        url=endpoint.get("url", ""),
+        command=endpoint.get("command", ""),
+        args=endpoint.get("args", []),
+        cwd=endpoint.get("cwd", ""),
+        headers=endpoint.get("headers", {}),
+        env=endpoint.get("env", {}),
+        timeout_ms=endpoint.get("timeout_ms", 20000),
+        tool_policy=server.get("tool_policy") or {},
+    )
+
+
+async def _get_owned_user_server_doc(server_id: str, user_id: str) -> Dict[str, Any]:
+    repo = get_repository("user_mcp_servers")
+    doc = await repo.find_one({"_id": server_id, "user_id": user_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return doc
+
+
+async def _discover_tools(server_key: str, user_id: str) -> Dict[str, Any]:
+    server = await _resolve_server_by_key(server_key, user_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+
+    runtime = McpSdkRuntimeFactory().create_runtime(_to_server_definition(server))
+    tools = []
+    for raw_tool in await runtime.list_tools():
+        tool = coerce_mcp_tool_definition(raw_tool)
+        if not tool.name:
+            continue
+        tools.append(
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            }
+        )
+    return {
+        "server_key": server_key,
+        "tools": tools,
+        "tool_count": len(tools),
+    }
+
+
 @router.get("/mcp/servers", response_model=ApiResponse)
 async def list_mcp_servers(current_user: User = Depends(require_user)) -> ApiResponse:
     system_servers = [_serialize_system_server(server) for server in load_system_mcp_servers()]
-    user_servers = [_serialize_user_server(doc) for doc in await _list_user_mcp_servers(str(current_user.id))]
+    user_servers = [_serialize_user_server(doc) for doc in await _maybe_await(_list_user_mcp_servers(str(current_user.id)))]
     return ApiResponse(data=system_servers + user_servers)
 
 
@@ -199,6 +292,108 @@ async def create_mcp_server(
     }
     await repo.insert_one(doc)
     return ApiResponse(data={"id": server_id, "saved": True})
+
+
+@router.get("/mcp/servers/{server_key}", response_model=ApiResponse)
+async def get_mcp_server(
+    server_key: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    server = await _resolve_server_by_key(server_key, str(current_user.id))
+    if not server:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return ApiResponse(data=server)
+
+
+@router.put("/mcp/servers/{server_id}", response_model=ApiResponse)
+async def update_mcp_server(
+    server_id: str,
+    body: UserMcpServerUpdate,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    if body.transport == "stdio" and settings.storage_backend != "local":
+        raise HTTPException(status_code=400, detail="stdio MCP is only allowed in local mode")
+
+    await _get_owned_user_server_doc(server_id, str(current_user.id))
+    endpoint_config = _normalize_endpoint_config(body.transport, body.endpoint_config)
+    repo = get_repository("user_mcp_servers")
+    await repo.update_one(
+        {"_id": server_id, "user_id": str(current_user.id)},
+        {
+            "$set": {
+                "name": body.name,
+                "description": body.description,
+                "transport": body.transport,
+                "enabled": body.enabled,
+                "default_enabled": body.default_enabled,
+                "endpoint_config": endpoint_config,
+                "credential_binding": body.credential_binding.model_dump(),
+                "tool_policy": body.tool_policy.model_dump(),
+                "updated_at": datetime.now(),
+            }
+        },
+    )
+    return ApiResponse(data={"id": server_id, "saved": True})
+
+
+@router.delete("/mcp/servers/{server_id}", response_model=ApiResponse)
+async def delete_mcp_server(
+    server_id: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    repo = get_repository("user_mcp_servers")
+    deleted = await repo.delete_one({"_id": server_id, "user_id": str(current_user.id)})
+    if not deleted:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return ApiResponse(data={"id": server_id, "deleted": True})
+
+
+@router.post("/mcp/servers/{server_key}/test", response_model=ApiResponse)
+async def test_mcp_server(
+    server_key: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    data = await _discover_tools(server_key, str(current_user.id))
+    return ApiResponse(data={"server_key": server_key, "ok": True, "tool_count": data["tool_count"]})
+
+
+@router.post("/mcp/servers/{server_key}/discover-tools", response_model=ApiResponse)
+async def discover_mcp_tools(
+    server_key: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    return ApiResponse(data=await _discover_tools(server_key, str(current_user.id)))
+
+
+@router.get("/sessions/{session_id}/mcp", response_model=ApiResponse)
+async def list_session_mcp_servers(
+    session_id: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    try:
+        session = await async_get_science_session(session_id)
+    except ScienceSessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if str(session.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    binding_repo = get_repository("session_mcp_bindings")
+    binding_docs = await binding_repo.find_many({"session_id": session_id, "user_id": str(current_user.id)})
+    binding_modes = {doc["server_key"]: doc.get("mode", "inherit") for doc in binding_docs}
+
+    servers = [_serialize_system_server(server) for server in load_system_mcp_servers()]
+    servers.extend(
+        _serialize_user_server(doc)
+        for doc in await _maybe_await(_list_user_mcp_servers(str(current_user.id)))
+    )
+
+    return ApiResponse(
+        data=[
+            _apply_session_mode(server, binding_modes.get(server["server_key"], "inherit"))
+            for server in servers
+        ]
+    )
 
 
 @router.put("/sessions/{session_id}/mcp/servers/{server_key}", response_model=ApiResponse)
