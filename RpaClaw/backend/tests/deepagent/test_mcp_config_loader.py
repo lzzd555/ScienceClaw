@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from backend import config as backend_config
 from backend.deepagent.mcp_config_loader import load_system_mcp_servers
 from backend.mcp.models import McpToolPolicy
 
@@ -31,27 +32,12 @@ servers:
     assert servers[0].scope == "system"
 
 
-def test_load_system_mcp_servers_uses_default_path(monkeypatch, tmp_path):
-    config_file = tmp_path / "mcp_servers.yaml"
-    config_file.write_text(
-        """
-servers:
-  - id: pubmed
-    name: PubMed MCP
-    transport: streamable_http
-    enabled: true
-    default_enabled: true
-    url: http://mcp-pubmed:8080/mcp
-""".strip(),
-        encoding="utf-8",
-    )
+def test_resolve_system_mcp_config_path_defaults_to_repo_root(monkeypatch):
+    monkeypatch.delenv("SYSTEM_MCP_CONFIG_PATH", raising=False)
 
-    monkeypatch.setattr("backend.config.settings.system_mcp_config_path", str(config_file))
-    monkeypatch.setenv("STORAGE_BACKEND", "docker")
+    expected = Path(backend_config.__file__).resolve().parents[2] / "mcp_servers.yaml"
 
-    servers = load_system_mcp_servers()
-
-    assert [server.id for server in servers] == ["pubmed"]
+    assert backend_config._resolve_system_mcp_config_path() == str(expected)
 
 
 def test_load_system_mcp_servers_returns_empty_list_for_missing_file(monkeypatch, tmp_path):
