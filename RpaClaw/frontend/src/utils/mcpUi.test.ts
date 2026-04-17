@@ -5,6 +5,7 @@ import {
   groupMcpServers,
   isMcpToolMeta,
   parseHttpHeaderText,
+  formatMcpServerEndpoint,
   formatMcpToolDisplayName,
   stringifyHttpHeaders,
 } from './mcpUi';
@@ -124,5 +125,39 @@ describe('formatMcpToolDisplayName', () => {
         },
       }),
     ).toBe('resolve-library-id');
+  });
+});
+
+describe('formatMcpServerEndpoint', () => {
+  it('shows the command for stdio MCP servers', () => {
+    expect(
+      formatMcpServerEndpoint({
+        transport: 'stdio',
+        endpoint_config: {
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-filesystem'],
+        },
+      }),
+    ).toBe('npx -y @modelcontextprotocol/server-filesystem');
+  });
+
+  it('shows the URL for remote MCP servers', () => {
+    expect(
+      formatMcpServerEndpoint({
+        transport: 'streamable_http',
+        endpoint_config: {
+          url: 'https://mcp.example.com/mcp',
+        },
+      }),
+    ).toBe('https://mcp.example.com/mcp');
+  });
+
+  it('falls back to a readable label when endpoint data is missing', () => {
+    expect(
+      formatMcpServerEndpoint({
+        transport: 'sse',
+        endpoint_config: {},
+      }),
+    ).toBe('No endpoint');
   });
 });

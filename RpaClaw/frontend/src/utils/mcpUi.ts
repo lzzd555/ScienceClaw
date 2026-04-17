@@ -6,6 +6,17 @@ type McpServerLike = {
   session_mode?: 'inherit' | 'enabled' | 'disabled';
 };
 
+type McpEndpointLike = {
+  url?: string;
+  command?: string;
+  args?: string[];
+};
+
+type McpServerEndpointInput = {
+  transport?: string;
+  endpoint_config?: McpEndpointLike | null;
+};
+
 type McpToolMetaLike = {
   [key: string]: unknown;
   source?: string;
@@ -95,4 +106,14 @@ export function formatMcpToolDisplayName(input: McpToolDisplayInput): string {
     return serverName;
   }
   return input.functionName || input.fallbackName || '';
+}
+
+export function formatMcpServerEndpoint(server: McpServerEndpointInput): string {
+  const endpoint = server.endpoint_config || {};
+  if (server.transport === 'stdio') {
+    const command = endpoint.command?.trim();
+    const args = (endpoint.args || []).map((arg) => arg.trim()).filter(Boolean);
+    return [command, ...args].filter(Boolean).join(' ') || 'stdio';
+  }
+  return endpoint.url?.trim() || 'No endpoint';
 }
