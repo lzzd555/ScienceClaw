@@ -161,6 +161,10 @@ class ToolRegistry:
     def register(self, tool: ToolMeta):
         self._tools[tool.name] = tool
 
+    def set_extra_meta(self, name: str, extra_meta: Mapping[str, Any]) -> None:
+        """Replace extra metadata for a tool without exposing private storage."""
+        self._extra_meta[name] = deepcopy(dict(extra_meta))
+
     def merge_extra_meta(self, name: str, extra_meta: Mapping[str, Any]) -> None:
         """Merge additional metadata for a tool without exposing private storage."""
         current = self._extra_meta.setdefault(name, {})
@@ -182,7 +186,7 @@ class ToolRegistry:
     def register_sandbox_tool(self, name: str, description: str):
         """注册一个在沙箱中执行的外部代理工具。"""
         self.register(ToolMeta(name, ToolCategory.EXECUTION, "🔧", description))
-        self.merge_extra_meta(name, {"sandbox": True})
+        self.set_extra_meta(name, {"sandbox": True})
 
     def get(self, name: str) -> Optional[ToolMeta]:
         return self._tools.get(name)
@@ -242,6 +246,10 @@ class SSEProtocolManager:
         self.tool_registry.register(ToolMeta(name, category, icon, description))
 
     def register_tool_extra_meta(self, name: str, extra_meta: Mapping[str, Any]):
+        """Replace extra metadata for an existing tool entry."""
+        self.tool_registry.set_extra_meta(name, extra_meta)
+
+    def merge_tool_extra_meta(self, name: str, extra_meta: Mapping[str, Any]):
         """Merge extra metadata into an existing tool entry."""
         self.tool_registry.merge_extra_meta(name, extra_meta)
 

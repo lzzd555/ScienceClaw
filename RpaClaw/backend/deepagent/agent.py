@@ -24,6 +24,7 @@ Skills 架构：
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -99,16 +100,48 @@ def _register_external_tools_in_sse(tools: list) -> None:
         mcp_meta = metadata.get("mcp") if isinstance(metadata, dict) else None
 
         if settings.storage_backend == "local":
-            if hasattr(protocol, "clear_tool_extra_meta"):
-                protocol.clear_tool_extra_meta(tool.name)
-            if isinstance(mcp_meta, dict) and hasattr(protocol, "register_tool_extra_meta"):
-                protocol.register_tool_extra_meta(tool.name, {"mcp": mcp_meta})
+            _clear_protocol_tool_extra_meta(protocol, tool.name)
+            if isinstance(mcp_meta, dict):
+                _set_protocol_tool_extra_meta(protocol, tool.name, {"mcp": mcp_meta})
             continue
 
-        if isinstance(mcp_meta, dict) and hasattr(protocol, "register_tool_extra_meta"):
-            protocol.register_tool_extra_meta(tool.name, {"mcp": mcp_meta})
-        elif hasattr(protocol, "register_tool_extra_meta"):
-            protocol.register_tool_extra_meta(tool.name, {"sandbox": True})
+        if isinstance(mcp_meta, dict):
+            _set_protocol_tool_extra_meta(protocol, tool.name, {"mcp": mcp_meta})
+        else:
+            _set_protocol_tool_extra_meta(protocol, tool.name, {"sandbox": True})
+
+
+def _clear_protocol_tool_extra_meta(protocol: Any, tool_name: str) -> None:
+    clearer = getattr(protocol, "clear_tool_extra_meta", None)
+    if callable(clearer):
+        clearer(tool_name)
+        return
+
+    extra_meta = getattr(protocol, "extra_meta", None)
+    if isinstance(extra_meta, dict):
+        extra_meta[tool_name] = {}
+
+    tool_registry = getattr(protocol, "tool_registry", None)
+    registry_extra_meta = getattr(tool_registry, "_extra_meta", None)
+    if isinstance(registry_extra_meta, dict):
+        registry_extra_meta[tool_name] = {}
+
+
+def _set_protocol_tool_extra_meta(protocol: Any, tool_name: str, extra_meta: dict[str, Any]) -> None:
+    setter = getattr(protocol, "register_tool_extra_meta", None)
+    if callable(setter):
+        setter(tool_name, extra_meta)
+        return
+
+    copied_meta = deepcopy(extra_meta)
+    extra_meta_store = getattr(protocol, "extra_meta", None)
+    if isinstance(extra_meta_store, dict):
+        extra_meta_store[tool_name] = copied_meta
+
+    tool_registry = getattr(protocol, "tool_registry", None)
+    registry_extra_meta = getattr(tool_registry, "_extra_meta", None)
+    if isinstance(registry_extra_meta, dict):
+        registry_extra_meta[tool_name] = deepcopy(extra_meta)
 
 
 async def _load_mcp_tools_for_session(

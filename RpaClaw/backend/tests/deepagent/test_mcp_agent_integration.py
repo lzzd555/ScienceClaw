@@ -38,8 +38,9 @@ def test_collect_tools_includes_mcp_tools_and_respects_blocklist_and_dedupe(monk
 
 def test_protocol_manager_merges_nested_tool_metadata():
     protocol = SSEProtocolManager()
-    protocol.register_tool("mcp__pubmed__search", ToolCategory.EXECUTION, "🔧", "PubMed search")
-    protocol.register_tool_extra_meta(
+    protocol.register_tool("mcp__pubmed__search", ToolCategory.EXECUTION, "馃敡", "PubMed search")
+    protocol.register_tool_extra_meta("mcp__pubmed__search", {"sandbox": True})
+    protocol.merge_tool_extra_meta(
         "mcp__pubmed__search",
         {"mcp": {"source": "mcp", "server_id": "pubmed", "nested": {"tool": "search"}}},
     )
@@ -47,7 +48,42 @@ def test_protocol_manager_merges_nested_tool_metadata():
     assert protocol.get_tool_meta("mcp__pubmed__search") == {
         "name": "mcp__pubmed__search",
         "category": "execution",
-        "icon": "🔧",
+        "icon": "馃敡",
+        "description": "PubMed search",
+        "sandbox": True,
+        "mcp": {"source": "mcp", "server_id": "pubmed", "nested": {"tool": "search"}},
+    }
+
+
+def test_protocol_manager_replaces_tool_metadata_on_reregistration():
+    protocol = SSEProtocolManager()
+    protocol.register_tool("mcp__pubmed__search", ToolCategory.EXECUTION, "馃敡", "PubMed search")
+    protocol.register_tool_extra_meta(
+        "mcp__pubmed__search",
+        {
+            "sandbox": True,
+            "mcp": {
+                "source": "legacy",
+                "server_id": "old",
+                "nested": {"tool": "old-search"},
+            },
+        },
+    )
+    protocol.register_tool_extra_meta(
+        "mcp__pubmed__search",
+        {
+            "mcp": {
+                "source": "mcp",
+                "server_id": "pubmed",
+                "nested": {"tool": "search"},
+            },
+        },
+    )
+
+    assert protocol.get_tool_meta("mcp__pubmed__search") == {
+        "name": "mcp__pubmed__search",
+        "category": "execution",
+        "icon": "馃敡",
         "description": "PubMed search",
         "mcp": {"source": "mcp", "server_id": "pubmed", "nested": {"tool": "search"}},
     }
@@ -73,20 +109,18 @@ def test_register_tools_in_sse_preserves_nested_mcp_metadata(monkeypatch):
             }
 
         def register_tool_extra_meta(self, name: str, extra_meta: dict[str, object]) -> None:
-            self.registered.setdefault(name, {}).update(extra_meta)
+            self.registered[name] = {**self.registered.get(name, {}), **extra_meta}
 
         def clear_tool_extra_meta(self, name: str) -> None:
-            self.registered.setdefault(name, {}).pop("mcp", None)
+            self.registered.pop(name, None)
 
     fake_protocol = FakeProtocol()
     monkeypatch.setattr("backend.deepagent.sse_protocol.get_protocol_manager", lambda: fake_protocol)
 
     agent._register_external_tools_in_sse([tool])
 
-    assert fake_protocol.registered["mcp__pubmed__search"] == {
-        "name": "mcp__pubmed__search",
-        "category": "execution",
-        "icon": "🔧",
-        "description": "PubMed search",
-        "mcp": {"source": "mcp", "server_id": "pubmed", "server_name": "PubMed"},
-    }
+    registered = fake_protocol.registered["mcp__pubmed__search"]
+    assert registered["name"] == "mcp__pubmed__search"
+    assert registered["category"] == "execution"
+    assert registered["description"] == "PubMed search"
+    assert registered["mcp"] == {"source": "mcp", "server_id": "pubmed", "server_name": "PubMed"}
