@@ -68,7 +68,7 @@ def _normalize_string_list(value: Any, field_name: str) -> List[str]:
 def _normalize_timeout_ms(value: Any) -> int:
     if value is None:
         return 20000
-    if not isinstance(value, int) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise HTTPException(status_code=400, detail="endpoint_config.timeout_ms must be a positive integer")
     return value
 

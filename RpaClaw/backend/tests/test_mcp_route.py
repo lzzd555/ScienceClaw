@@ -154,6 +154,26 @@ def test_create_mcp_server_rejects_wrong_endpoint_field_types(monkeypatch):
     assert response.json()["detail"] == "endpoint_config.args must be a list of strings"
 
 
+def test_create_mcp_server_rejects_boolean_timeout(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/mcp/servers",
+        json={
+            "name": "Broken HTTP Timeout MCP",
+            "transport": "streamable_http",
+            "endpoint_config": {"url": "https://example.test/mcp", "timeout_ms": True},
+            "credential_binding": {},
+            "tool_policy": {},
+            "default_enabled": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "endpoint_config.timeout_ms must be a positive integer"
+
+
 def test_update_session_override_writes_binding_for_owned_session(monkeypatch):
     app = _build_app()
     client = TestClient(app)
