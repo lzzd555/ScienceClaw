@@ -3,8 +3,14 @@ import { apiClient, ApiResponse } from './client';
 export type McpTransport = 'stdio' | 'streamable_http' | 'sse';
 export type McpSessionMode = 'inherit' | 'enabled' | 'disabled';
 
+export interface McpCredentialRef {
+  alias: string;
+  credential_id: string;
+}
+
 export interface McpCredentialBinding {
   credential_id: string;
+  credentials: McpCredentialRef[];
   headers: Record<string, string>;
   env: Record<string, string>;
   query: Record<string, string>;

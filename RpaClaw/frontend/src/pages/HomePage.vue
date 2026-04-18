@@ -104,7 +104,21 @@
               :selectedModelId="selectedModelId"
               @update:selectedModelId="selectedModelId = $event"
               @open-model-settings="openSettingsDialog('models')"
-            />
+            >
+              <template #toolbar-actions>
+                <McpSessionSelector
+                  :label="t('MCP')"
+                  :title="t('New conversation MCP')"
+                  :description="t('Choose MCP servers before starting this conversation.')"
+                  :tooltip="t('Configure MCP for the next conversation')"
+                  :servers="newChatMcpServers"
+                  :loading="newChatMcpLoading"
+                  :modes="newChatMcpModes"
+                  @open="loadNewChatMcpServers"
+                  @update-mode="setNewChatMcpMode"
+                />
+              </template>
+            </ChatBox>
           </div>
         </div>
       </div>
@@ -129,6 +143,13 @@ import { setPendingChat } from '../composables/usePendingChat';
 import { useAuth } from '../composables/useAuth';
 import { useSettingsDialog } from '../composables/useSettingsDialog';
 import UserMenu from '../components/UserMenu.vue';
+import {
+  listMcpServers,
+  updateSessionMcpServerMode,
+  type McpServerItem,
+  type McpSessionMode,
+} from '../api/mcp';
+import McpSessionSelector from '../components/McpSessionSelector.vue';
 
 const { t } = useI18n();
 const router = useRouter();
@@ -245,6 +266,9 @@ const { isSettingsDialogOpen, openSettingsDialog } = useSettingsDialog();
 
 const models = ref<ModelConfig[]>([]);
 const selectedModelId = ref<string | null>(null);
+const newChatMcpLoading = ref(false);
+const newChatMcpServers = ref<McpServerItem[]>([]);
+const newChatMcpModes = ref<Record<string, McpSessionMode>>({});
 
 const avatarLetter = computed(() => {
   return currentUser.value?.fullname?.charAt(0)?.toUpperCase() || 'M';
@@ -252,6 +276,32 @@ const avatarLetter = computed(() => {
 
 const showUserMenu = ref(false);
 const userMenuTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
+
+const loadNewChatMcpServers = async () => {
+  newChatMcpLoading.value = true;
+  try {
+    newChatMcpServers.value = await listMcpServers();
+  } catch (error) {
+    console.error('Failed to load new chat MCP', error);
+    showErrorToast(t('Failed to load session MCP'));
+  } finally {
+    newChatMcpLoading.value = false;
+  }
+};
+
+const setNewChatMcpMode = (serverKey: string, mode: McpSessionMode) => {
+  newChatMcpModes.value = {
+    ...newChatMcpModes.value,
+    [serverKey]: mode,
+  };
+};
+
+const applyNewChatMcpOverrides = async (sessionId: string) => {
+  const overrides = Object.entries(newChatMcpModes.value).filter(([, mode]) => mode !== 'inherit');
+  await Promise.all(
+    overrides.map(([serverKey, mode]) => updateSessionMcpServerMode(sessionId, serverKey, mode))
+  );
+};
 
 const handleUserMenuEnter = () => {
   if (userMenuTimeout.value) {
@@ -283,6 +333,7 @@ onMounted(async () => {
     if (sys) selectedModelId.value = sys.id;
     else if (models.value.length > 0) selectedModelId.value = models.value[0].id;
   }
+  loadNewChatMcpServers();
 })
 
 onUnmounted(() => {
@@ -315,6 +366,8 @@ const handleSubmit = async () => {
       model_config_id: selectedModelId.value || undefined
     });
     const sessionId = session.session_id;
+
+    await applyNewChatMcpOverrides(sessionId);
 
     // Step 2: Upload any local files (kept in browser memory until now)
     let uploadedFiles: FileInfo[] = [];

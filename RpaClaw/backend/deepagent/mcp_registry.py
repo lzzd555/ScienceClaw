@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, List
 
 from backend.deepagent.mcp_config_loader import load_system_mcp_servers
+from backend.deepagent.mcp_credentials import (
+    McpCredentialResolutionError,
+    append_query_params,
+    resolve_mcp_credential_config,
+)
 from backend.mcp.models import McpServerDefinition
 from backend.storage import get_repository
+
+logger = logging.getLogger(__name__)
 
 
 async def _load_user_mcp_servers(user_id: str) -> List[McpServerDefinition]:
@@ -29,6 +37,7 @@ async def _load_user_mcp_servers(user_id: str) -> List[McpServerDefinition]:
                 headers=endpoint.get("headers", {}),
                 env=endpoint.get("env", {}),
                 timeout_ms=endpoint.get("timeout_ms", 20000),
+                credential_binding=doc.get("credential_binding") or {},
                 tool_policy=doc.get("tool_policy", {}),
             )
         )
@@ -54,5 +63,22 @@ async def build_effective_mcp_servers(session_id: str, user_id: str) -> List[Mcp
         if mode == "disabled":
             continue
         if mode == "enabled" or server.default_enabled:
+            if server.scope == "user":
+                try:
+                    server = await apply_mcp_credentials(server, user_id)
+                except McpCredentialResolutionError as exc:
+                    logger.warning("Skipping MCP server %s because credentials failed: %s", server.id, exc)
+                    continue
             effective.append(server)
     return effective
+
+
+async def apply_mcp_credentials(server: McpServerDefinition, user_id: str) -> McpServerDefinition:
+    resolved = await resolve_mcp_credential_config(user_id, server.credential_binding)
+    return server.model_copy(
+        update={
+            "headers": {**server.headers, **resolved.headers},
+            "env": {**server.env, **resolved.env},
+            "url": append_query_params(server.url, resolved.query),
+        }
+    )

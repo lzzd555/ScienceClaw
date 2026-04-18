@@ -163,6 +163,20 @@ class CredentialVault:
             return None
         return self.decrypt(doc["encrypted_password"])
 
+    async def resolve_credential_values(self, user_id: str, cred_id: str) -> Optional[dict[str, str]]:
+        """Return decrypted credential values for internal runtime injection."""
+        from backend.storage import get_repository
+
+        repo = get_repository("credentials")
+        doc = await repo.find_one({"_id": cred_id, "user_id": user_id})
+        if not doc:
+            return None
+        return {
+            "username": str(doc.get("username") or ""),
+            "password": self.decrypt(doc["encrypted_password"]),
+            "domain": str(doc.get("domain") or ""),
+        }
+
 
 async def inject_credentials(user_id: str, params: dict, kwargs: dict) -> dict:
     """Resolve credential and default-value references in params, inject into kwargs.

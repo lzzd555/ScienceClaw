@@ -91,6 +91,64 @@ export function stringifyHttpHeaders(headers?: Record<string, string> | null): s
     .join('\n');
 }
 
+export function parseKeyValueTemplateText(text: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    const equalsIndex = line.indexOf('=');
+    const colonIndex = line.indexOf(':');
+    const separatorIndex = equalsIndex >= 0 && (colonIndex < 0 || equalsIndex < colonIndex)
+      ? equalsIndex
+      : colonIndex;
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (key && value) {
+      values[key] = value;
+    }
+  }
+  return values;
+}
+
+export function stringifyKeyValueTemplateMap(values?: Record<string, string> | null): string {
+  if (!values) {
+    return '';
+  }
+  return Object.entries(values)
+    .filter(([key, value]) => key.trim() && value.trim())
+    .map(([key, value]) => `${key.trim()}=${value.trim()}`)
+    .join('\n');
+}
+
+export function hasCredentialTemplate(value: string): boolean {
+  return /{{\s*[A-Za-z_][\w-]*\.(password|username|domain)\s*}}/.test(value);
+}
+
+export function splitCredentialTemplateMap(values: Record<string, string>): {
+  staticValues: Record<string, string>;
+  credentialValues: Record<string, string>;
+} {
+  const staticValues: Record<string, string> = {};
+  const credentialValues: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(values)) {
+    if (hasCredentialTemplate(value)) {
+      credentialValues[key] = value;
+    } else {
+      staticValues[key] = value;
+    }
+  }
+
+  return { staticValues, credentialValues };
+}
+
 export function formatMcpToolDisplayName(input: McpToolDisplayInput): string {
   const mcpMeta = input.meta?.mcp;
   const serverName = typeof mcpMeta?.server_name === 'string' ? mcpMeta.server_name.trim() : '';

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.deepagent.mcp_config_loader import load_system_mcp_servers
+from backend.deepagent.mcp_credentials import McpCredentialResolutionError
+from backend.deepagent.mcp_registry import apply_mcp_credentials
 from backend.deepagent.mcp_runtime import McpSdkRuntimeFactory, coerce_mcp_tool_definition
 from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_science_session
 from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
@@ -219,6 +221,7 @@ def _to_server_definition(server: Dict[str, Any]):
         headers=endpoint.get("headers", {}),
         env=endpoint.get("env", {}),
         timeout_ms=endpoint.get("timeout_ms", 20000),
+        credential_binding=server.get("credential_binding") or {},
         tool_policy=server.get("tool_policy") or {},
     )
 
@@ -236,7 +239,14 @@ async def _discover_tools(server_key: str, user_id: str) -> Dict[str, Any]:
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
-    runtime = McpSdkRuntimeFactory().create_runtime(_to_server_definition(server))
+    definition = _to_server_definition(server)
+    if definition.scope == "user":
+        try:
+            definition = await apply_mcp_credentials(definition, user_id)
+        except McpCredentialResolutionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    runtime = McpSdkRuntimeFactory().create_runtime(definition)
     tools = []
     for raw_tool in await runtime.list_tools():
         tool = coerce_mcp_tool_definition(raw_tool)

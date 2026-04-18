@@ -151,6 +151,8 @@
                         </PopoverContent>
                     </Popover>
 
+                    <slot name="toolbar-actions"></slot>
+
                     <!-- Model Selection -->
                     <div v-if="!currentModel" @click="emit('open-model-settings')"
                         class="flex items-center gap-2 bg-[var(--background-white-main)] rounded-full px-3 py-1 border border-[var(--border-light)] cursor-pointer hover:border-[var(--border-main)] transition-colors h-8 min-w-0 max-w-full sm:ml-2">

@@ -41,14 +41,6 @@
                 class="w-full rounded-full border border-white/20 bg-slate-950/20 py-2 pl-10 pr-4 text-sm text-white caret-white placeholder:text-white/55 shadow-[inset_0_1px_4px_rgba(0,0,0,0.16)] outline-none backdrop-blur transition focus:border-white/45 focus:bg-slate-950/25 focus:ring-2 focus:ring-white/25"
               >
             </div>
-            <button
-              v-if="activeTab === 'mcp'"
-              class="inline-flex items-center justify-center gap-2 rounded-xl border border-white/20 bg-white px-4 py-2 text-sm font-bold text-slate-950 shadow-lg transition hover:-translate-y-0.5 active:translate-y-0"
-              @click="openCreateDialog"
-            >
-              <Plus :size="16" />
-              {{ t('Add MCP') }}
-            </button>
           </div>
         </div>
       </div>
@@ -297,26 +289,83 @@
                 <ShieldCheck :size="16" class="text-violet-600 dark:text-violet-300" />
                 {{ t('Authentication & Headers') }}
               </h4>
-              <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <label class="field md:col-span-2">
-                  <span>{{ t('Credential') }}</span>
-                  <select v-model="form.credentialId" class="tools-input">
-                    <option value="">{{ t('No credential') }}</option>
-                    <option v-for="credential in credentials" :key="credential.id" :value="credential.id">
-                      {{ credential.name }} ({{ credential.username }})
-                    </option>
-                  </select>
-                </label>
+              <div class="space-y-5">
                 <label v-if="form.transport !== 'stdio'" class="field md:col-span-2">
                   <span>{{ t('HTTP Headers') }}</span>
                   <textarea
                     v-model="form.headersText"
                     rows="5"
                     class="tools-input resize-y font-mono"
-                    :placeholder="t('HTTP headers placeholder')"
+                    :placeholder="t('HTTP headers with credentials placeholder')"
                   ></textarea>
-                  <small>{{ t('One header per line. Values may include credential placeholders.') }}</small>
+                  <small>{{ t('HTTP headers credential hint') }}</small>
                 </label>
+
+                <div class="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+                  <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h5 class="text-sm font-black text-[var(--text-primary)]">{{ t('Credential Bindings') }}</h5>
+                      <p class="mt-1 text-xs leading-5 text-[var(--text-tertiary)]">{{ t('Credential bindings hint') }}</p>
+                    </div>
+                    <button class="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-[var(--text-secondary)] transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10" @click="addCredentialBinding">
+                      <Plus :size="14" />
+                      {{ t('Add credential binding') }}
+                    </button>
+                  </div>
+
+                  <div class="mt-4 space-y-3">
+                    <div
+                      v-for="(binding, index) in form.credentialBindings"
+                      :key="index"
+                      class="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-[#101115] md:grid-cols-[1fr_1.4fr_auto]"
+                    >
+                      <label class="field">
+                        <span>{{ t('Alias') }}</span>
+                        <input v-model="binding.alias" class="tools-input font-mono" placeholder="github" >
+                      </label>
+                      <label class="field">
+                        <span>{{ t('Credential') }}</span>
+                        <select v-model="binding.credentialId" class="tools-input">
+                          <option value="">{{ t('No credential') }}</option>
+                          <option v-for="credential in credentials" :key="credential.id" :value="credential.id">
+                            {{ credential.name }} ({{ credential.username || credential.domain || credential.id }})
+                          </option>
+                        </select>
+                      </label>
+                      <button class="self-end rounded-xl border border-red-200 px-3 py-2 text-xs font-bold text-red-600 transition hover:bg-red-50 dark:border-red-400/20 dark:text-red-300 dark:hover:bg-red-500/10" @click="removeCredentialBinding(index)">
+                        {{ t('Remove') }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <label v-if="form.transport === 'stdio'" class="field md:col-span-2">
+                    <span>{{ t('Environment Variables') }}</span>
+                    <textarea
+                      v-model="form.envText"
+                      rows="4"
+                      class="tools-input resize-y font-mono"
+                      :placeholder="t('Environment variables with credentials placeholder')"
+                    ></textarea>
+                    <small>{{ t('Environment variables are only applied to local stdio MCP processes.') }}</small>
+                  </label>
+                  <div v-if="form.transport !== 'stdio'" class="md:col-span-2">
+                    <button class="text-xs font-bold text-blue-600 transition hover:text-blue-700 dark:text-blue-300" @click="showAdvancedQuery = !showAdvancedQuery">
+                      {{ showAdvancedQuery ? t('Hide advanced query params') : t('Show advanced query params') }}
+                    </button>
+                    <label v-if="showAdvancedQuery" class="field mt-3">
+                      <span>{{ t('Advanced Query Params') }}</span>
+                      <textarea
+                        v-model="form.queryText"
+                        rows="3"
+                        class="tools-input resize-y font-mono"
+                        :placeholder="t('Query params with credentials placeholder')"
+                      ></textarea>
+                      <small>{{ t('Query params are appended to the MCP endpoint URL at runtime. Prefer headers for authentication when possible.') }}</small>
+                    </label>
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -420,7 +469,10 @@ import { showErrorToast, showSuccessToast } from '../utils/toast';
 import {
   formatMcpServerEndpoint,
   groupMcpServers,
+  parseKeyValueTemplateText,
   parseHttpHeaderText,
+  splitCredentialTemplateMap,
+  stringifyKeyValueTemplateMap,
   stringifyHttpHeaders,
 } from '../utils/mcpUi';
 
@@ -436,6 +488,7 @@ const credentials = ref<Credential[]>([]);
 const formOpen = ref(false);
 const editingServer = ref<McpServerItem | null>(null);
 const savingForm = ref(false);
+const showAdvancedQuery = ref(false);
 const toolsDialogOpen = ref(false);
 const selectedServer = ref<McpServerItem | null>(null);
 const discoveredTools = ref<McpToolDiscoveryItem[]>([]);
@@ -452,7 +505,9 @@ const form = reactive({
   cwd: '',
   argsText: '',
   timeoutMs: 20000,
-  credentialId: '',
+  credentialBindings: [{ alias: 'credential', credentialId: '' }],
+  envText: '',
+  queryText: '',
 });
 
 const filteredExtTools = computed(() => {
@@ -494,7 +549,10 @@ const resetForm = () => {
   form.cwd = '';
   form.argsText = '';
   form.timeoutMs = 20000;
-  form.credentialId = '';
+  form.credentialBindings = [{ alias: 'credential', credentialId: '' }];
+  form.envText = '';
+  form.queryText = '';
+  showAdvancedQuery.value = false;
 };
 
 const applyServerToForm = (server: McpServerItem) => {
@@ -510,7 +568,24 @@ const applyServerToForm = (server: McpServerItem) => {
   form.cwd = endpoint.cwd || '';
   form.argsText = (endpoint.args || []).join('\n');
   form.timeoutMs = endpoint.timeout_ms || 20000;
-  form.credentialId = server.credential_binding?.credential_id || '';
+  const binding = server.credential_binding || {
+    credential_id: '',
+    credentials: [],
+    headers: {},
+    env: {},
+    query: {},
+  };
+  const bindings = (binding.credentials || [])
+    .map((item) => ({ alias: item.alias || '', credentialId: item.credential_id || '' }))
+    .filter((item) => item.alias || item.credentialId);
+  if (bindings.length === 0 && binding.credential_id) {
+    bindings.push({ alias: 'credential', credentialId: binding.credential_id });
+  }
+  form.credentialBindings = bindings.length > 0 ? bindings : [{ alias: 'credential', credentialId: '' }];
+  form.headersText = stringifyHttpHeaders({ ...(endpoint.headers || {}), ...(binding.headers || {}) });
+  form.envText = stringifyKeyValueTemplateMap({ ...(endpoint.env || {}), ...(binding.env || {}) });
+  form.queryText = stringifyKeyValueTemplateMap(binding.query);
+  showAdvancedQuery.value = Boolean(form.queryText.trim());
 };
 
 const loadData = async () => {
@@ -581,35 +656,55 @@ const closeFormDialog = () => {
   resetForm();
 };
 
-const buildPayload = () => ({
-  name: form.name.trim(),
-  description: form.description.trim(),
-  transport: form.transport,
-  enabled: form.enabled,
-  default_enabled: form.defaultEnabled,
-  endpoint_config: form.transport === 'stdio'
-    ? {
-        command: form.command.trim(),
-        cwd: form.cwd.trim(),
-        args: form.argsText.split('\n').map((value) => value.trim()).filter(Boolean),
-        timeout_ms: form.timeoutMs,
-      }
-    : {
-        url: form.url.trim(),
-        headers: parseHttpHeaderText(form.headersText),
-        timeout_ms: form.timeoutMs,
-      },
-  credential_binding: {
-    credential_id: form.credentialId,
-    headers: {},
-    env: {},
-    query: {},
-  },
-  tool_policy: {
-    allowed_tools: [],
-    blocked_tools: [],
-  },
-});
+const addCredentialBinding = () => {
+  form.credentialBindings.push({ alias: '', credentialId: '' });
+};
+
+const removeCredentialBinding = (index: number) => {
+  form.credentialBindings.splice(index, 1);
+  if (form.credentialBindings.length === 0) {
+    form.credentialBindings.push({ alias: 'credential', credentialId: '' });
+  }
+};
+
+const buildPayload = () => {
+  const headerSplit = splitCredentialTemplateMap(parseHttpHeaderText(form.headersText));
+  const envSplit = splitCredentialTemplateMap(parseKeyValueTemplateText(form.envText));
+
+  return {
+    name: form.name.trim(),
+    description: form.description.trim(),
+    transport: form.transport,
+    enabled: form.enabled,
+    default_enabled: form.defaultEnabled,
+    endpoint_config: form.transport === 'stdio'
+      ? {
+          command: form.command.trim(),
+          cwd: form.cwd.trim(),
+          args: form.argsText.split('\n').map((value) => value.trim()).filter(Boolean),
+          env: envSplit.staticValues,
+          timeout_ms: form.timeoutMs,
+        }
+      : {
+          url: form.url.trim(),
+          headers: headerSplit.staticValues,
+          timeout_ms: form.timeoutMs,
+        },
+    credential_binding: {
+      credential_id: '',
+      credentials: form.credentialBindings
+        .map((item) => ({ alias: item.alias.trim(), credential_id: item.credentialId.trim() }))
+        .filter((item) => item.alias && item.credential_id),
+      headers: form.transport !== 'stdio' ? headerSplit.credentialValues : {},
+      env: form.transport === 'stdio' ? envSplit.credentialValues : {},
+      query: form.transport !== 'stdio' ? parseKeyValueTemplateText(form.queryText) : {},
+    },
+    tool_policy: {
+      allowed_tools: [],
+      blocked_tools: [],
+    },
+  };
+};
 
 const submitForm = async () => {
   if (!form.name.trim()) {

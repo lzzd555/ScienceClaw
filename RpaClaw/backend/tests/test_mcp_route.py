@@ -443,6 +443,69 @@ def test_update_mcp_server_updates_owned_user_doc(monkeypatch):
     assert repo.docs["mcp_user_1"]["credential_binding"]["credential_id"] == "cred-1"
 
 
+def test_update_mcp_server_persists_multiple_credential_bindings(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    repo = _MemoryRepo(
+        [
+            {
+                "_id": "mcp_user_1",
+                "user_id": "user-1",
+                "name": "Private MCP",
+                "description": "Before",
+                "transport": "streamable_http",
+                "enabled": True,
+                "default_enabled": False,
+                "endpoint_config": {"url": "https://old.example.test/mcp", "timeout_ms": 20000, "env": {}, "headers": {}},
+                "credential_binding": {"credential_id": "", "credentials": [], "headers": {}, "env": {}, "query": {}},
+                "tool_policy": {"allowed_tools": [], "blocked_tools": []},
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_route, "get_repository", lambda _: repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/mcp_user_1",
+        json={
+            "name": "Updated MCP",
+            "description": "After",
+            "transport": "streamable_http",
+            "enabled": True,
+            "default_enabled": False,
+            "endpoint_config": {
+                "url": "https://new.example.test/mcp",
+                "timeout_ms": 30000,
+                "headers": {"Accept": "application/json"},
+            },
+            "credential_binding": {
+                "credentials": [
+                    {"alias": "github", "credential_id": "cred-github"},
+                    {"alias": "sentry", "credential_id": "cred-sentry"},
+                ],
+                "headers": {
+                    "Authorization": "Bearer {{ github.password }}",
+                    "X-Sentry-Token": "{{ sentry.password }}",
+                },
+                "env": {"GITHUB_USER": "{{ github.username }}"},
+                "query": {"api_key": "{{ sentry.password }}"},
+            },
+            "tool_policy": {"allowed_tools": ["search_articles"], "blocked_tools": []},
+        },
+    )
+
+    assert response.status_code == 200
+    binding = repo.docs["mcp_user_1"]["credential_binding"]
+    assert binding["credential_id"] == ""
+    assert binding["credentials"] == [
+        {"alias": "github", "credential_id": "cred-github"},
+        {"alias": "sentry", "credential_id": "cred-sentry"},
+    ]
+    assert binding["headers"]["Authorization"] == "Bearer {{ github.password }}"
+    assert binding["env"] == {"GITHUB_USER": "{{ github.username }}"}
+    assert binding["query"] == {"api_key": "{{ sentry.password }}"}
+
+
 def test_delete_mcp_server_removes_owned_user_doc(monkeypatch):
     app = _build_app()
     client = TestClient(app)
@@ -514,6 +577,77 @@ def test_discover_tools_returns_marshaled_tools(monkeypatch):
             "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
         }
     ]
+
+
+def test_discover_tools_resolves_user_mcp_credentials_before_runtime(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    monkeypatch.setattr(mcp_route, "load_system_mcp_servers", lambda: [])
+
+    async def fake_user_servers(user_id: str):
+        return [
+            {
+                "_id": "mcp_user_1",
+                "user_id": user_id,
+                "name": "Private MCP",
+                "description": "Private search",
+                "transport": "streamable_http",
+                "enabled": True,
+                "default_enabled": False,
+                "endpoint_config": {
+                    "url": "https://user.example.test/mcp",
+                    "headers": {"Accept": "application/json"},
+                    "env": {"STATIC_ENV": "1"},
+                    "timeout_ms": 20000,
+                },
+                "credential_binding": {
+                    "credentials": [{"alias": "github", "credential_id": "cred-github"}],
+                    "headers": {"Authorization": "Bearer {{ github.password }}"},
+                    "env": {"GITHUB_TOKEN": "{{ github.password }}"},
+                    "query": {"api_key": "{{ github.password }}"},
+                },
+                "tool_policy": {"allowed_tools": [], "blocked_tools": []},
+            }
+        ]
+
+    async def fake_apply(server, user_id: str):
+        assert user_id == "user-1"
+        return server.model_copy(
+            update={
+                "headers": {**server.headers, "Authorization": "Bearer resolved"},
+                "env": {**server.env, "GITHUB_TOKEN": "resolved"},
+                "url": "https://user.example.test/mcp?api_key=resolved",
+            }
+        )
+
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", fake_user_servers)
+    monkeypatch.setattr(mcp_route, "apply_mcp_credentials", fake_apply)
+
+    class _Runtime:
+        async def list_tools(self):
+            return []
+
+    class _RuntimeFactory:
+        def create_runtime(self, server):
+            assert server.id == "mcp_user_1"
+            assert server.headers == {
+                "Accept": "application/json",
+                "Authorization": "Bearer resolved",
+            }
+            assert server.env == {
+                "STATIC_ENV": "1",
+                "GITHUB_TOKEN": "resolved",
+            }
+            assert server.url == "https://user.example.test/mcp?api_key=resolved"
+            return _Runtime()
+
+    monkeypatch.setattr(mcp_route, "McpSdkRuntimeFactory", lambda: _RuntimeFactory())
+
+    response = client.post("/api/v1/mcp/servers/user:mcp_user_1/discover-tools")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["tool_count"] == 0
 
 
 def test_list_session_mcp_returns_session_modes_for_owner(monkeypatch):

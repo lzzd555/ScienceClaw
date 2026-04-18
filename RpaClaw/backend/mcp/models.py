@@ -10,8 +10,14 @@ McpScope = Literal["system", "user"]
 McpSessionMode = Literal["inherit", "enabled", "disabled"]
 
 
+class McpCredentialRef(BaseModel):
+    alias: str
+    credential_id: str
+
+
 class McpCredentialBinding(BaseModel):
     credential_id: str = ""
+    credentials: List[McpCredentialRef] = Field(default_factory=list)
     headers: Dict[str, str] = Field(default_factory=dict)
     env: Dict[str, str] = Field(default_factory=dict)
     query: Dict[str, str] = Field(default_factory=dict)
@@ -38,6 +44,7 @@ class McpServerDefinition(BaseModel):
     env: Dict[str, str] = Field(default_factory=dict)
     timeout_ms: int = 20000
     credential_ref: str = ""
+    credential_binding: McpCredentialBinding = Field(default_factory=McpCredentialBinding)
     tool_policy: McpToolPolicy = Field(default_factory=McpToolPolicy)
 
 

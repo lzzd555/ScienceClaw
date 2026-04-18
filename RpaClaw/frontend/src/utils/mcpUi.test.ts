@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   computeEffectiveMcpEnabled,
   groupMcpServers,
+  hasCredentialTemplate,
   isMcpToolMeta,
+  parseKeyValueTemplateText,
   parseHttpHeaderText,
+  splitCredentialTemplateMap,
   formatMcpServerEndpoint,
   formatMcpToolDisplayName,
+  stringifyKeyValueTemplateMap,
   stringifyHttpHeaders,
 } from './mcpUi';
 
@@ -92,6 +96,54 @@ X-Api-Key: abc:123
     expect(stringifyHttpHeaders({ Authorization: 'Bearer token', Accept: 'application/json' })).toBe(
       'Authorization: Bearer token\nAccept: application/json',
     );
+  });
+});
+
+describe('key/value template text helpers', () => {
+  it('parses equals and colon separators while preserving template values', () => {
+    expect(
+      parseKeyValueTemplateText(`
+GITHUB_TOKEN={{ github.password }}
+SENTRY_TOKEN: {{ sentry.password }}
+      `),
+    ).toEqual({
+      GITHUB_TOKEN: '{{ github.password }}',
+      SENTRY_TOKEN: '{{ sentry.password }}',
+    });
+  });
+
+  it('stringifies template maps using equals separators', () => {
+    expect(
+      stringifyKeyValueTemplateMap({
+        GITHUB_TOKEN: '{{ github.password }}',
+        SENTRY_TOKEN: '{{ sentry.password }}',
+      }),
+    ).toBe('GITHUB_TOKEN={{ github.password }}\nSENTRY_TOKEN={{ sentry.password }}');
+  });
+});
+
+describe('credential template map helpers', () => {
+  it('detects credential placeholders in values', () => {
+    expect(hasCredentialTemplate('Bearer {{ github.password }}')).toBe(true);
+    expect(hasCredentialTemplate('application/json')).toBe(false);
+  });
+
+  it('splits static values from credential template values', () => {
+    expect(
+      splitCredentialTemplateMap({
+        Accept: 'application/json',
+        Authorization: 'Bearer {{ github.password }}',
+        'X-Client': 'RpaClaw',
+      }),
+    ).toEqual({
+      staticValues: {
+        Accept: 'application/json',
+        'X-Client': 'RpaClaw',
+      },
+      credentialValues: {
+        Authorization: 'Bearer {{ github.password }}',
+      },
+    });
   });
 });
 
