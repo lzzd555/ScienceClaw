@@ -1447,5 +1447,123 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(tab for tab in tabs if tab["tab_id"] == tab_id)["url"], "https://example.com")
 
 
+class RPASessionContextLedgerTests(unittest.TestCase):
+    """Tests for default context ledger creation and rebuild-action persistence."""
+
+    def setUp(self):
+        self.manager = MANAGER_MODULE.RPASessionManager()
+        self.session = MANAGER_MODULE.RPASession(
+            id="session-ledger-1",
+            user_id="user-1",
+            sandbox_session_id="sandbox-1",
+        )
+        self.manager.sessions[self.session.id] = self.session
+
+    def test_new_session_has_default_context_ledger(self):
+        """Newly created RPASession instances ship with an empty TaskContextLedger."""
+        self.assertIsNone(self.session.task_context_id)
+        ledger = self.session.context_ledger
+        self.assertEqual(ledger.page_context, {})
+        self.assertEqual(ledger.observed_values, {})
+        self.assertEqual(ledger.derived_values, {})
+        self.assertEqual(ledger.rebuild_actions, [])
+
+    def test_ensure_task_context_creates_id_on_first_call(self):
+        """ensure_task_context creates a UUID and returns it."""
+        ctx_id = self.manager.ensure_task_context(self.session.id)
+        self.assertIsNotNone(ctx_id)
+        self.assertEqual(self.session.task_context_id, ctx_id)
+
+    def test_ensure_task_context_returns_same_id_on_repeated_calls(self):
+        """Repeated calls to ensure_task_context return the same ID."""
+        first = self.manager.ensure_task_context(self.session.id)
+        second = self.manager.ensure_task_context(self.session.id)
+        self.assertEqual(first, second)
+
+    def test_ensure_task_context_raises_on_unknown_session(self):
+        """ensure_task_context raises ValueError for an unknown session."""
+        with self.assertRaises(ValueError):
+            self.manager.ensure_task_context("nonexistent-session")
+
+    def test_record_context_value_stores_observed_value(self):
+        """record_context_value delegates to the ledger's observed_values dict."""
+        self.manager.record_context_value(
+            self.session.id,
+            category="observed",
+            key="order_id",
+            value="ORD-123",
+            user_explicit=True,
+            source_kind="dom_extraction",
+        )
+        entry = self.session.context_ledger.observed_values["order_id"]
+        self.assertEqual(entry.value, "ORD-123")
+        self.assertTrue(entry.user_explicit)
+        self.assertEqual(entry.source_kind, "dom_extraction")
+
+    def test_record_context_value_stores_derived_value(self):
+        """record_context_value delegates to the ledger's derived_values dict."""
+        self.manager.record_context_value(
+            self.session.id,
+            category="derived",
+            key="total_price",
+            value=99.99,
+            runtime_required=True,
+        )
+        entry = self.session.context_ledger.derived_values["total_price"]
+        self.assertEqual(entry.value, 99.99)
+        self.assertTrue(entry.runtime_required)
+
+    def test_record_context_value_raises_on_unknown_session(self):
+        with self.assertRaises(ValueError):
+            self.manager.record_context_value(
+                "nonexistent-session",
+                category="observed",
+                key="x",
+                value=1,
+            )
+
+    def test_record_rebuild_action_appends_to_ledger(self):
+        """record_rebuild_action appends a ContextRebuildAction."""
+        self.manager.record_rebuild_action(
+            self.session.id,
+            action="navigate",
+            description="Navigate to orders page",
+            writes=["page_url"],
+        )
+        actions = self.session.context_ledger.rebuild_actions
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action, "navigate")
+        self.assertEqual(actions[0].description, "Navigate to orders page")
+        self.assertEqual(actions[0].writes, ["page_url"])
+
+    def test_rebuild_action_persists_multiple_entries(self):
+        """Multiple rebuild actions are persisted in order."""
+        self.manager.record_rebuild_action(
+            self.session.id,
+            action="navigate",
+            description="Navigate to login page",
+            writes=["page_url"],
+        )
+        self.manager.record_rebuild_action(
+            self.session.id,
+            action="extract_csrf",
+            description="Extract CSRF token from form",
+            writes=["csrf_token"],
+        )
+        actions = self.session.context_ledger.rebuild_actions
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0].action, "navigate")
+        self.assertEqual(actions[1].action, "extract_csrf")
+        self.assertEqual(actions[1].writes, ["csrf_token"])
+
+    def test_record_rebuild_action_raises_on_unknown_session(self):
+        with self.assertRaises(ValueError):
+            self.manager.record_rebuild_action(
+                "nonexistent-session",
+                action="navigate",
+                description="test",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

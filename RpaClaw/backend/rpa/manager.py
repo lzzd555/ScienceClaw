@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from playwright.async_api import Page, BrowserContext
 
 from .cdp_connector import get_cdp_connector
+from .context_ledger import TaskContextLedger
 from .frame_selectors import build_frame_path
 from .playwright_security import get_context_kwargs
 
@@ -70,6 +71,8 @@ class RPASession(BaseModel):
     sandbox_session_id: str
     paused: bool = False  # pause event recording during AI execution
     active_tab_id: Optional[str] = None
+    task_context_id: Optional[str] = None
+    context_ledger: TaskContextLedger = Field(default_factory=TaskContextLedger)
 
 
 # ── CAPTURE_JS: injected into pages to capture user events ──────────
@@ -960,6 +963,31 @@ class RPASessionManager:
             session.user_id == user_id and session.sandbox_session_id == sandbox_session_id
             for session in self.sessions.values()
         )
+
+    # ── Context ledger helpers ─────────────────────────────────────────
+
+    def ensure_task_context(self, session_id: str) -> str:
+        """Return the task context ID for *session_id*, creating one if needed."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        if session.task_context_id is None:
+            session.task_context_id = str(uuid.uuid4())
+        return session.task_context_id
+
+    def record_context_value(self, session_id: str, **kwargs: Any) -> None:
+        """Delegate to ``session.context_ledger.record_value(**kwargs)``."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        session.context_ledger.record_value(**kwargs)
+
+    def record_rebuild_action(self, session_id: str, **kwargs: Any) -> None:
+        """Delegate to ``session.context_ledger.record_rebuild_action(**kwargs)``."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        session.context_ledger.record_rebuild_action(**kwargs)
 
     async def _handle_event(self, session_id: str, evt: dict):
         if session_id not in self.sessions:
