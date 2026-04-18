@@ -371,6 +371,16 @@ class StepExecutionError(Exception):
         lines.append("    return _results, context")
 
         # Build rebuild_context function body by replaying steps that produce context values
+        # First, build a per-step URL map by tracking navigate actions
+        step_urls: Dict[int, str] = {}
+        running_url = ""
+        for i, step in enumerate(deduped):
+            action = step.get("action", "")
+            step_url = step.get("url", "")
+            if action in ("navigate", "goto") and step_url:
+                running_url = step_url
+            step_urls[i] = running_url
+
         rebuild_lines: List[str] = [
             "",
             "async def rebuild_context(page, context, **kwargs):",
@@ -387,7 +397,7 @@ class StepExecutionError(Exception):
                 continue
 
             action = step.get("action", "")
-            url = step.get("url", "")
+            url = step.get("url", "") or step_urls.get(rebuild_idx, "")
             step_tab_id = step.get("tab_id") or rebuild_tab_id
 
             # Handle tab switches needed to reach this step
