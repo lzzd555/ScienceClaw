@@ -147,7 +147,6 @@ interface ChatMessage {
 const chatMessages = ref<ChatMessage[]>([]);
 const newMessage = ref('');
 const sending = ref(false);
-const agentMode = ref(false);
 const agentRunning = ref(false);
 
 interface PendingConfirm {
@@ -556,7 +555,7 @@ const sendMessage = async () => {
   const userText = newMessage.value.trim();
   newMessage.value = '';
   sending.value = true;
-  if (agentMode.value) agentRunning.value = true;
+  agentRunning.value = true;
 
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   chatMessages.value.push({ role: 'user', text: userText, time: now });
@@ -572,7 +571,7 @@ const sendMessage = async () => {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
       },
-      body: JSON.stringify({ message: userText, mode: agentMode.value ? 'react' : 'chat' }),
+      body: JSON.stringify({ message: userText, mode: 'chat' }),
     });
 
     if (!resp.ok || !resp.body) {
@@ -631,6 +630,12 @@ const sendMessage = async () => {
               if (data.error) chatMessages.value[msgIdx].error = data.error;
               if (data.output && data.output !== 'ok' && data.output !== 'None') {
                 chatMessages.value[msgIdx].text += `${chatMessages.value[msgIdx].text ? '\n' : ''}输出: ${data.output}`;
+              }
+              if (data.context_writes && typeof data.context_writes === 'object') {
+                const varNames = Object.keys(data.context_writes);
+                if (varNames.length > 0) {
+                  chatMessages.value[msgIdx].text += `\n📋 已记录上下文变量：${varNames.join(', ')}`;
+                }
               }
             } else if (eventType === 'agent_thought') {
               chatMessages.value[msgIdx].text += (chatMessages.value[msgIdx].text ? '\n' : '') + `💭 ${data.text || ''}`;
@@ -882,7 +887,7 @@ const sendMessage = async () => {
               <div>
                 <h3 class="text-gray-900 dark:text-gray-100 font-bold text-sm">AI 录制助手</h3>
                 <p class="text-[10px] font-bold" :class="agentRunning ? 'text-orange-500' : 'text-[#831bd7]'">
-                  {{ agentRunning ? 'Agent 运行中...' : (agentMode ? 'Agent 模式' : '已就绪 · 协助录制中') }}
+                  {{ agentRunning ? 'AI 正在执行录制任务...' : '已就绪 · AI 协助录制中' }}
                 </p>
               </div>
             </div>
@@ -892,18 +897,6 @@ const sendMessage = async () => {
                 @click="abortAgent"
                 class="text-[10px] font-bold text-red-500 border border-red-200 dark:border-red-800 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors"
               >中止</button>
-              <label class="flex items-center gap-1.5 cursor-pointer" :class="agentRunning ? 'opacity-50 pointer-events-none' : ''">
-                <span class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">Agent</span>
-                <div
-                  @click="agentMode = !agentMode"
-                  class="w-8 h-4 rounded-full transition-colors relative"
-                  :class="agentMode ? 'bg-[#831bd7]' : 'bg-gray-300'"
-                >
-                  <div class="w-3 h-3 bg-white dark:bg-[#272728] rounded-full absolute top-0.5 transition-transform shadow-sm"
-                    :class="agentMode ? 'translate-x-4' : 'translate-x-0.5'"
-                  ></div>
-                </div>
-              </label>
             </div>
           </div>
         </div>
@@ -960,7 +953,7 @@ const sendMessage = async () => {
                   <span class="ml-1">{{ msg.locatorSummary }}</span>
                 </div>
               </div>
-              <div v-if="msg.status === 'done' && msg.role === 'assistant' && !agentMode" class="mt-2 flex items-center gap-1 text-[10px] text-green-600 font-medium">
+              <div v-if="msg.status === 'done' && msg.role === 'assistant'" class="mt-2 flex items-center gap-1 text-[10px] text-green-600 font-medium">
                 <CheckCircle :size="10" /> 执行成功
               </div>
               <!-- Legacy script toggle (for non-agent mode) -->
@@ -996,7 +989,7 @@ const sendMessage = async () => {
               @keyup.enter="sendMessage"
               :disabled="sending || agentRunning"
               class="w-full bg-white dark:bg-[#272728] border border-gray-200 dark:border-gray-700 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
-              :placeholder="agentRunning ? 'Agent 运行中...' : (sending ? 'AI 正在处理...' : (agentMode ? '描述目标任务...' : '向助手提问...'))"
+              :placeholder="agentRunning ? 'AI 正在执行录制任务...' : (sending ? 'AI 正在处理...' : '向助手提问...')"
               type="text"
             />
             <button
