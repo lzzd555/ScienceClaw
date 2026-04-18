@@ -11,6 +11,28 @@ RPA_PLAYWRIGHT_TIMEOUT_MS = 60000
 RPA_NAVIGATION_TIMEOUT_MS = 60000
 
 
+def _collect_context_contract(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Derive required_context_outputs and context_rebuild_plan from step context_writes/context_reads.
+
+    Returns a dict with:
+      - required_context_outputs: sorted list of unique context_writes keys across all steps
+      - context_rebuild_plan: list of step indices that produce context values (context_writes)
+    """
+    required_outputs: set = set()
+    rebuild_plan: List[int] = []
+
+    for step_index, step in enumerate(steps):
+        context_writes = step.get("context_writes") or []
+        if context_writes:
+            required_outputs.update(context_writes)
+            rebuild_plan.append(step_index)
+
+    return {
+        "required_context_outputs": sorted(required_outputs),
+        "context_rebuild_plan": rebuild_plan,
+    }
+
+
 class PlaywrightGenerator:
     """Generate Playwright Python scripts from recorded RPA steps.
 
@@ -130,11 +152,31 @@ class StepExecutionError(Exception):
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
 
+        # Build rebuild_context function body
+        rebuild_lines = [
+            "",
+            "async def rebuild_context(page, context, **kwargs):",
+            '    """Rebuild runtime context by navigating to prerequisite pages and extracting values."""',
+        ]
+
+        # Track which variables are set in rebuild_context to avoid re-extracting in execute_skill
+        context_write_keys: set = set()
+
+        # We need a second pass to generate the rebuild_context body, but first
+        # we iterate to build execute_skill. We'll collect rebuild steps in parallel.
+        rebuild_body_lines: List[str] = []
+        rebuild_tab_id = root_tab_id
+        rebuild_current_page = "page"
+        rebuild_prev_url = None
+        rebuild_tabs_var = f'{{"{root_tab_id}": page}}'
+
         lines = [
             "",
             "async def execute_skill(page, **kwargs):",
             '    """Auto-generated skill from RPA recording."""',
             "    _results = {}",
+            "    context = {}",
+            "    context = await rebuild_context(page, context, **kwargs)",
             f'    tabs = {{"{root_tab_id}": page}}',
             "    current_page = page",
         ]
@@ -166,6 +208,13 @@ class StepExecutionError(Exception):
 
             # AI-generated script — embed directly with sync→async conversion
             if action == "ai_script":
+                # Inject context variable reads for steps that declare context_reads
+                context_reads = step.get("context_reads") or []
+                if context_reads:
+                    for ctx_key in context_reads:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        lines.append(f'    {ctx_key} = context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))')
+                        context_write_keys.add(ctx_key)
                 ai_code = step.get("value", "")
                 if ai_code:
                     converted = self._sync_to_async(ai_code)
@@ -302,7 +351,15 @@ class StepExecutionError(Exception):
                 step_lines.append(f"    await _dl.save_as(_dl_dest)")
                 step_lines.append(f'    _results["download_{safe_name}"] = {{"filename": _dl.suggested_filename, "path": _dl_dest}}')
             elif action == "fill":
-                fill_value = self._maybe_parameterize(value, params)
+                context_reads = step.get("context_reads") or []
+                if context_reads:
+                    # Use the first context_reads key as the fill value source
+                    ctx_key = context_reads[0]
+                    ctx_key_safe = ctx_key.replace("'", "\\'")
+                    fill_value = f'context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))'
+                    context_write_keys.add(ctx_key)
+                else:
+                    fill_value = self._maybe_parameterize(value, params)
                 step_lines.append(f"    await {locator}.fill({fill_value})")
             elif action == "check":
                 step_lines.append(f"    await {locator}.check()")
@@ -314,8 +371,14 @@ class StepExecutionError(Exception):
             elif action == "extract_text":
                 result_var = f"extract_text_value_{step_index + 1}"
                 result_key = self._build_extract_result_key(step, used_result_keys)
+                context_writes = step.get("context_writes") or []
                 step_lines.append(f"    {result_var} = await {locator}.inner_text()")
                 step_lines.append(f'    _results["{result_key}"] = {result_var}')
+                if context_writes:
+                    for ctx_key in context_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        step_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+                        context_write_keys.add(ctx_key)
             elif action == "press":
                 step_lines.append(f'    await {locator}.press("{value}")')
             elif action == "select":
@@ -327,13 +390,91 @@ class StepExecutionError(Exception):
 
         lines.append("    return _results")
 
-        # Wrap execute_skill function with the runner boilerplate
+        # Build rebuild_context function body by replaying steps that produce context values
+        rebuild_lines: List[str] = [
+            "",
+            "async def rebuild_context(page, context, **kwargs):",
+            '    """Rebuild runtime context by navigating to prerequisite pages and extracting values."""',
+            f'    tabs = {{"{root_tab_id}": page}}',
+            "    current_page = page",
+        ]
+        rebuild_tab_id = root_tab_id
+        rebuild_prev_url = None
+
+        for rebuild_idx, step in enumerate(deduped):
+            context_writes = step.get("context_writes") or []
+            if not context_writes:
+                continue
+
+            action = step.get("action", "")
+            url = step.get("url", "")
+            step_tab_id = step.get("tab_id") or rebuild_tab_id
+
+            # Handle tab switches needed to reach this step
+            if step_tab_id != rebuild_tab_id:
+                if step_tab_id not in [t for t in [root_tab_id, rebuild_tab_id]]:
+                    # Simple approach: navigate to the URL for this step's context
+                    pass
+                rebuild_tab_id = step_tab_id
+
+            # Navigate to the prerequisite page
+            if url and url != rebuild_prev_url:
+                rebuild_lines.append(f'    await current_page.goto("{url}")')
+                rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
+                rebuild_prev_url = url
+
+            # Extract values
+            if action == "extract_text":
+                target = step.get("target", "")
+                frame_path = step.get("frame_path") or []
+                scope_var = "current_page"
+                if frame_path:
+                    scope_var = "frame_scope"
+                    frame_parent = "current_page"
+                    for frame_selector in frame_path:
+                        rebuild_lines.append(
+                            f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                        )
+                        frame_parent = "frame_scope"
+                locator = self._build_locator_for_page(target, scope_var)
+                result_var = f"rebuild_var_{rebuild_idx}"
+                rebuild_lines.append(f"    {result_var} = await {locator}.inner_text()")
+                for ctx_key in context_writes:
+                    ctx_key_safe = ctx_key.replace("'", "\\'")
+                    rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+            elif action == "fill":
+                # Fill steps can also write to context (e.g., recording a value to use later)
+                target = step.get("target", "")
+                value = step.get("value", "")
+                frame_path = step.get("frame_path") or []
+                scope_var = "current_page"
+                if frame_path:
+                    scope_var = "frame_scope"
+                    frame_parent = "current_page"
+                    for frame_selector in frame_path:
+                        rebuild_lines.append(
+                            f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                        )
+                        frame_parent = "frame_scope"
+                locator = self._build_locator_for_page(target, scope_var)
+                for ctx_key in context_writes:
+                    ctx_key_safe = ctx_key.replace("'", "\\'")
+                    rebuild_lines.append(f'    context["{ctx_key_safe}"] = kwargs.get("{ctx_key_safe}", "")')
+                fill_value = self._maybe_parameterize(value, params)
+                rebuild_lines.append(f"    await {locator}.fill({fill_value})")
+
+        rebuild_lines.append("    return context")
+
+        # Assemble: rebuild_context function + execute_skill function
+        rebuild_func = "\n".join(rebuild_lines)
         execute_skill_func = "\n".join(lines)
+        combined_func = rebuild_func + "\n" + execute_skill_func
+
         if test_mode:
-            execute_skill_func = self.TEST_MODE_PREAMBLE + execute_skill_func
+            combined_func = self.TEST_MODE_PREAMBLE + combined_func
         template = self.RUNNER_TEMPLATE_LOCAL if is_local else self.RUNNER_TEMPLATE_DOCKER
         return template.format(
-            execute_skill_func=execute_skill_func,
+            execute_skill_func=combined_func,
             default_timeout_ms=RPA_PLAYWRIGHT_TIMEOUT_MS,
             navigation_timeout_ms=RPA_NAVIGATION_TIMEOUT_MS,
             launch_kwargs=repr(get_chromium_launch_kwargs(headless=False)),

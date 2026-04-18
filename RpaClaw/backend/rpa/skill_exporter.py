@@ -21,6 +21,7 @@ class SkillExporter:
         description: str,
         script: str,
         params: Dict[str, Any],
+        context_contract: Dict[str, Any] = None,
     ) -> str:
         """Export skill to MongoDB or local filesystem based on storage_backend.
 
@@ -62,16 +63,23 @@ class SkillExporter:
             example_text = ""
             if examples:
                 example_text = f" For example: {', '.join(examples[:3])}"
-            
+
             auto_inject_note = (
                 "\nNote: Some parameters (credentials and defaults) are automatically "
                 "injected at runtime. You can run this skill without providing them. "
                 f"Pass `--param=value` only to override the pre-configured defaults.{example_text}\n"
             )
 
+        # Context contract metadata
+        context_contract = context_contract or {}
+        required_context_outputs = context_contract.get("required_context_outputs", [])
+        context_rebuild_plan = context_contract.get("context_rebuild_plan", [])
+
         skill_md = f"""---
 name: {skill_name}
 description: {description}
+required_context_outputs: {json.dumps(required_context_outputs)}
+context_rebuild_plan: {json.dumps(context_rebuild_plan)}
 ---
 
 # {skill_name}
