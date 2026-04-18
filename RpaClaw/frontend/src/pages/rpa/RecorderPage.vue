@@ -141,7 +141,6 @@ interface ChatMessage {
   frameSummary?: string;
   locatorSummary?: string;
   collectionSummary?: string;
-  diagnostics?: string[];
 }
 
 const chatMessages = ref<ChatMessage[]>([]);
@@ -631,11 +630,8 @@ const sendMessage = async () => {
               if (data.output && data.output !== 'ok' && data.output !== 'None') {
                 chatMessages.value[msgIdx].text += `${chatMessages.value[msgIdx].text ? '\n' : ''}输出: ${data.output}`;
               }
-              if (data.context_writes && typeof data.context_writes === 'object') {
-                const varNames = Object.keys(data.context_writes);
-                if (varNames.length > 0) {
-                  chatMessages.value[msgIdx].text += `\n📋 已记录上下文变量：${varNames.join(', ')}`;
-                }
+              if (Array.isArray(data.context_writes) && data.context_writes.length > 0) {
+                chatMessages.value[msgIdx].text += `\n📋 已记录上下文变量：${data.context_writes.join(', ')}`;
               }
             } else if (eventType === 'agent_thought') {
               chatMessages.value[msgIdx].text += (chatMessages.value[msgIdx].text ? '\n' : '') + `💭 ${data.text || ''}`;
