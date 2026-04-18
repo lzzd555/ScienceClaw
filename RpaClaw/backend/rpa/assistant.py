@@ -268,6 +268,12 @@ def _snapshot_frame_lines(snapshot: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _is_explicit_extraction_request(message: str) -> bool:
+    """Return True when the user message explicitly asks to extract / read / record a value."""
+    keywords = ["提取", "读取", "获取", "总结", "记录"]
+    return any(word in message for word in keywords)
+
+
 REACT_SYSTEM_PROMPT = """You are an RPA automation agent.
 
 You receive a goal and must iteratively observe the current page, decide the next atomic action, execute it, and continue until the goal is complete.
@@ -590,6 +596,13 @@ class RPAAssistant:
         model_config: Optional[Dict[str, Any]] = None,
         page_provider: Optional[Callable[[], Optional[Page]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        # ── Ensure a task context exists for this session ──────────
+        from backend.rpa.manager import rpa_manager
+        try:
+            rpa_manager.ensure_task_context(session_id)
+        except ValueError:
+            pass  # session not managed; skip context tracking
+
         yield {"event": "message_chunk", "data": {"text": "正在分析当前页面......\n\n"}}
         current_page = page_provider() if page_provider else page
         if current_page is None:
@@ -639,6 +652,31 @@ class RPAAssistant:
                     "prompt": message,
                 }
 
+        # ── Compute context reads / writes ─────────────────────────
+        context_reads: List[str] = []
+        context_writes: List[str] = []
+
+        if result["success"] and step_data:
+            context_writes = self._compute_context_writes(
+                message=message,
+                step_data=step_data,
+                resolution=resolution,
+            )
+
+            # Persist promoted values into the session ledger
+            self._promote_to_ledger(
+                rpa_manager=rpa_manager,
+                session_id=session_id,
+                context_writes=context_writes,
+                step_data=step_data,
+                output=result.get("output"),
+            )
+
+        # Attach context lists to the step payload for downstream use
+        if step_data is not None:
+            step_data["context_reads"] = context_reads
+            step_data["context_writes"] = context_writes
+
         yield {
             "event": "result",
             "data": {
@@ -646,9 +684,85 @@ class RPAAssistant:
                 "error": result.get("error"),
                 "step": step_data,
                 "output": result.get("output"),
+                "context_reads": context_reads,
+                "context_writes": context_writes,
             },
         }
         yield {"event": "done", "data": {}}
+
+    @staticmethod
+    def _compute_context_writes(
+        message: str,
+        step_data: Dict[str, Any],
+        resolution: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Determine which context keys should be written after this step.
+
+        An extracted value is promoted to context when:
+        * The action is ``extract_text`` with a ``result_key``, AND
+        * The user explicitly requested extraction, OR
+        * The prompt references cross-page transfer (e.g. "fill into", "copy to").
+        """
+        action = step_data.get("action", "")
+        result_key = step_data.get("result_key")
+        if not result_key:
+            return []
+
+        if action != "extract_text":
+            return []
+
+        # Rule 1: user explicitly asked to extract / read / record
+        if _is_explicit_extraction_request(message):
+            return [result_key]
+
+        # Rule 2: prompt or description hints at cross-page transfer
+        transfer_keywords = ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
+        description = step_data.get("description", "")
+        if any(kw in message for kw in transfer_keywords) or any(kw in description for kw in transfer_keywords):
+            return [result_key]
+
+        return []
+
+    @staticmethod
+    def _promote_to_ledger(
+        rpa_manager: Any,
+        session_id: str,
+        context_writes: List[str],
+        step_data: Dict[str, Any],
+        output: Optional[str],
+    ) -> None:
+        """Persist promoted values into the session's TaskContextLedger."""
+        if not context_writes:
+            return
+
+        session = rpa_manager.sessions.get(session_id)
+        if session is None:
+            return
+
+        ledger = session.context_ledger
+        for key in context_writes:
+            user_explicit = _is_explicit_extraction_request(step_data.get("prompt", ""))
+            is_cross_page = any(
+                kw in (step_data.get("description", "") + step_data.get("prompt", ""))
+                for kw in ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
+            )
+            if ledger.should_promote_value(
+                key=key,
+                source="observation",
+                user_explicit=user_explicit,
+                runtime_required=is_cross_page,
+                consumed_later=is_cross_page,
+            ):
+                rpa_manager.record_context_value(
+                    session_id,
+                    category="observed",
+                    key=key,
+                    value=output,
+                    user_explicit=user_explicit,
+                    runtime_required=is_cross_page,
+                    source_step_id=step_data.get("id"),
+                    source_kind="assistant_extraction",
+                )
 
     async def _execute_with_retry(
         self,
