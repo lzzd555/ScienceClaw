@@ -1146,6 +1146,271 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class RPAAssistantContextPromotionTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for the context_reads / context_writes promotion contract.
+
+    These tests verify that the assistant's event stream surfaces context
+    information so that callers (e.g. the RPA session manager) can persist
+    extracted values and read previously stored ones.
+
+    They are expected to FAIL until the assistant implementation is updated
+    to include ``context_writes`` and ``context_reads`` lists in the
+    ``result`` event payload.
+    """
+
+    async def test_assistant_promotes_explicit_extraction_to_context(self):
+        """When the user asks to extract something for later use, the result
+        event must include ``context_writes`` containing the extracted key."""
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        # Simulated LLM response: a structured extract_text intent with a
+        # result_key that signals cross-page data transfer.
+        llm_response = json.dumps({
+            "thought": "User wants to extract the person name for later use",
+            "action": "extract_text",
+            "description": "提取当前人物姓名",
+            "prompt": "提取当前人物姓名，后面要填写到另一个页面",
+            "result_key": "person_name",
+            "target_hint": {"role": "heading", "name": "person name"},
+            "risk": "none",
+            "risk_reason": "",
+        })
+
+        snapshot = {
+            "url": "https://example.com/profile",
+            "title": "Profile Page",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [
+                        {"index": 1, "tag": "h1", "role": "heading", "name": "张三"},
+                    ],
+                    "collections": [],
+                },
+            ],
+            "actionable_nodes": [
+                {
+                    "node_id": "h-1",
+                    "frame_path": [],
+                    "role": "heading",
+                    "name": "张三",
+                    "action_kinds": ["click"],
+                    "locator": {"method": "text", "value": "张三"},
+                    "locator_candidates": [
+                        {"kind": "text", "selected": True, "locator": {"method": "text", "value": "张三"}},
+                    ],
+                    "validation": {"status": "ok"},
+                    "hit_test_ok": True,
+                    "is_visible": True,
+                    "is_enabled": True,
+                    "bbox": {"x": 20, "y": 20, "width": 80, "height": 24},
+                },
+            ],
+            "content_nodes": [
+                {
+                    "node_id": "c-1",
+                    "frame_path": [],
+                    "semantic_kind": "heading",
+                    "text": "张三",
+                    "bbox": {"x": 20, "y": 20, "width": 80, "height": 24},
+                    "locator": {"method": "text", "value": "张三"},
+                },
+            ],
+            "containers": [],
+        }
+
+        async def fake_stream(_messages, _model_config=None):
+            yield llm_response
+
+        assistant._stream_llm = fake_stream
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="ctx-test-1",
+                page=page,
+                message="提取当前人物姓名，后面要填写到另一个页面",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_events = [e for e in events if e["event"] == "result"]
+        self.assertTrue(len(result_events) > 0, "Expected at least one result event")
+
+        result_data = result_events[-1]["data"]
+        self.assertIn("context_writes", result_data,
+                       "result event must include context_writes list")
+        self.assertIn("person_name", result_data["context_writes"],
+                       "context_writes should contain 'person_name' for extract_text with result_key")
+
+    async def test_assistant_promotes_runtime_required_cross_page_value(self):
+        """When the user describes cross-page data transfer (e.g. copying a
+        number from a detail page to a registration page), the result event
+        must include ``context_writes`` containing the relevant key."""
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        llm_response = json.dumps({
+            "thought": "User needs to extract the contract number for filling into another page",
+            "action": "extract_text",
+            "description": "提取合同编号",
+            "prompt": "打开详情后把编号填写到登记页",
+            "result_key": "contract_number",
+            "target_hint": {"role": "cell", "name": "合同编号"},
+            "risk": "none",
+            "risk_reason": "",
+        })
+
+        snapshot = {
+            "url": "https://example.com/contract/detail",
+            "title": "Contract Detail",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [
+                        {"index": 1, "tag": "td", "role": "cell", "name": "合同编号"},
+                        {"index": 2, "tag": "td", "role": "cell", "name": "HT-2026-001"},
+                    ],
+                    "collections": [],
+                },
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "c-1",
+                    "frame_path": [],
+                    "semantic_kind": "cell",
+                    "text": "HT-2026-001",
+                    "bbox": {"x": 100, "y": 40, "width": 120, "height": 24},
+                    "locator": {"method": "text", "value": "HT-2026-001"},
+                },
+            ],
+            "containers": [],
+        }
+
+        async def fake_stream(_messages, _model_config=None):
+            yield llm_response
+
+        assistant._stream_llm = fake_stream
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="ctx-test-2",
+                page=page,
+                message="打开详情后把编号填写到登记页",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_events = [e for e in events if e["event"] == "result"]
+        self.assertTrue(len(result_events) > 0, "Expected at least one result event")
+
+        result_data = result_events[-1]["data"]
+        self.assertIn("context_writes", result_data,
+                       "result event must include context_writes list for cross-page transfer")
+        self.assertIn("contract_number", result_data["context_writes"],
+                       "context_writes should contain 'contract_number' for cross-page value transfer")
+
+    async def test_assistant_ignores_nonessential_observations(self):
+        """When the user gives a simple continuation command (e.g. '继续下一步'),
+        no extraneous context keys should appear in context_writes."""
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        # Simulated LLM response: a simple click, no extraction intent.
+        llm_response = json.dumps({
+            "thought": "User wants to proceed to next step",
+            "action": "click",
+            "description": "点击下一步按钮",
+            "prompt": "继续下一步",
+            "target_hint": {"role": "button", "name": "Next"},
+            "risk": "none",
+            "risk_reason": "",
+        })
+
+        snapshot = {
+            "url": "https://example.com/wizard",
+            "title": "Wizard",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [
+                        {"index": 1, "tag": "button", "role": "button", "name": "Next"},
+                        {"index": 2, "tag": "div", "role": "complementary", "name": "Sidebar"},
+                    ],
+                    "collections": [],
+                },
+            ],
+            "actionable_nodes": [
+                {
+                    "node_id": "btn-1",
+                    "frame_path": [],
+                    "role": "button",
+                    "name": "Next",
+                    "action_kinds": ["click"],
+                    "locator": {"method": "role", "role": "button", "name": "Next"},
+                    "locator_candidates": [
+                        {"kind": "role", "selected": True, "locator": {"method": "role", "role": "button", "name": "Next"}},
+                    ],
+                    "validation": {"status": "ok"},
+                    "hit_test_ok": True,
+                    "is_visible": True,
+                    "is_enabled": True,
+                    "bbox": {"x": 300, "y": 500, "width": 100, "height": 40},
+                },
+            ],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        async def fake_stream(_messages, _model_config=None):
+            yield llm_response
+
+        assistant._stream_llm = fake_stream
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="ctx-test-3",
+                page=page,
+                message="继续下一步",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_events = [e for e in events if e["event"] == "result"]
+        self.assertTrue(len(result_events) > 0, "Expected at least one result event")
+
+        result_data = result_events[-1]["data"]
+        self.assertIn("context_writes", result_data,
+                       "result event must include context_writes list (even if empty)")
+        # No extraneous keys like "sidebar_hint" should be present.
+        context_writes = result_data["context_writes"]
+        self.assertIsInstance(context_writes, list)
+        self.assertNotIn("sidebar_hint", context_writes,
+                          "context_writes should not contain nonessential keys like 'sidebar_hint'")
+        # For a simple click with no extraction, the list should be empty.
+        self.assertEqual(context_writes, [],
+                          "context_writes should be empty for a simple continuation command")
+
+
 class RPAAssistantPromptFormattingTests(unittest.TestCase):
     def test_build_messages_lists_frames_and_collections(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
