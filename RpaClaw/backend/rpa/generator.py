@@ -11,28 +11,6 @@ RPA_PLAYWRIGHT_TIMEOUT_MS = 60000
 RPA_NAVIGATION_TIMEOUT_MS = 60000
 
 
-def _collect_context_contract(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Derive required_context_outputs and context_rebuild_plan from step context_writes/context_reads.
-
-    Returns a dict with:
-      - required_context_outputs: sorted list of unique context_writes keys across all steps
-      - context_rebuild_plan: list of step indices that produce context values (context_writes)
-    """
-    required_outputs: set = set()
-    rebuild_plan: List[int] = []
-
-    for step_index, step in enumerate(steps):
-        context_writes = step.get("context_writes") or []
-        if context_writes:
-            required_outputs.update(context_writes)
-            rebuild_plan.append(step_index)
-
-    return {
-        "required_context_outputs": sorted(required_outputs),
-        "context_rebuild_plan": rebuild_plan,
-    }
-
-
 class PlaywrightGenerator:
     """Generate Playwright Python scripts from recorded RPA steps.
 
@@ -143,6 +121,27 @@ class StepExecutionError(Exception):
         super().__init__(f"STEP_FAILED:{step_index}:{original_error}")
 '''
 
+    def _collect_context_contract(self, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Derive required_context_outputs and context_rebuild_plan from step context_writes/context_reads.
+
+        Returns a dict with:
+          - required_context_outputs: sorted list of unique context_writes keys across all steps
+          - context_rebuild_plan: list of step indices that produce context values (context_writes)
+        """
+        required_outputs: set = set()
+        rebuild_plan: List[int] = []
+
+        for step_index, step in enumerate(steps):
+            context_writes = step.get("context_writes") or []
+            if context_writes:
+                required_outputs.update(context_writes)
+                rebuild_plan.append(step_index)
+
+        return {
+            "required_context_outputs": sorted(required_outputs),
+            "context_rebuild_plan": rebuild_plan,
+        }
+
     def generate_script(self, steps: List[Dict[str, Any]], params: Dict[str, Any] = None, is_local: bool = False, test_mode: bool = False) -> str:
         params = params or {}
         deduped = self._deduplicate_steps(steps)
@@ -151,24 +150,6 @@ class StepExecutionError(Exception):
         root_tab_id = deduped[0].get("tab_id") if deduped else None
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
-
-        # Build rebuild_context function body
-        rebuild_lines = [
-            "",
-            "async def rebuild_context(page, context, **kwargs):",
-            '    """Rebuild runtime context by navigating to prerequisite pages and extracting values."""',
-        ]
-
-        # Track which variables are set in rebuild_context to avoid re-extracting in execute_skill
-        context_write_keys: set = set()
-
-        # We need a second pass to generate the rebuild_context body, but first
-        # we iterate to build execute_skill. We'll collect rebuild steps in parallel.
-        rebuild_body_lines: List[str] = []
-        rebuild_tab_id = root_tab_id
-        rebuild_current_page = "page"
-        rebuild_prev_url = None
-        rebuild_tabs_var = f'{{"{root_tab_id}": page}}'
 
         lines = [
             "",
@@ -214,7 +195,6 @@ class StepExecutionError(Exception):
                     for ctx_key in context_reads:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
                         lines.append(f'    {ctx_key} = context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))')
-                        context_write_keys.add(ctx_key)
                 ai_code = step.get("value", "")
                 if ai_code:
                     converted = self._sync_to_async(ai_code)
@@ -357,7 +337,6 @@ class StepExecutionError(Exception):
                     ctx_key = context_reads[0]
                     ctx_key_safe = ctx_key.replace("'", "\\'")
                     fill_value = f'context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))'
-                    context_write_keys.add(ctx_key)
                 else:
                     fill_value = self._maybe_parameterize(value, params)
                 step_lines.append(f"    await {locator}.fill({fill_value})")
@@ -378,7 +357,6 @@ class StepExecutionError(Exception):
                     for ctx_key in context_writes:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
                         step_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
-                        context_write_keys.add(ctx_key)
             elif action == "press":
                 step_lines.append(f'    await {locator}.press("{value}")')
             elif action == "select":

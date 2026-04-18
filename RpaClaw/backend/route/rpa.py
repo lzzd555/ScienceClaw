@@ -512,6 +512,7 @@ async def save_skill(
 
     steps = [step.model_dump() for step in session.steps]
     script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"))
+    context_contract = generator._collect_context_contract(steps)
 
     skill_name = await exporter.export_skill(
         user_id=str(current_user.id),
@@ -519,6 +520,7 @@ async def save_skill(
         description=request.description,
         script=script,
         params=request.params,
+        context_contract=context_contract,
     )
 
     session.status = "saved"
