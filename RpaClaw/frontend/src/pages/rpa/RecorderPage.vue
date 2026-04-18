@@ -688,6 +688,7 @@ const sendMessage = async () => {
     agentRunning.value = false;
   } finally {
     sending.value = false;
+    agentRunning.value = false;
   }
 };
 </script>

@@ -352,11 +352,13 @@ class StepExecutionError(Exception):
                 result_key = self._build_extract_result_key(step, used_result_keys)
                 context_writes = step.get("context_writes") or []
                 step_lines.append(f"    {result_var} = await {locator}.inner_text()")
-                step_lines.append(f'    _results["{result_key}"] = {result_var}')
                 if context_writes:
+                    # Context-bound extraction: store into context dict only
                     for ctx_key in context_writes:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
                         step_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+                else:
+                    step_lines.append(f'    _results["{result_key}"] = {result_var}')
             elif action == "press":
                 step_lines.append(f'    await {locator}.press("{value}")')
             elif action == "select":
@@ -366,7 +368,7 @@ class StepExecutionError(Exception):
             lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
             lines.append("")
 
-        lines.append("    return _results")
+        lines.append("    return _results, context")
 
         # Build rebuild_context function body by replaying steps that produce context values
         rebuild_lines: List[str] = [

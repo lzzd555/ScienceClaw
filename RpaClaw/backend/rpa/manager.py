@@ -50,6 +50,8 @@ class RPAStep(BaseModel):
     assistant_diagnostics: Dict[str, Any] = Field(default_factory=dict)
     sequence: Optional[int] = None
     event_timestamp_ms: Optional[int] = None
+    context_reads: List[str] = Field(default_factory=list)
+    context_writes: List[str] = Field(default_factory=list)
 
 
 class RPATab(BaseModel):

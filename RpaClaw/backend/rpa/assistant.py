@@ -620,13 +620,15 @@ class RPAAssistant:
             yield {"event": "message_chunk", "data": {"text": chunk_text}}
 
         yield {"event": "executing", "data": {}}
-        result, final_response, code, resolution, retry_notice = await self._execute_with_retry(
+        _session = rpa_manager.sessions.get(session_id)
+        result, final_response, code, resolution, retry_notice, context_reads = await self._execute_with_retry(
             page=page,
             page_provider=page_provider,
             snapshot=snapshot,
             full_response=full_response,
             messages=messages,
             model_config=model_config,
+            context_ledger=_session.context_ledger if _session else None,
         )
 
         if retry_notice:
@@ -653,7 +655,6 @@ class RPAAssistant:
                 }
 
         # ── Compute context reads / writes ─────────────────────────
-        context_reads: List[str] = []
         context_writes: List[str] = []
 
         if result["success"] and step_data:
@@ -772,15 +773,16 @@ class RPAAssistant:
         full_response: str,
         messages: List[Dict[str, str]],
         model_config: Optional[Dict[str, Any]],
-    ) -> tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str]:
+        context_ledger: Optional[Any] = None,
+    ) -> tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str, List[str]]:
         current_page = page_provider() if page_provider else page
         if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, full_response, None, None, ""
+            return {"success": False, "error": "No active page available", "output": ""}, full_response, None, None, "", []
 
         try:
-            result, code, resolution = await self._execute_single_response(current_page, snapshot, full_response)
+            result, code, resolution, context_reads = await self._execute_single_response(current_page, snapshot, full_response, context_ledger)
             if result["success"]:
-                return result, full_response, code, resolution, ""
+                return result, full_response, code, resolution, "", context_reads
         except Exception as exc:
             result = {"success": False, "error": str(exc), "output": ""}
             code = None
@@ -796,36 +798,44 @@ class RPAAssistant:
 
         current_page = page_provider() if page_provider else page
         if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n"
+            return {"success": False, "error": "No active page available", "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
 
         retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
         try:
-            retry_result, retry_code, retry_resolution = await self._execute_single_response(
+            retry_result, retry_code, retry_resolution, retry_reads = await self._execute_single_response(
                 current_page,
                 retry_snapshot,
                 retry_response,
+                context_ledger,
             )
-            return retry_result, retry_response, retry_code, retry_resolution, "\n\nExecution failed. Retrying.\n\n"
+            return retry_result, retry_response, retry_code, retry_resolution, "\n\nExecution failed. Retrying.\n\n", retry_reads
         except Exception as exc:
-            return {"success": False, "error": str(exc), "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n"
+            return {"success": False, "error": str(exc), "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
 
     async def _execute_single_response(
         self,
         current_page: Page,
         snapshot: Dict[str, Any],
         full_response: str,
-    ) -> tuple[Dict[str, Any], Optional[str], Optional[Dict[str, Any]]]:
+        context_ledger: Optional[Any] = None,
+    ) -> tuple[Dict[str, Any], Optional[str], Optional[Dict[str, Any]], List[str]]:
+        """Execute a single LLM response.
+
+        Returns (result, code, resolution, context_reads).
+        """
         structured_intent = self._extract_structured_intent(full_response)
         if structured_intent:
+            # Resolve ${key} references in the intent using context ledger
+            context_reads = self._resolve_context_in_intent(structured_intent, context_ledger)
             resolved_intent = resolve_structured_intent(snapshot, structured_intent)
             result = await execute_structured_intent(current_page, resolved_intent)
-            return result, None, resolved_intent
+            return result, None, resolved_intent, context_reads
 
         code = self._extract_code(full_response)
         if not code:
             raise ValueError("Unable to extract structured intent or executable code from assistant response")
         result = await self._execute_on_page(current_page, code)
-        return result, code, None
+        return result, code, None, []
 
     def _build_messages(
         self,
@@ -904,6 +914,37 @@ class RPAAssistant:
             if isinstance(parsed, dict) and parsed.get("action"):
                 return parsed
         return None
+
+    @staticmethod
+    def _resolve_context_in_intent(
+        intent: Dict[str, Any],
+        context_ledger: Optional[Any],
+    ) -> List[str]:
+        """Replace ${key} references in intent values with context ledger values.
+
+        Returns the list of context keys that were read.
+        """
+        if context_ledger is None:
+            return []
+
+        import re as _re
+        context_reads: List[str] = []
+
+        def _replace_ref(match: Any) -> str:
+            key = match.group(1)
+            cv = context_ledger.observed_values.get(key) or context_ledger.derived_values.get(key)
+            if cv is not None and cv.value is not None:
+                if key not in context_reads:
+                    context_reads.append(key)
+                return str(cv.value)
+            return match.group(0)  # leave unresolved references as-is
+
+        for field in ("value",):
+            val = intent.get(field)
+            if isinstance(val, str) and "${" in val:
+                intent[field] = _re.sub(r"\$\{(\w+)\}", _replace_ref, val)
+
+        return context_reads
 
     @staticmethod
     def _extract_code(text: str) -> Optional[str]:
