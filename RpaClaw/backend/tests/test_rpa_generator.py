@@ -830,5 +830,166 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertEqual(parts[1], "Timeout 30000ms")
 
 
+class ContextRebuildTests(unittest.TestCase):
+    """Tests for the context-rebuild phase in generated scripts.
+
+    These tests verify that the generator emits a rebuild_context function
+    and cross-page value transfer logic when steps carry context_writes /
+    context_reads fields.  They are expected to FAIL until the generator
+    implementation is updated (Task 6).
+    """
+
+    def test_generator_emits_rebuild_context_function(self):
+        """The generated script must contain an async rebuild_context function."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.com/form",
+                "description": "Open form page",
+            },
+            {
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Name"}),
+                "value": "Alice",
+                "description": "Fill name",
+                "url": "https://example.com/form",
+                "context_writes": ["person_name"],
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertIn(
+            "async def rebuild_context(page, context, **kwargs):",
+            script,
+            "Generated script must define an async rebuild_context function "
+            "that receives page, context dict, and kwargs.",
+        )
+
+    def test_generator_rebuilds_page_a_value_before_page_b_fill(self):
+        """Cross-page value transfer: rebuild_context must appear before fill()."""
+        generator = PlaywrightGenerator()
+        steps = [
+            # Page A — extract a value
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/search",
+                "description": "Open search page",
+            },
+            {
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "Result Name"}),
+                "description": "Extract person name from search results",
+                "result_key": "person_name",
+                "url": "https://site.com/search",
+                "source": "ai",
+                "context_writes": ["person_name"],
+            },
+            # Page B — fill the extracted value
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/form",
+                "description": "Open form page",
+            },
+            {
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Full Name"}),
+                "value": "{{person_name}}",
+                "description": "Fill the person name from page A",
+                "url": "https://site.com/form",
+                "context_reads": ["person_name"],
+            },
+        ]
+        params = {}
+
+        script = generator.generate_script(steps, params=params, is_local=True)
+
+        # The script must reference the transferred value via context
+        self.assertIn(
+            'context["person_name"]',
+            script,
+            "Generated script must read person_name from the context dict "
+            "for cross-page value transfer.",
+        )
+
+        # rebuild_context must appear before the first fill() call so the
+        # context is populated before the value is consumed.
+        rebuild_pos = script.find("rebuild_context")
+        first_fill_pos = script.find(".fill(")
+        self.assertGreater(
+            rebuild_pos,
+            -1,
+            "Script must contain at least one reference to rebuild_context.",
+        )
+        self.assertGreater(
+            first_fill_pos,
+            -1,
+            "Script must contain at least one .fill() call.",
+        )
+        self.assertLess(
+            rebuild_pos,
+            first_fill_pos,
+            "rebuild_context must appear before the first .fill() call so "
+            "the context dict is populated before values are consumed.",
+        )
+
+    def test_ai_script_step_still_reads_runtime_context(self):
+        """Steps with context_reads should generate code that reads from context."""
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.com",
+                "description": "Open page",
+            },
+            {
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "ID"}),
+                "description": "Extract person ID",
+                "result_key": "person_id",
+                "url": "https://example.com",
+                "source": "ai",
+                "context_writes": ["person_id"],
+            },
+            {
+                "action": "ai_script",
+                "source": "ai",
+                "description": "Use the extracted person ID in custom logic",
+                "value": (
+                    "user_url = f'https://api.example.com/users/{person_id}'\n"
+                    "await page.goto(user_url)"
+                ),
+                "url": "https://example.com",
+                "tab_id": "tab-1",
+                "context_reads": ["person_id"],
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        # The generated script must inject a context read before the ai_script
+        # body so that the variable "person_id" is available.  The generator
+        # should emit something like:
+        #   person_id = context.get("person_id", kwargs.get("person_id"))
+        # before the user-provided ai_script code.
+        has_context_read = (
+            'context.get("person_id"' in script
+            or "context.get('person_id'" in script
+            or 'context["person_id"]' in script
+            or "context['person_id']" in script
+        )
+        self.assertTrue(
+            has_context_read,
+            "Generated script must include code that reads person_id from the "
+            "context dict (context.get('person_id', ...) or context['person_id']) "
+            "for steps that declare context_reads.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
