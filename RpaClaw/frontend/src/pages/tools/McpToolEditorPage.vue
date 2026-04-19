@@ -534,8 +534,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#f5f7fb] text-slate-900 dark:bg-[#101115] dark:text-slate-100">
-    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+  <div class="flex h-full w-full flex-col overflow-hidden bg-[#f5f7fb] text-slate-900 dark:bg-[#101115] dark:text-slate-100">
+    <div class="flex-1 overflow-y-auto">
+      <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <div class="mb-6 flex items-center justify-between gap-4">
         <button class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold dark:border-white/10 dark:bg-white/5" @click="router.back()">
           <ArrowLeft :size="16" />
@@ -934,6 +935,7 @@ onMounted(async () => {
           </section>
         </aside>
       </div>
+    </div>
     </div>
   </div>
 </template>
