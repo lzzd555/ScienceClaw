@@ -67,6 +67,11 @@ export const router = createRouter({
           meta: { requiresAuth: true }
         },
         {
+          path: 'tools/mcp/new',
+          component: McpConvertPage,
+          meta: { requiresAuth: true }
+        },
+        {
           path: 'tools/:toolName',
           component: ToolDetailPage,
           meta: { requiresAuth: true }
