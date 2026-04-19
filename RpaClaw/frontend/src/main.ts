@@ -3,8 +3,8 @@ import { createRouter, createWebHistory, RouterView } from 'vue-router'
 import App from './App.vue'
 import './assets/global.css'
 import './assets/theme.css'
-import 'highlight.js/styles/github-dark.css'  // 代码高亮样式
-import 'katex/dist/katex.min.css'  // KaTeX 数学公式样式
+import 'highlight.js/styles/github-dark.css'
+import 'katex/dist/katex.min.css'
 import './utils/toast'
 import i18n from './composables/useI18n'
 import { getStoredToken, getCachedAuthProvider } from './api/auth'
@@ -96,7 +96,10 @@ export const router = createRouter({
           path: 'configure',
           component: ConfigurePage,
         },
-        ,
+        {
+          path: 'test',
+          component: TestPage,
+        },
         {
           path: 'convert-mcp',
           component: McpConvertPage,
