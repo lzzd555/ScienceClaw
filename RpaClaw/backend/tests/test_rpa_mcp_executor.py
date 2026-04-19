@@ -11,6 +11,9 @@ class _FakePage:
     async def goto(self, url):
         self.calls.append(("goto", url))
 
+    async def wait_for_timeout(self, value):
+        self.calls.append(("wait_for_timeout", value))
+
 
 class _FakeContext:
     def __init__(self, page):
@@ -40,7 +43,7 @@ async def _fake_runner(page, script, kwargs):
     return {"success": True, "data": {"page_calls": page.calls, "kwargs": kwargs, "script": script}}
 
 
-def _sample_tool():
+def _sample_tool(*, requires_cookies: bool = True):
     return RpaMcpToolDefinition(
         id="tool-1",
         user_id="user-1",
@@ -54,6 +57,7 @@ def _sample_tool():
         input_schema={"type": "object", "properties": {"cookies": {"type": "array"}}, "required": ["cookies"]},
         sanitize_report={"removed_steps": [0], "removed_params": ["email", "password"], "warnings": []},
         source={"type": "rpa_skill", "session_id": "session-1", "skill_name": "invoice_skill"},
+        requires_cookies=requires_cookies,
     )
 
 
@@ -75,7 +79,7 @@ async def test_execute_adds_cookies_before_goto():
     browser = _FakeBrowser(context)
     executor = RpaMcpExecutor(browser_factory=lambda *_args, **_kwargs: browser, script_runner=_fake_runner)
 
-    tool = _sample_tool()
+    tool = _sample_tool(requires_cookies=True)
     await executor.execute(tool, {"cookies": [{"name": "sessionid", "value": "secret", "domain": ".example.com", "path": "/"}], "month": "2026-03"})
 
     assert context.calls[:2] == [
@@ -84,3 +88,67 @@ async def test_execute_adds_cookies_before_goto():
     ]
     assert page.calls[0] == ("goto", "https://example.com/dashboard")
 
+
+@pytest.mark.anyio
+async def test_execute_allows_missing_cookies_when_tool_does_not_require_them():
+    page = _FakePage()
+    context = _FakeContext(page)
+    browser = _FakeBrowser(context)
+    executor = RpaMcpExecutor(browser_factory=lambda *_args, **_kwargs: browser, script_runner=_fake_runner)
+
+    tool = _sample_tool(requires_cookies=False)
+    await executor.execute(tool, {"month": "2026-03"})
+
+    assert context.calls[0] == ("new_page", None)
+    assert all(call[0] != "add_cookies" for call in context.calls)
+    assert page.calls[0] == ("goto", "https://example.com/dashboard")
+
+
+@pytest.mark.anyio
+async def test_execute_rejects_missing_cookies_when_tool_requires_them():
+    page = _FakePage()
+    context = _FakeContext(page)
+    browser = _FakeBrowser(context)
+    executor = RpaMcpExecutor(browser_factory=lambda *_args, **_kwargs: browser, script_runner=_fake_runner)
+
+    tool = _sample_tool(requires_cookies=True)
+
+    with pytest.raises(InvalidCookieError, match="cookies must be a non-empty array"):
+        await executor.execute(tool, {"month": "2026-03"})
+
+
+@pytest.mark.anyio
+async def test_execute_accepts_optional_cookies_when_user_provides_them():
+    page = _FakePage()
+    context = _FakeContext(page)
+    browser = _FakeBrowser(context)
+    executor = RpaMcpExecutor(browser_factory=lambda *_args, **_kwargs: browser, script_runner=_fake_runner)
+
+    tool = _sample_tool(requires_cookies=False)
+    await executor.execute(tool, {"cookies": [{"name": "sessionid", "value": "secret", "domain": ".example.com", "path": "/"}], "month": "2026-03"})
+
+    assert context.calls[0] == ("add_cookies", [{"name": "sessionid", "value": "secret", "domain": ".example.com", "path": "/"}])
+
+
+@pytest.mark.anyio
+async def test_default_runner_executes_generated_script():
+    page = _FakePage()
+    executor = RpaMcpExecutor()
+    script = """
+async def execute_skill(page, month, _downloads_dir=None):
+    await page.wait_for_timeout(123)
+    return {"month": month, "downloads_dir": _downloads_dir}
+"""
+
+    result = await executor._default_runner(
+        page,
+        script,
+        {"month": "2026-03", "_downloads_dir": "D:/tmp/downloads"},
+    )
+
+    assert result == {
+        "success": True,
+        "message": "Execution completed",
+        "data": {"month": "2026-03", "downloads_dir": "D:/tmp/downloads"},
+    }
+    assert page.calls == [("wait_for_timeout", 123), ("wait_for_timeout", 3000)]

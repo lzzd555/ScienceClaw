@@ -2,11 +2,14 @@
 
 import inspect
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.config import settings
+from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.manager import rpa_manager
 from backend.rpa.mcp_converter import RpaMcpConverter
 from backend.rpa.mcp_executor import InvalidCookieError, RpaMcpExecutor
@@ -41,6 +44,8 @@ class UpdateToolRequest(BaseModel):
     enabled: bool = True
     allowed_domains: list[str] = Field(default_factory=list)
     post_auth_start_url: str = ""
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema_confirmed: bool | None = None
 
 
 class TestToolRequest(BaseModel):
@@ -88,9 +93,37 @@ async def _build_gateway_tools(user_id: str) -> list[dict[str, Any]]:
             "name": tool.tool_name,
             "description": tool.description,
             "input_schema": tool.input_schema,
+            "output_schema": tool.output_schema,
+            "inputSchema": tool.input_schema,
+            "outputSchema": tool.output_schema,
         }
         for tool in tools
     ]
+
+
+async def _resolve_tool_browser_session_id(tool: RpaMcpToolDefinition) -> str | None:
+    source_session_id = str(getattr(tool.source, 'session_id', '') or '')
+    if not source_session_id:
+        return None
+    session = await _maybe_await(rpa_manager.get_session(source_session_id))
+    if not session:
+        return None
+    return getattr(session, 'sandbox_session_id', None) or None
+
+
+def _build_rpa_mcp_executor(*, current_user_id: str) -> RpaMcpExecutor:
+    connector = get_cdp_connector()
+    pw_loop_runner = getattr(connector, 'run_in_pw_loop', None)
+
+    async def _browser_factory(*, tool: RpaMcpToolDefinition):
+        sandbox_session_id = await _resolve_tool_browser_session_id(tool)
+        return await connector.get_browser(session_id=sandbox_session_id, user_id=current_user_id)
+
+    return RpaMcpExecutor(
+        browser_factory=_browser_factory,
+        pw_loop_runner=pw_loop_runner,
+        downloads_dir_factory=lambda tool: str(Path(settings.workspace_dir) / 'rpa_mcp_downloads' / tool.id),
+    )
 
 
 @router.post('/rpa-mcp/session/{session_id}/preview', response_model=ApiResponse)
@@ -141,6 +174,10 @@ async def update_rpa_mcp_tool(tool_id: str, body: UpdateToolRequest, current_use
         tool.allowed_domains = body.allowed_domains
     if body.post_auth_start_url:
         tool.post_auth_start_url = body.post_auth_start_url
+    if body.output_schema:
+        tool.output_schema = body.output_schema
+    if body.output_schema_confirmed is not None:
+        tool.output_schema_confirmed = body.output_schema_confirmed
     saved = await registry.save(tool)
     return ApiResponse(data=saved.model_dump(mode='python'))
 
@@ -155,13 +192,32 @@ async def delete_rpa_mcp_tool(tool_id: str, current_user: User = Depends(require
 
 @router.post('/rpa-mcp/tools/{tool_id}/test', response_model=ApiResponse)
 async def test_rpa_mcp_tool(tool_id: str, body: TestToolRequest, current_user: User = Depends(require_user)) -> ApiResponse:
-    tool = await RpaMcpToolRegistry().get_owned(tool_id, str(current_user.id))
+    registry = RpaMcpToolRegistry()
+    tool = await registry.get_owned(tool_id, str(current_user.id))
     if not tool:
         raise HTTPException(status_code=404, detail='RPA MCP tool not found')
     try:
-        result = await RpaMcpExecutor().execute(tool, {"cookies": body.cookies, **body.arguments})
+        executor = _build_rpa_mcp_executor(current_user_id=str(current_user.id))
+        result = await executor.execute(tool, {"cookies": body.cookies, **body.arguments})
     except InvalidCookieError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.get("success"):
+        converter = RpaMcpConverter()
+        recommended_output_schema, output_inference_report = converter.infer_output_from_execution(tool, result)
+        tool.recommended_output_schema = recommended_output_schema
+        tool.output_examples = [result]
+        tool.output_inference_report = output_inference_report
+        if not tool.output_schema_confirmed:
+            tool.output_schema = recommended_output_schema
+        tool = await registry.save(tool)
+        result = {
+            **result,
+            "recommended_output_schema": tool.recommended_output_schema,
+            "output_schema": tool.output_schema,
+            "output_schema_confirmed": tool.output_schema_confirmed,
+            "output_examples": tool.output_examples,
+            "output_inference_report": tool.output_inference_report,
+        }
     return ApiResponse(data=result)
 
 
@@ -178,8 +234,9 @@ async def rpa_mcp_gateway(body: dict[str, Any], current_user: User = Depends(req
         if not tool:
             raise HTTPException(status_code=404, detail='RPA MCP tool not found')
         try:
-            result = await RpaMcpExecutor().execute(tool, arguments)
+            executor = _build_rpa_mcp_executor(current_user_id=str(current_user.id))
+            result = await executor.execute(tool, arguments)
         except InvalidCookieError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"result": {"content": [], "structuredContent": result}}
+        return {"result": {"content": [], "structuredContent": result, "outputSchema": tool.output_schema}}
     raise HTTPException(status_code=400, detail='Unsupported MCP method')

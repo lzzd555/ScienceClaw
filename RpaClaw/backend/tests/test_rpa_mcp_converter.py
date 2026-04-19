@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from backend.rpa.mcp_models import RpaMcpToolDefinition
 from backend.rpa.mcp_converter import RpaMcpConverter
@@ -21,6 +21,11 @@ def test_rpa_mcp_tool_definition_defaults():
     )
 
     assert tool.enabled is True
+    assert tool.requires_cookies is False
+    assert tool.output_schema["properties"]["data"]["type"] == "object"
+    assert tool.recommended_output_schema["properties"]["data"]["type"] == "object"
+    assert tool.output_schema_confirmed is False
+    assert tool.output_examples == []
     assert tool.allowed_domains == ["example.com"]
     assert tool.sanitize_report.warnings == []
 
@@ -53,16 +58,41 @@ def test_preview_strips_login_steps_and_sensitive_params():
 
     assert preview.post_auth_start_url == "https://example.com/dashboard"
     assert preview.allowed_domains == ["example.com"]
+    assert preview.requires_cookies is True
     assert preview.sanitize_report.removed_params == ["email", "password"]
     assert [step["description"] for step in preview.steps] == ["Open dashboard", "Export invoice"]
     assert "cookies" in preview.input_schema["required"]
     assert "password" not in preview.input_schema["properties"]
 
 
+def test_preview_without_login_does_not_require_cookies_or_warning():
+    converter = RpaMcpConverter()
+    steps = [
+        {"action": "navigate", "url": "https://example.com/workspace", "description": "Open workspace"},
+        {"action": "click", "target": '{"method":"role","role":"button","name":"Export"}', "description": "Export invoice"},
+    ]
+
+    preview = converter.preview(
+        user_id="user-1",
+        session_id="session-1",
+        skill_name="skill",
+        name="workspace_tool",
+        description="Workspace tool",
+        steps=steps,
+        params={"month": {"original_value": "2026-03", "description": "Invoice month"}},
+    )
+
+    assert preview.requires_cookies is False
+    assert "cookies" not in preview.input_schema["properties"]
+    assert "cookies" not in preview.input_schema["required"]
+    assert preview.sanitize_report.warnings == []
+
+
 def test_preview_adds_warning_when_login_range_is_ambiguous():
     converter = RpaMcpConverter()
     steps = [
-        {"action": "click", "target": '{"method":"role","role":"button","name":"Continue"}', "description": "Continue"},
+        {"action": "navigate", "url": "https://example.com/login", "description": "Open login"},
+        {"action": "fill", "target": '{"method":"label","value":"Email"}', "value": "alice@example.com", "description": "Fill email"},
         {"action": "navigate", "url": "https://example.com/workspace", "description": "Open workspace"},
     ]
 
@@ -76,4 +106,41 @@ def test_preview_adds_warning_when_login_range_is_ambiguous():
         params={},
     )
 
+    assert preview.requires_cookies is False
     assert preview.sanitize_report.warnings
+
+
+def test_preview_builds_recommended_output_schema_from_recording_signals():
+    converter = RpaMcpConverter()
+    steps = [
+        {"action": "navigate", "url": "https://example.com/workspace", "description": "Open workspace"},
+        {
+            "action": "extract_text",
+            "target": '{"method":"role","role":"heading","name":"Invoice total"}',
+            "description": "Capture invoice total",
+            "result_key": "invoice_total",
+        },
+        {
+            "action": "click",
+            "target": '{"method":"role","role":"button","name":"Download invoice"}',
+            "description": "Download invoice",
+            "signals": {"download": {"filename": "invoice.pdf"}},
+        },
+    ]
+
+    preview = converter.preview(
+        user_id="user-1",
+        session_id="session-1",
+        skill_name="skill",
+        name="invoice_tool",
+        description="Invoice tool",
+        steps=steps,
+        params={},
+    )
+
+    data_schema = preview.recommended_output_schema["properties"]["data"]
+    assert data_schema["type"] == "object"
+    assert data_schema["properties"]["invoice_total"]["type"] == "string"
+    assert preview.recommended_output_schema["properties"]["downloads"]["items"]["properties"]["filename"]["type"] == "string"
+    assert "recording_signals" in preview.output_inference_report
+    assert any(signal["kind"] == "extract_text" for signal in preview.output_inference_report["recording_signals"])

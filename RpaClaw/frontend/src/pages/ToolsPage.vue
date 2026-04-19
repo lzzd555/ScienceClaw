@@ -230,9 +230,13 @@
                     </div>
                     <p class="mt-2 line-clamp-2 text-sm leading-6 text-[var(--text-secondary)]">{{ tool.description || t('No description') }}</p>
                     <p class="mt-3 text-xs text-[var(--text-tertiary)]">{{ t('Allowed domains') }}: {{ tool.allowed_domains.join(', ') || '-' }}</p>
+                    <p class="mt-1 text-xs text-[var(--text-tertiary)]">{{ t('Cookie auth') }}: {{ tool.requires_cookies ? t('Required') : t('Optional') }}</p>
                     <details class="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 text-xs dark:border-white/10 dark:bg-white/[0.04]">
                       <summary class="cursor-pointer font-semibold text-[var(--text-primary)]">{{ t('Preview') }}</summary>
+                      <div class="mt-3 font-semibold text-[var(--text-primary)]">{{ t('Input schema') }}</div>
                       <pre class="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-[var(--text-secondary)] dark:border-white/10 dark:bg-[#101115]"><code>{{ JSON.stringify(tool.input_schema || {}, null, 2) }}</code></pre>
+                      <div class="mt-3 font-semibold text-[var(--text-primary)]">{{ t('Output schema') }}</div>
+                      <pre class="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-[var(--text-secondary)] dark:border-white/10 dark:bg-[#101115]"><code>{{ JSON.stringify(tool.output_schema || tool.recommended_output_schema || {}, null, 2) }}</code></pre>
                       <div class="mt-3 text-[var(--text-secondary)]">{{ t('Removed login steps') }}: {{ tool.sanitize_report?.removed_steps?.join(', ') || '-' }}</div>
                       <div class="mt-1 text-[var(--text-secondary)]">{{ t('Sanitize warnings') }}: {{ tool.sanitize_report?.warnings?.join(' | ') || '-' }}</div>
                     </details>
@@ -241,7 +245,7 @@
                 <div class="mcp-actions">
                   <span class="status-pill" :class="tool.enabled ? 'status-on' : 'status-warn'">{{ tool.enabled ? t('Enabled') : t('Disabled') }}</span>
                   <button class="action-muted" @click="toggleRpaMcpTool(tool)">{{ tool.enabled ? t('Disable') : t('Enable') }}</button>
-                  <button class="action-blue" @click="runGatewayToolTest(tool)">{{ t('Test') }}</button>
+                  <button class="action-blue" @click="openGatewayToolTestDialog(tool)">{{ t('Test') }}</button>
                   <button class="action-danger" @click="deleteGatewayTool(tool)">{{ t('Delete') }}</button>
                 </div>
               </div>
@@ -442,6 +446,168 @@
           </div>
         </div>
       </div>
+      <div v-if="gatewayTestDialogOpen" class="fixed inset-0 z-[9999] flex items-center justify-center px-4 py-6">
+        <div class="absolute inset-0 bg-slate-950/55 backdrop-blur-sm" @click="closeGatewayToolTestDialog"></div>
+        <div class="relative z-10 flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] shadow-2xl dark:border-white/10 dark:bg-[#101115]">
+          <div class="flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5 dark:border-white/10 dark:bg-white/[0.055]">
+            <div>
+              <h3 class="text-xl font-black text-[var(--text-primary)]">{{ gatewayTestTool?.name || t('Test') }}</h3>
+              <p class="mt-1 text-sm text-[var(--text-tertiary)]">{{ gatewayTestTool?.description || t('Gateway test dialog description') }}</p>
+            </div>
+            <button class="rounded-xl p-2 text-[var(--text-tertiary)] transition hover:bg-slate-100 hover:text-[var(--text-primary)] dark:hover:bg-white/10" @click="closeGatewayToolTestDialog">
+              <X :size="18" />
+            </button>
+          </div>
+          <div class="space-y-5 overflow-y-auto p-6">
+            <section class="dialog-section">
+              <div class="flex items-center justify-between gap-3">
+                <h4 class="dialog-title !mb-0">{{ t('Arguments') }}</h4>
+                <span class="text-xs text-[var(--text-tertiary)]">{{ gatewayParamFields.length ? t('Gateway parameters hint') : t('No gateway parameters') }}</span>
+              </div>
+              <div v-if="gatewayParamFields.length" class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <label v-for="field in gatewayParamFields" :key="field.key" class="field">
+                  <span>{{ field.key }}<template v-if="field.required"> *</template></span>
+                  <select v-if="field.type === 'boolean'" v-model="gatewayArgumentValues[field.key]" class="tools-input">
+                    <option :value="true">true</option>
+                    <option :value="false">false</option>
+                  </select>
+                  <textarea
+                    v-else-if="field.type === 'array' || field.type === 'object'"
+                    v-model="gatewayArgumentValues[field.key]"
+                    class="tools-input min-h-[120px] resize-y"
+                    :placeholder="field.type === 'array' ? '[]' : '{}'"
+                  ></textarea>
+                  <input
+                    v-else
+                    v-model="gatewayArgumentValues[field.key]"
+                    class="tools-input"
+                    :type="field.type === 'number' || field.type === 'integer' ? 'number' : 'text'"
+                    :placeholder="field.defaultValue !== undefined ? String(field.defaultValue) : field.key"
+                  >
+                  <small>{{ field.description || field.type }}</small>
+                </label>
+              </div>
+            </section>
+
+            <section class="dialog-section">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 class="dialog-title !mb-1">{{ t('Gateway test cookies') }}</h4>
+                  <p class="text-xs text-[var(--text-tertiary)]">{{ gatewayTestTool?.requires_cookies ? t('Cookie input required hint') : t('Cookie input optional hint') }}</p>
+                </div>
+                <button
+                  v-if="!gatewayTestTool?.requires_cookies"
+                  class="action-muted"
+                  @click="gatewayCookieSectionOpen = !gatewayCookieSectionOpen"
+                >
+                  {{ gatewayCookieSectionOpen ? t('Hide cookie input') : t('Show cookie input') }}
+                </button>
+                <span v-else class="status-pill status-on">{{ t('Required') }}</span>
+              </div>
+
+              <div v-if="gatewayCookieSectionOpen || gatewayTestTool?.requires_cookies" class="mt-4 space-y-4">
+                <div class="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1 dark:border-white/10 dark:bg-white/10">
+                  <button
+                    class="rounded-full px-3 py-1.5 text-xs font-semibold transition"
+                    :class="gatewayCookieMode === 'cookie_header' ? 'bg-white text-[var(--text-primary)] shadow dark:bg-[#17181d]' : 'text-[var(--text-secondary)]'"
+                    @click="gatewayCookieMode = 'cookie_header'"
+                  >
+                    {{ t('Cookie header mode') }}
+                  </button>
+                  <button
+                    class="rounded-full px-3 py-1.5 text-xs font-semibold transition"
+                    :class="gatewayCookieMode === 'header_value' ? 'bg-white text-[var(--text-primary)] shadow dark:bg-[#17181d]' : 'text-[var(--text-secondary)]'"
+                    @click="gatewayCookieMode = 'header_value'"
+                  >
+                    {{ t('Cookie value mode') }}
+                  </button>
+                  <button
+                    class="rounded-full px-3 py-1.5 text-xs font-semibold transition"
+                    :class="gatewayCookieMode === 'playwright_json' ? 'bg-white text-[var(--text-primary)] shadow dark:bg-[#17181d]' : 'text-[var(--text-secondary)]'"
+                    @click="gatewayCookieMode = 'playwright_json'"
+                  >
+                    {{ t('Playwright JSON mode') }}
+                  </button>
+                </div>
+
+                <label v-if="gatewayCookieMode !== 'playwright_json'" class="field">
+                  <span>{{ t('Cookie domain') }}</span>
+                  <input v-model="gatewayCookieDomain" list="gateway-cookie-domain-list" class="tools-input" :placeholder="t('Cookie domain placeholder')">
+                  <datalist id="gateway-cookie-domain-list">
+                    <option v-for="domain in gatewayAllowedCookieDomains" :key="domain" :value="domain"></option>
+                  </datalist>
+                  <small>{{ t('Cookie domain hint') }}</small>
+                </label>
+
+                <label class="field">
+                  <span>{{ t('Cookie input') }}</span>
+                  <textarea
+                    v-model="gatewayCookieText"
+                    class="tools-input min-h-[150px] resize-y font-mono text-xs"
+                    :placeholder="gatewayCookieInputPlaceholder"
+                  ></textarea>
+                  <small>{{ t('Cookie input helper') }}</small>
+                </label>
+              </div>
+            </section>
+
+            <section v-if="gatewayTestResult" class="dialog-section">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 class="dialog-title !mb-1">{{ t('Test result') }}</h4>
+                  <p class="text-xs text-[var(--text-tertiary)]">{{ gatewayTestResult.message || '-' }}</p>
+                </div>
+                <span class="status-pill" :class="gatewayTestResult.success ? 'status-on' : 'status-warn'">
+                  {{ gatewayTestResult.success ? t('Success') : t('Failed') }}
+                </span>
+              </div>
+              <pre class="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-[var(--text-secondary)] dark:border-white/10 dark:bg-[#101115]"><code>{{ JSON.stringify(gatewayTestResult, null, 2) }}</code></pre>
+            </section>
+
+            <section v-if="gatewayTestResult" class="dialog-section">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 class="dialog-title !mb-1">{{ t('Recommended output schema') }}</h4>
+                  <p class="text-xs text-[var(--text-tertiary)]">{{ gatewayTestTool?.output_schema_confirmed ? t('Output schema confirmed') : t('Confirm output schema after successful test') }}</p>
+                </div>
+                <span class="status-pill" :class="gatewayTestTool?.output_schema_confirmed ? 'status-on' : 'status-warn'">
+                  {{ gatewayTestTool?.output_schema_confirmed ? t('Confirmed') : t('Recommended') }}
+                </span>
+              </div>
+              <textarea
+                v-model="gatewayOutputSchemaText"
+                class="tools-input mt-4 min-h-[220px] resize-y font-mono text-xs"
+                spellcheck="false"
+              ></textarea>
+              <div class="mt-4">
+                <div class="mb-2 text-xs font-semibold text-[var(--text-primary)]">{{ t('Schema preview') }}</div>
+                <pre class="overflow-x-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-[var(--text-secondary)] dark:border-white/10 dark:bg-[#101115]"><code>{{ JSON.stringify(gatewayCurrentOutputSchema, null, 2) }}</code></pre>
+              </div>
+              <div v-if="gatewayTestResult.output_inference_report" class="mt-4">
+                <div class="mb-2 text-xs font-semibold text-[var(--text-primary)]">{{ t('Inference report') }}</div>
+                <pre class="overflow-x-auto rounded-xl border border-slate-200 bg-white p-3 text-xs text-[var(--text-secondary)] dark:border-white/10 dark:bg-[#101115]"><code>{{ JSON.stringify(gatewayTestResult.output_inference_report, null, 2) }}</code></pre>
+              </div>
+            </section>
+          </div>
+
+          <div class="flex items-center justify-end gap-3 border-t border-slate-200 bg-white px-6 py-5 dark:border-white/10 dark:bg-white/[0.055]">
+            <button class="action-muted" @click="closeGatewayToolTestDialog">{{ t('Cancel') }}</button>
+            <button
+              v-if="gatewayTestResult"
+              class="action-blue disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="gatewaySavingOutputSchema"
+              @click="saveGatewayOutputSchema"
+            >
+              <Loader2 v-if="gatewaySavingOutputSchema" class="animate-spin" :size="16" />
+              {{ gatewaySavingOutputSchema ? t('Saving...') : t('Save output schema') }}
+            </button>
+            <button class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-[#8930b0] to-[#004be2] px-5 py-2 text-sm font-bold text-white shadow-lg transition disabled:cursor-not-allowed disabled:opacity-60" :disabled="gatewayTestSubmitting" @click="submitGatewayToolTest">
+              <Loader2 v-if="gatewayTestSubmitting" class="animate-spin" :size="16" />
+              {{ gatewayTestSubmitting ? t('Sending...') : t('Run gateway test') }}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div v-if="toolsDialogOpen" class="fixed inset-0 z-[9999] flex items-center justify-center px-4 py-6">
         <div class="absolute inset-0 bg-slate-950/55 backdrop-blur-sm" @click="closeToolsDialog"></div>
@@ -497,7 +663,15 @@ import { useRouter } from 'vue-router';
 import { getTools, blockTool, deleteTool as apiDeleteTool } from '../api/agent';
 import type { ExternalToolItem } from '../types/response';
 import { listCredentials, type Credential } from '../api/credential';
-import { deleteRpaMcpTool, listRpaMcpTools, testRpaMcpTool, updateRpaMcpTool, type RpaMcpToolItem } from '../api/rpaMcp';
+import {
+  deleteRpaMcpTool,
+  listRpaMcpTools,
+  testRpaMcpTool,
+  updateRpaMcpTool,
+  type JsonSchemaObject,
+  type RpaMcpExecutionResult,
+  type RpaMcpToolItem,
+} from '../api/rpaMcp';
 import {
   createMcpServer,
   deleteMcpServer,
@@ -518,6 +692,7 @@ import {
   stringifyKeyValueTemplateMap,
   stringifyHttpHeaders,
 } from '../utils/mcpUi';
+import { convertCookieInputToPlaywrightCookies, type CookieInputMode } from '../utils/rpaMcpTest';
 
 const router = useRouter();
 const { t } = useI18n();
@@ -536,6 +711,39 @@ const toolsDialogOpen = ref(false);
 const selectedServer = ref<McpServerItem | null>(null);
 const discoveredTools = ref<McpToolDiscoveryItem[]>([]);
 const rpaMcpTools = ref<RpaMcpToolItem[]>([]);
+const gatewayTestDialogOpen = ref(false);
+const gatewayTestSubmitting = ref(false);
+const gatewaySavingOutputSchema = ref(false);
+const gatewayTestTool = ref<RpaMcpToolItem | null>(null);
+const gatewayTestResult = ref<RpaMcpExecutionResult | null>(null);
+const gatewayCookieSectionOpen = ref(false);
+const gatewayCookieMode = ref<CookieInputMode>('cookie_header');
+const gatewayCookieText = ref('');
+const gatewayCookieDomain = ref('');
+const gatewayOutputSchemaText = ref('');
+const gatewayArgumentValues = reactive<Record<string, unknown>>({});
+
+type GatewayParamField = {
+  key: string;
+  type: string;
+  description: string;
+  required: boolean;
+  defaultValue?: unknown;
+};
+
+const formatJsonBlock = (value: unknown) => JSON.stringify(value ?? {}, null, 2);
+
+const parseJsonObjectText = (text: string, errorMessage: string) => {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(errorMessage);
+    }
+    return parsed as JsonSchemaObject;
+  } catch {
+    throw new Error(errorMessage);
+  }
+};
 
 const form = reactive({
   name: '',
@@ -580,6 +788,66 @@ const activeSummary = computed(() => (
 const searchPlaceholder = computed(() => (
   activeTab.value === 'external' ? t('Search tools...') : t('Search MCP servers...')
 ));
+
+const clearGatewayArgumentValues = () => {
+  Object.keys(gatewayArgumentValues).forEach((key) => {
+    delete gatewayArgumentValues[key];
+  });
+};
+
+const getGatewayParamFields = (tool: RpaMcpToolItem | null): GatewayParamField[] => {
+  const schema = (tool?.input_schema || {}) as { properties?: Record<string, any>; required?: string[] };
+  const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  return Object.entries(properties)
+    .filter(([key]) => key !== 'cookies')
+    .map(([key, value]) => ({
+      key,
+      type: typeof value?.type === 'string' ? value.type : 'string',
+      description: typeof value?.description === 'string' ? value.description : '',
+      required: required.has(key),
+      defaultValue: value?.default,
+    }));
+};
+
+const getGatewayAllowedCookieDomains = (tool: RpaMcpToolItem | null): string[] => {
+  const domains = new Set<string>();
+  for (const domain of tool?.allowed_domains || []) {
+    if (domain) domains.add(domain);
+  }
+  const startUrl = tool?.post_auth_start_url || '';
+  if (startUrl) {
+    try {
+      const host = new URL(startUrl).hostname;
+      if (host) domains.add(host);
+    } catch {
+      // ignore invalid start URL here and leave validation to the backend
+    }
+  }
+  return Array.from(domains);
+};
+
+const gatewayParamFields = computed(() => getGatewayParamFields(gatewayTestTool.value));
+const gatewayAllowedCookieDomains = computed(() => getGatewayAllowedCookieDomains(gatewayTestTool.value));
+const gatewayCookieInputPlaceholder = computed(() => {
+  if (gatewayCookieMode.value === 'cookie_header') {
+    return 'Cookie: sid=abc; theme=dark';
+  }
+  if (gatewayCookieMode.value === 'header_value') {
+    return 'sid=abc; theme=dark';
+  }
+  return '[{"name":"sid","value":"abc","domain":".example.com","path":"/"}]';
+});
+const gatewayCurrentOutputSchema = computed(() => {
+  if (gatewayOutputSchemaText.value.trim()) {
+    try {
+      return JSON.parse(gatewayOutputSchemaText.value);
+    } catch {
+      return gatewayTestResult.value?.recommended_output_schema || gatewayTestTool.value?.output_schema || {};
+    }
+  }
+  return gatewayTestResult.value?.recommended_output_schema || gatewayTestTool.value?.output_schema || {};
+});
 
 const resetForm = () => {
   form.name = '';
@@ -832,6 +1100,13 @@ const toggleRpaMcpTool = async (tool: RpaMcpToolItem) => {
   }
 };
 
+const syncGatewayToolState = (updated: RpaMcpToolItem) => {
+  rpaMcpTools.value = rpaMcpTools.value.map((item) => item.id === updated.id ? updated : item);
+  if (gatewayTestTool.value?.id === updated.id) {
+    gatewayTestTool.value = updated;
+  }
+};
+
 const deleteGatewayTool = async (tool: RpaMcpToolItem) => {
   if (!window.confirm(t('Delete MCP server confirm', { name: tool.name }))) return;
   try {
@@ -844,20 +1119,139 @@ const deleteGatewayTool = async (tool: RpaMcpToolItem) => {
   }
 };
 
-const runGatewayToolTest = async (tool: RpaMcpToolItem) => {
-  const raw = window.prompt(t('Gateway test cookies'), '[]');
-  if (raw === null) return;
-  try {
-    const cookies = JSON.parse(raw);
-    if (!Array.isArray(cookies) || cookies.length === 0) {
-      showErrorToast(t('Cookies JSON is required'));
-      return;
+const openGatewayToolTestDialog = (tool: RpaMcpToolItem) => {
+  gatewayTestTool.value = tool;
+  gatewayTestDialogOpen.value = true;
+  gatewayTestResult.value = null;
+  gatewayCookieSectionOpen.value = Boolean(tool.requires_cookies);
+  gatewayCookieMode.value = 'cookie_header';
+  gatewayCookieText.value = '';
+  gatewayCookieDomain.value = getGatewayAllowedCookieDomains(tool)[0] || '';
+  gatewayOutputSchemaText.value = formatJsonBlock(tool.output_schema || tool.recommended_output_schema || {});
+  clearGatewayArgumentValues();
+  for (const field of getGatewayParamFields(tool)) {
+    if (field.defaultValue !== undefined) {
+      gatewayArgumentValues[field.key] = field.type === 'boolean' ? Boolean(field.defaultValue) : String(field.defaultValue);
+      continue;
     }
-    await testRpaMcpTool(tool.id, { cookies, arguments: {} });
-    showSuccessToast(t('Test message sent'));
+    gatewayArgumentValues[field.key] = field.type === 'boolean' ? false : '';
+  }
+};
+
+const closeGatewayToolTestDialog = () => {
+  gatewayTestDialogOpen.value = false;
+  gatewayTestTool.value = null;
+  gatewayTestResult.value = null;
+  gatewayCookieSectionOpen.value = false;
+  gatewayCookieMode.value = 'cookie_header';
+  gatewayCookieText.value = '';
+  gatewayCookieDomain.value = '';
+  gatewayOutputSchemaText.value = '';
+  clearGatewayArgumentValues();
+};
+
+const buildGatewayTestArguments = () => {
+  const payload: Record<string, unknown> = {};
+  for (const field of gatewayParamFields.value) {
+    const rawValue = gatewayArgumentValues[field.key];
+    const isBlank = rawValue === '' || rawValue === null || rawValue === undefined;
+    if (isBlank) {
+      if (field.required) {
+        throw new Error(t('Gateway parameter required', { name: field.key }));
+      }
+      continue;
+    }
+    if (field.type === 'boolean') {
+      payload[field.key] = Boolean(rawValue);
+      continue;
+    }
+    if (field.type === 'number' || field.type === 'integer') {
+      const numericValue = Number(rawValue);
+      if (Number.isNaN(numericValue) || (field.type === 'integer' && !Number.isInteger(numericValue))) {
+        throw new Error(t('Gateway parameter number invalid', { name: field.key }));
+      }
+      payload[field.key] = numericValue;
+      continue;
+    }
+    if (field.type === 'array' || field.type === 'object') {
+      try {
+        payload[field.key] = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+      } catch {
+        throw new Error(t('Gateway parameter JSON invalid', { name: field.key }));
+      }
+      continue;
+    }
+    payload[field.key] = String(rawValue);
+  }
+  return payload;
+};
+
+const submitGatewayToolTest = async () => {
+  if (!gatewayTestTool.value) return;
+  gatewayTestSubmitting.value = true;
+  try {
+    const argumentsPayload = buildGatewayTestArguments();
+    const cookies = convertCookieInputToPlaywrightCookies({
+      mode: gatewayCookieMode.value,
+      text: gatewayCookieText.value,
+      domain: gatewayCookieMode.value === 'playwright_json' ? undefined : gatewayCookieDomain.value,
+      required: Boolean(gatewayTestTool.value.requires_cookies),
+    });
+    const payload: { cookies?: Array<Record<string, unknown>>; arguments: Record<string, unknown> } = {
+      arguments: argumentsPayload,
+    };
+    if (cookies?.length) {
+      payload.cookies = cookies as Array<Record<string, unknown>>;
+    }
+    const result = await testRpaMcpTool(gatewayTestTool.value.id, payload);
+    gatewayTestResult.value = result;
+    gatewayOutputSchemaText.value = formatJsonBlock(result.recommended_output_schema || result.output_schema || gatewayTestTool.value.output_schema || {});
+    const refreshedTool = await updateRpaMcpTool(gatewayTestTool.value.id, {
+      name: gatewayTestTool.value.name,
+      description: gatewayTestTool.value.description,
+      enabled: gatewayTestTool.value.enabled,
+      allowed_domains: gatewayTestTool.value.allowed_domains,
+      post_auth_start_url: gatewayTestTool.value.post_auth_start_url,
+    });
+    syncGatewayToolState(refreshedTool);
+    showSuccessToast(result.message || t('Test message sent'));
   } catch (error: any) {
     console.error(error);
-    showErrorToast(error?.message || t('Test failed'));
+    showErrorToast(error?.message ? t(error.message) : t('Test failed'));
+  } finally {
+    gatewayTestSubmitting.value = false;
+  }
+};
+
+const saveGatewayOutputSchema = async () => {
+  if (!gatewayTestTool.value) return;
+  gatewaySavingOutputSchema.value = true;
+  try {
+    const outputSchema = parseJsonObjectText(gatewayOutputSchemaText.value, t('Output schema JSON invalid'));
+    const updated = await updateRpaMcpTool(gatewayTestTool.value.id, {
+      name: gatewayTestTool.value.name,
+      description: gatewayTestTool.value.description,
+      enabled: gatewayTestTool.value.enabled,
+      allowed_domains: gatewayTestTool.value.allowed_domains,
+      post_auth_start_url: gatewayTestTool.value.post_auth_start_url,
+      output_schema: outputSchema,
+      output_schema_confirmed: true,
+    });
+    syncGatewayToolState(updated);
+    if (gatewayTestResult.value) {
+      gatewayTestResult.value = {
+        ...gatewayTestResult.value,
+        output_schema: outputSchema,
+        output_schema_confirmed: true,
+      };
+    }
+    gatewayOutputSchemaText.value = formatJsonBlock(outputSchema);
+    showSuccessToast(t('Output schema saved'));
+  } catch (error: any) {
+    console.error(error);
+    showErrorToast(error?.message || t('Failed to save output schema'));
+  } finally {
+    gatewaySavingOutputSchema.value = false;
   }
 };
 const deletePrivateServer = async (server: McpServerItem) => {

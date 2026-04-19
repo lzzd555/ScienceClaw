@@ -39,6 +39,25 @@ class _MemoryRepo:
         return 0
 
 
+class _FakeRegistry:
+    def __init__(self, tool):
+        self.tool = tool
+
+    async def get_owned(self, tool_id, user_id):
+        assert tool_id == self.tool.id
+        assert user_id == "user-1"
+        return self.tool
+
+    async def get_by_tool_name(self, tool_name, user_id):
+        assert tool_name == self.tool.tool_name
+        assert user_id == "user-1"
+        return self.tool
+
+    async def save(self, tool):
+        self.tool = tool
+        return tool
+
+
 def _build_rpa_mcp_app():
     app = FastAPI()
     app.include_router(rpa_mcp_route.router, prefix="/api/v1")
@@ -68,10 +87,114 @@ class _FakeConverter:
             "steps": kwargs["steps"],
             "params": kwargs["params"],
             "input_schema": {"type": "object", "properties": {"cookies": {"type": "array"}}, "required": ["cookies"]},
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "message": {"type": "string"},
+                    "data": {"type": "object", "properties": {}, "additionalProperties": True},
+                    "downloads": {"type": "array", "items": {"type": "object"}},
+                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                    "error": {"type": ["object", "null"]},
+                },
+                "required": ["success", "data", "downloads", "artifacts"],
+            },
+            "recommended_output_schema": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"},
+                    "message": {"type": "string"},
+                    "data": {"type": "object", "properties": {"invoice_total": {"type": "string"}}, "additionalProperties": False},
+                    "downloads": {"type": "array", "items": {"type": "object"}},
+                    "artifacts": {"type": "array", "items": {"type": "object"}},
+                    "error": {"type": ["object", "null"]},
+                },
+                "required": ["success", "data", "downloads", "artifacts"],
+            },
+            "output_schema_confirmed": False,
+            "output_examples": [],
+            "output_inference_report": {"recording_signals": [{"kind": "extract_text", "key": "invoice_total"}]},
             "sanitize_report": {"removed_steps": [0, 1, 2], "removed_params": ["email", "password"], "warnings": []},
             "source": {"type": "rpa_skill", "session_id": kwargs["session_id"], "skill_name": kwargs["skill_name"]},
             "enabled": True,
         })
+
+
+class _FakeRouteExecutor:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    async def execute(self, tool, arguments):
+        browser = await self.kwargs["browser_factory"](tool=tool)
+        return {
+            "success": True,
+            "message": "Execution completed",
+            "data": {
+                "browser": browser,
+                "arguments": arguments,
+                "has_pw_loop_runner": self.kwargs.get("pw_loop_runner") is not None,
+            },
+            "downloads": [{"filename": "invoice.pdf", "path": "D:/tmp/invoice.pdf"}],
+            "artifacts": [],
+            "error": None,
+        }
+
+
+class _FakeConnector:
+    def __init__(self):
+        self.calls = []
+
+    async def get_browser(self, session_id=None, user_id=None):
+        self.calls.append({"session_id": session_id, "user_id": user_id})
+        return {"session_id": session_id, "user_id": user_id}
+
+    async def run_in_pw_loop(self, coro):
+        return await coro
+
+
+def _sample_tool():
+    return rpa_mcp_route.RpaMcpToolDefinition(
+        id="tool-1",
+        user_id="user-1",
+        name="download_invoice",
+        tool_name="rpa_download_invoice",
+        description="Download invoice",
+        requires_cookies=False,
+        allowed_domains=["example.com"],
+        post_auth_start_url="https://example.com/dashboard",
+        steps=[{"action": "click", "description": "Export invoice"}],
+        params={},
+        input_schema={"type": "object", "properties": {}, "required": []},
+        output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "message": {"type": "string"},
+                "data": {"type": "object", "properties": {}, "additionalProperties": True},
+                "downloads": {"type": "array", "items": {"type": "object"}},
+                "artifacts": {"type": "array", "items": {"type": "object"}},
+                "error": {"type": ["object", "null"]},
+            },
+            "required": ["success", "data", "downloads", "artifacts"],
+        },
+        recommended_output_schema={
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "message": {"type": "string"},
+                "data": {"type": "object", "properties": {"invoice_total": {"type": "string"}}, "additionalProperties": False},
+                "downloads": {"type": "array", "items": {"type": "object"}},
+                "artifacts": {"type": "array", "items": {"type": "object"}},
+                "error": {"type": ["object", "null"]},
+            },
+            "required": ["success", "data", "downloads", "artifacts"],
+        },
+        output_schema_confirmed=False,
+        output_examples=[],
+        output_inference_report={},
+        sanitize_report={"removed_steps": [], "removed_params": [], "warnings": []},
+        source={"type": "rpa_skill", "session_id": "session-1", "skill_name": "invoice_skill"},
+    )
 
 
 def _fake_gateway_tools(user_id: str):
@@ -81,6 +204,7 @@ def _fake_gateway_tools(user_id: str):
             "name": "rpa_download_invoice",
             "description": "Download invoice",
             "input_schema": {"type": "object", "properties": {"cookies": {"type": "array"}}, "required": ["cookies"]},
+            "output_schema": {"type": "object", "properties": {"data": {"type": "object"}}},
         }
     ]
 
@@ -110,3 +234,90 @@ def test_gateway_discover_tools_returns_enabled_user_tools(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["result"]["tools"][0]["name"] == "rpa_download_invoice"
+    assert response.json()["result"]["tools"][0]["output_schema"]["properties"]["data"]["type"] == "object"
+
+
+def test_test_tool_route_builds_runtime_executor(monkeypatch):
+    app = _build_rpa_mcp_app()
+    client = TestClient(app)
+    tool = _sample_tool()
+    connector = _FakeConnector()
+
+    monkeypatch.setattr(rpa_mcp_route, "RpaMcpToolRegistry", lambda: _FakeRegistry(tool))
+    monkeypatch.setattr(rpa_mcp_route, "RpaMcpExecutor", lambda **kwargs: _FakeRouteExecutor(**kwargs))
+    monkeypatch.setattr(rpa_mcp_route, "get_cdp_connector", lambda: connector)
+    async def fake_get_session(session_id):
+        return SimpleNamespace(id=session_id, sandbox_session_id="sandbox-1")
+
+    monkeypatch.setattr(rpa_mcp_route.rpa_manager, "get_session", fake_get_session)
+
+    response = client.post(
+        "/api/v1/rpa-mcp/tools/tool-1/test",
+        json={"arguments": {"month": "2026-03"}},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]["data"]
+    assert data["browser"] == {"session_id": "sandbox-1", "user_id": "user-1"}
+    assert data["arguments"] == {"cookies": [], "month": "2026-03"}
+    assert data["has_pw_loop_runner"] is True
+    assert response.json()["data"]["recommended_output_schema"]["properties"]["data"]["properties"]["browser"]["type"] == "object"
+    assert response.json()["data"]["output_examples"][0]["data"]["browser"]["session_id"] == "sandbox-1"
+
+
+def test_gateway_call_builds_runtime_executor(monkeypatch):
+    app = _build_rpa_mcp_app()
+    client = TestClient(app)
+    tool = _sample_tool()
+    connector = _FakeConnector()
+
+    monkeypatch.setattr(rpa_mcp_route, "RpaMcpToolRegistry", lambda: _FakeRegistry(tool))
+    monkeypatch.setattr(rpa_mcp_route, "RpaMcpExecutor", lambda **kwargs: _FakeRouteExecutor(**kwargs))
+    monkeypatch.setattr(rpa_mcp_route, "get_cdp_connector", lambda: connector)
+    async def fake_get_session_call(session_id):
+        return SimpleNamespace(id=session_id, sandbox_session_id="sandbox-1")
+
+    monkeypatch.setattr(rpa_mcp_route.rpa_manager, "get_session", fake_get_session_call)
+
+    response = client.post(
+        "/api/v1/rpa-mcp/mcp",
+        json={"method": "tools/call", "params": {"name": "rpa_download_invoice", "arguments": {"month": "2026-03"}}},
+    )
+
+    assert response.status_code == 200
+    structured = response.json()["result"]["structuredContent"]["data"]
+    assert structured["browser"] == {"session_id": "sandbox-1", "user_id": "user-1"}
+    assert structured["arguments"] == {"month": "2026-03"}
+    assert structured["has_pw_loop_runner"] is True
+    assert response.json()["result"]["outputSchema"]["properties"]["data"]["type"] == "object"
+
+
+def test_update_tool_route_persists_confirmed_output_schema(monkeypatch):
+    app = _build_rpa_mcp_app()
+    client = TestClient(app)
+    tool = _sample_tool()
+    registry = _FakeRegistry(tool)
+
+    monkeypatch.setattr(rpa_mcp_route, "RpaMcpToolRegistry", lambda: registry)
+
+    new_schema = {
+        "type": "object",
+        "properties": {
+            "success": {"type": "boolean"},
+            "message": {"type": "string"},
+            "data": {"type": "object", "properties": {"invoice_total": {"type": "string"}}, "additionalProperties": False},
+            "downloads": {"type": "array", "items": {"type": "object"}},
+            "artifacts": {"type": "array", "items": {"type": "object"}},
+            "error": {"type": ["object", "null"]},
+        },
+        "required": ["success", "data", "downloads", "artifacts"],
+    }
+
+    response = client.put(
+        "/api/v1/rpa-mcp/tools/tool-1",
+        json={"output_schema": new_schema, "output_schema_confirmed": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["output_schema_confirmed"] is True
+    assert registry.tool.output_schema["properties"]["data"]["properties"]["invoice_total"]["type"] == "string"

@@ -1,16 +1,47 @@
 import { apiClient, ApiResponse } from './client';
 
+export interface JsonSchemaObject {
+  type?: string | string[];
+  properties?: Record<string, JsonSchemaObject>;
+  items?: JsonSchemaObject;
+  required?: string[];
+  description?: string;
+  default?: unknown;
+  additionalProperties?: boolean;
+  [key: string]: unknown;
+}
+
+export interface RpaMcpExecutionResult {
+  success: boolean;
+  message?: string;
+  data: Record<string, unknown>;
+  downloads: Array<Record<string, unknown>>;
+  artifacts: Array<Record<string, unknown>>;
+  error?: Record<string, unknown> | null;
+  recommended_output_schema?: JsonSchemaObject;
+  output_schema?: JsonSchemaObject;
+  output_schema_confirmed?: boolean;
+  output_examples?: Array<Record<string, unknown>>;
+  output_inference_report?: Record<string, unknown>;
+}
+
 export interface RpaMcpPreview {
   id?: string;
   name: string;
   tool_name: string;
   description: string;
   enabled?: boolean;
+  requires_cookies?: boolean;
   allowed_domains: string[];
   post_auth_start_url: string;
   steps: Record<string, unknown>[];
   params: Record<string, unknown>;
-  input_schema: Record<string, unknown>;
+  input_schema: JsonSchemaObject;
+  output_schema: JsonSchemaObject;
+  recommended_output_schema: JsonSchemaObject;
+  output_schema_confirmed?: boolean;
+  output_examples?: Array<Record<string, unknown>>;
+  output_inference_report?: Record<string, unknown>;
   sanitize_report: {
     removed_steps: number[];
     removed_params: string[];
@@ -54,7 +85,7 @@ export async function deleteRpaMcpTool(toolId: string) {
   return response.data.data;
 }
 
-export async function testRpaMcpTool(toolId: string, payload: { cookies: Array<Record<string, unknown>>; arguments?: Record<string, unknown> }) {
-  const response = await apiClient.post<ApiResponse<Record<string, unknown>>>(`/rpa-mcp/tools/${encodeURIComponent(toolId)}/test`, payload);
+export async function testRpaMcpTool(toolId: string, payload: { cookies?: Array<Record<string, unknown>>; arguments?: Record<string, unknown> }) {
+  const response = await apiClient.post<ApiResponse<RpaMcpExecutionResult>>(`/rpa-mcp/tools/${encodeURIComponent(toolId)}/test`, payload);
   return response.data.data;
 }
