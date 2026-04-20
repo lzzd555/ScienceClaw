@@ -201,6 +201,7 @@ class StepExecutionError(Exception):
                     converted = self._sync_to_async(ai_code)
                     converted = self._inject_result_capture(converted)
                     converted = self._strip_locator_result_capture(converted)
+                    converted = self._dehardcode_ai_script(converted, context_value_map)
                     for code_line in converted.split("\n"):
                         step_lines.append(f"    {code_line}" if code_line.strip() else "")
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
@@ -976,6 +977,27 @@ class StepExecutionError(Exception):
                 if output:
                     value_map[ctx_key] = output
         return value_map
+
+    def _dehardcode_ai_script(self, code: str, context_value_map: Dict[str, str]) -> str:
+        """Replace hardcoded string literals in AI script with context.get() calls.
+
+        Scans for assignment patterns like  var = "value"  and replaces the
+        literal with  context.get("key", "value")  when *value* matches a known
+        context value from a previous extract step.
+        """
+        if not context_value_map:
+            return code
+        # Sort by value length descending so longer (more specific) values are replaced first
+        for ctx_key, ctx_val in sorted(context_value_map.items(), key=lambda kv: -len(kv[1])):
+            if not ctx_val or len(ctx_val) < 3:
+                continue
+            escaped = re.escape(ctx_val)
+            # Match = "value" or = 'value' (assignment pattern only)
+            pattern = r'(=\s*)(["\'])(' + escaped + r')(\2)'
+            safe_default = ctx_val.replace('\\', '\\\\').replace('"', '\\"')
+            replacement = r'\1context.get("' + ctx_key + '", "' + safe_default + '")'
+            code = re.sub(pattern, replacement, code)
+        return code
 
     def _build_input_files_value(self, step: Dict[str, Any], value: str, params: Dict[str, Any]) -> str:
         signals = step.get("signals")

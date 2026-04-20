@@ -326,6 +326,30 @@ SNAPSHOT_V2_JS = r"""() => {
                 text,
             },
         };
+        // Detect field value pattern: annotate value nodes with their field label
+        if (ctag === 'span' || ctag === 'div') {
+            const dataField = el.getAttribute('data-field');
+            const hasValueClass = /value/i.test(el.className || '');
+            if (dataField || hasValueClass) {
+                let fieldName = '';
+                const prevSib = el.previousElementSibling;
+                if (prevSib) {
+                    fieldName = normalizeText(prevSib.innerText || prevSib.textContent || '', 80);
+                }
+                if (!fieldName) {
+                    const parent = el.parentElement;
+                    if (parent) {
+                        const labelEl = parent.querySelector('.field-label, [class*="label"]');
+                        if (labelEl && labelEl !== el) {
+                            fieldName = normalizeText(labelEl.innerText || labelEl.textContent || '', 80);
+                        }
+                    }
+                }
+                if (fieldName && fieldName !== text) {
+                    node.field_name = fieldName;
+                }
+            }
+        }
         result.content_nodes.push(node);
         if (containerId) {
             const container = Array.from(containerMap.values()).find(item => item.container_id === containerId);

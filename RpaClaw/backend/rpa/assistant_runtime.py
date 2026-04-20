@@ -685,6 +685,7 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
     target_hint = intent.get("target_hint", {}) or {}
     expected_name = _normalize_hint(target_hint.get("name") or target_hint.get("text") or target_hint.get("value"))
     expected_tokens = _tokenize_text(expected_name)
+    field_name = (node.get("field_name") or "")
     haystack = " ".join(
         [
             str(node.get("text") or ""),
@@ -692,6 +693,8 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
             str(node.get("role") or ""),
         ]
     ).lower()
+    if field_name:
+        haystack += " " + field_name.lower()
     haystack_tokens = _tokenize_text(haystack)
     score = 0
     if expected_name:
@@ -700,6 +703,11 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
         score += min(len(expected_tokens & haystack_tokens) * 2, 6)
         if "title" in expected_tokens and _normalize_hint(node.get("semantic_kind")) in {"heading", "title"}:
             score += 3
+        # Bonus: prefer value nodes whose field_name matches the target
+        if field_name:
+            fn_norm = _normalize_hint(field_name)
+            if expected_name in fn_norm or fn_norm in expected_name:
+                score += 4
     if node.get("bbox"):
         score += 1
     return score
