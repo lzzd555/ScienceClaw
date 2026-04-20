@@ -339,37 +339,74 @@ class RPAAssistant:
         if current_page is not None:
             intents = self._extract_structured_intents(full_response)
             if len(intents) > 1:
-                # ── Multi-action: execute each intent sequentially ──
+                # ── Multi-action: execute each intent with per-intent retry ──
                 multi_results = []
                 for i, intent_json in enumerate(intents):
-                    intent_response = json.dumps(intent_json, ensure_ascii=False)
+                    # --- First attempt ---
                     try:
-                        intent_result, _, intent_resolution, intent_reads = await self._execute_single_response(
-                            current_page, snapshot, intent_response, context_ledger
+                        intent_result, intent_reads = await self._execute_intent_with_ledger(
+                            intent_json, current_page, snapshot, context_ledger,
+                            message, rpa_manager, session_id,
                         )
                         multi_results.append(intent_result)
                         context_reads.extend(intent_reads)
-                        if intent_result.get("success") and intent_resolution:
-                            step_data = intent_result.get("step")
-                            if step_data:
-                                context_writes_multi = self._compute_context_writes(
-                                    message=message,
-                                    step_data=step_data,
-                                    resolution=intent_resolution,
-                                )
-                                self._promote_to_ledger(
-                                    rpa_manager=rpa_manager,
-                                    session_id=session_id,
-                                    context_writes=context_writes_multi,
-                                    step_data=step_data,
-                                    output=intent_result.get("output"),
-                                )
-                                step_data["context_reads"] = intent_reads
-                                step_data["context_writes"] = context_writes_multi
-                                await rpa_manager.add_step(session_id, step_data)
                     except Exception as exc:
-                        multi_results.append({"success": False, "error": str(exc), "output": ""})
+                        intent_result = {"success": False, "error": str(exc), "output": ""}
+                        multi_results.append(intent_result)
 
+                    # --- Per-intent retry if failed ---
+                    if not intent_result.get("success"):
+                        intent_error = intent_result.get("error", "")
+                        yield {
+                            "event": "retry_start",
+                            "data": {"original_error": intent_error, "intent_index": i},
+                        }
+                        retry_prompt = (
+                            f"Original intent:\n{json.dumps(intent_json, ensure_ascii=False)}\n\n"
+                            f"Execution error: {intent_error}\n\n"
+                            f"Please fix the intent and output a single corrected JSON action."
+                        )
+                        retry_messages = [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": retry_prompt},
+                        ]
+                        retry_response = ""
+                        async for chunk_text in self._stream_llm(retry_messages, model_config):
+                            retry_response += chunk_text
+                            yield {"event": "retry_chunk", "data": {"text": chunk_text, "intent_index": i}}
+
+                        yield {"event": "retry_executing", "data": {"intent_index": i}}
+
+                        # Parse the retry response as a single intent
+                        retry_intent = self._extract_structured_intent(retry_response)
+                        if retry_intent:
+                            try:
+                                retry_result, retry_reads = await self._execute_intent_with_ledger(
+                                    retry_intent, current_page, snapshot, context_ledger,
+                                    message, rpa_manager, session_id,
+                                )
+                                # Replace the failed result with retry result
+                                multi_results[-1] = retry_result
+                                context_reads.extend(retry_reads)
+                            except Exception as exc2:
+                                multi_results[-1] = {"success": False, "error": str(exc2), "output": ""}
+                        else:
+                            multi_results[-1] = {
+                                "success": False,
+                                "error": f"Retry failed: could not parse LLM response. Original: {intent_error}",
+                                "output": "",
+                            }
+
+                        yield {
+                            "event": "retry_result",
+                            "data": {
+                                "success": multi_results[-1].get("success", False),
+                                "error": multi_results[-1].get("error"),
+                                "intent_index": i,
+                            },
+                        }
+
+                # Aggregate results
                 result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
                 code = None
                 resolution = None
@@ -393,7 +430,7 @@ class RPAAssistant:
                         "output": result.get("output"),
                         "context_reads": context_reads,
                         "context_writes": [],
-                        "retried": False,
+                        "retried": any("retry" in str(r.get("error", "")) for r in multi_results if not r.get("success")),
                         "original_error": None,
                         "multi_action_count": len(intents),
                     },
@@ -442,32 +479,46 @@ class RPAAssistant:
                 retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
                 retry_intents = self._extract_structured_intents(retry_response)
                 if len(retry_intents) > 1:
-                    # ── Retry multi-action ──
+                    # ── Retry multi-action with per-intent retry ──
                     multi_results = []
                     for i, intent_json in enumerate(retry_intents):
-                        intent_response = json.dumps(intent_json, ensure_ascii=False)
                         try:
-                            intent_result, _, intent_resolution, intent_reads = await self._execute_single_response(
-                                current_page, retry_snapshot, intent_response, context_ledger
+                            intent_result, intent_reads = await self._execute_intent_with_ledger(
+                                intent_json, current_page, retry_snapshot, context_ledger,
+                                message, rpa_manager, session_id,
                             )
                             multi_results.append(intent_result)
                             context_reads.extend(intent_reads)
-                            if intent_result.get("success") and intent_resolution:
-                                step_data_item = intent_result.get("step")
-                                if step_data_item:
-                                    cw = self._compute_context_writes(
-                                        message=message, step_data=step_data_item, resolution=intent_resolution,
-                                    )
-                                    self._promote_to_ledger(
-                                        rpa_manager=rpa_manager, session_id=session_id,
-                                        context_writes=cw, step_data=step_data_item,
-                                        output=intent_result.get("output"),
-                                    )
-                                    step_data_item["context_reads"] = intent_reads
-                                    step_data_item["context_writes"] = cw
-                                    await rpa_manager.add_step(session_id, step_data_item)
                         except Exception as exc:
-                            multi_results.append({"success": False, "error": str(exc), "output": ""})
+                            intent_result = {"success": False, "error": str(exc), "output": ""}
+                            multi_results.append(intent_result)
+
+                        if not intent_result.get("success"):
+                            intent_error = intent_result.get("error", "")
+                            retry_prompt = (
+                                f"Original intent:\n{json.dumps(intent_json, ensure_ascii=False)}\n\n"
+                                f"Execution error: {intent_error}\n\n"
+                                f"Please fix the intent and output a single corrected JSON action."
+                            )
+                            retry_llm_msgs = [
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": retry_prompt},
+                            ]
+                            rr = ""
+                            async for chunk_text in self._stream_llm(retry_llm_msgs, model_config):
+                                rr += chunk_text
+                                yield {"event": "retry_chunk", "data": {"text": chunk_text, "intent_index": i}}
+                            retry_intent = self._extract_structured_intent(rr)
+                            if retry_intent:
+                                try:
+                                    retry_result, retry_reads = await self._execute_intent_with_ledger(
+                                        retry_intent, current_page, retry_snapshot, context_ledger,
+                                        message, rpa_manager, session_id,
+                                    )
+                                    multi_results[-1] = retry_result
+                                    context_reads.extend(retry_reads)
+                                except Exception as exc2:
+                                    multi_results[-1] = {"success": False, "error": str(exc2), "output": ""}
 
                     result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
                     code = None
@@ -487,7 +538,6 @@ class RPAAssistant:
                             "multi_action_count": len(retry_intents),
                         },
                     }
-                    # Skip normal step processing below — already done per-intent
                     history.append({"role": "user", "content": message})
                     history.append({"role": "assistant", "content": full_response})
                     self._trim_history(session_id)
@@ -660,6 +710,40 @@ class RPAAssistant:
                     source_step_id=step_data.get("id"),
                     source_kind="assistant_extraction",
                 )
+
+    async def _execute_intent_with_ledger(
+        self,
+        intent_json: Dict[str, Any],
+        current_page: Page,
+        snapshot: Dict[str, Any],
+        context_ledger: Optional[Any],
+        message: str,
+        rpa_manager: Any,
+        session_id: str,
+    ) -> tuple[Dict[str, Any], List[str]]:
+        """Execute a single intent and promote context writes to ledger.
+
+        Returns (result, context_reads).
+        """
+        intent_response = json.dumps(intent_json, ensure_ascii=False)
+        result, _, resolution, intent_reads = await self._execute_single_response(
+            current_page, snapshot, intent_response, context_ledger
+        )
+        if result.get("success") and resolution:
+            step_data = result.get("step")
+            if step_data:
+                context_writes = self._compute_context_writes(
+                    message=message, step_data=step_data, resolution=resolution,
+                )
+                self._promote_to_ledger(
+                    rpa_manager=rpa_manager, session_id=session_id,
+                    context_writes=context_writes, step_data=step_data,
+                    output=result.get("output"),
+                )
+                step_data["context_reads"] = intent_reads
+                step_data["context_writes"] = context_writes
+                await rpa_manager.add_step(session_id, step_data)
+        return result, intent_reads
 
     async def _execute_single_response(
         self,
