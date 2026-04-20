@@ -440,14 +440,83 @@ class RPAAssistant:
                 result = {"success": False, "error": "No active page available", "output": ""}
             else:
                 retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
-                try:
-                    result, code, resolution, context_reads = await self._execute_single_response(
-                        current_page, retry_snapshot, retry_response, context_ledger
-                    )
-                except Exception as exc:
-                    result = {"success": False, "error": str(exc), "output": ""}
+                retry_intents = self._extract_structured_intents(retry_response)
+                if len(retry_intents) > 1:
+                    # ── Retry multi-action ──
+                    multi_results = []
+                    for i, intent_json in enumerate(retry_intents):
+                        intent_response = json.dumps(intent_json, ensure_ascii=False)
+                        try:
+                            intent_result, _, intent_resolution, intent_reads = await self._execute_single_response(
+                                current_page, retry_snapshot, intent_response, context_ledger
+                            )
+                            multi_results.append(intent_result)
+                            context_reads.extend(intent_reads)
+                            if intent_result.get("success") and intent_resolution:
+                                step_data_item = intent_result.get("step")
+                                if step_data_item:
+                                    cw = self._compute_context_writes(
+                                        message=message, step_data=step_data_item, resolution=intent_resolution,
+                                    )
+                                    self._promote_to_ledger(
+                                        rpa_manager=rpa_manager, session_id=session_id,
+                                        context_writes=cw, step_data=step_data_item,
+                                        output=intent_result.get("output"),
+                                    )
+                                    step_data_item["context_reads"] = intent_reads
+                                    step_data_item["context_writes"] = cw
+                                    await rpa_manager.add_step(session_id, step_data_item)
+                        except Exception as exc:
+                            multi_results.append({"success": False, "error": str(exc), "output": ""})
+
+                    result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
                     code = None
                     resolution = None
+                    all_success = all(r.get("success") for r in multi_results)
+                    result["success"] = all_success
+                    if not all_success:
+                        errors = [r.get("error", "") for r in multi_results if not r.get("success")]
+                        result["error"] = "; ".join(errors)
+
+                    full_response = retry_response
+                    yield {
+                        "event": "retry_result",
+                        "data": {
+                            "success": result.get("success", False),
+                            "error": result.get("error"),
+                            "multi_action_count": len(retry_intents),
+                        },
+                    }
+                    # Skip normal step processing below — already done per-intent
+                    history.append({"role": "user", "content": message})
+                    history.append({"role": "assistant", "content": full_response})
+                    self._trim_history(session_id)
+                    yield {
+                        "event": "result",
+                        "data": {
+                            "success": result["success"],
+                            "error": result.get("error"),
+                            "step": None,
+                            "output": result.get("output"),
+                            "context_reads": context_reads,
+                            "context_writes": [],
+                            "retried": True,
+                            "original_error": original_error,
+                            "multi_action_count": len(retry_intents),
+                        },
+                    }
+                    yield {"event": "done", "data": {}}
+                    return
+                else:
+                    # ── Retry single-action ──
+                    try:
+                        result, code, resolution, context_reads = await self._execute_single_response(
+                            current_page, retry_snapshot, retry_response, context_ledger
+                        )
+                    except Exception as exc:
+                        result = {"success": False, "error": str(exc), "output": ""}
+                        code = None
+                        resolution = None
 
             full_response = retry_response
 
@@ -685,14 +754,19 @@ class RPAAssistant:
         if isinstance(parsed, dict) and parsed.get("action"):
             return parsed
 
-        match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
-        if match:
-            try:
-                parsed = json.loads(match.group(1).strip())
-            except Exception:
-                return None
-            if isinstance(parsed, dict) and parsed.get("action"):
-                return parsed
+        # Try markdown code blocks (```json or bare ```)
+        for pattern in [
+            r"```json\s*\n(.*?)```",
+            r"```\s*\n(.*?)```",
+        ]:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1).strip())
+                except Exception:
+                    continue
+                if isinstance(parsed, dict) and parsed.get("action"):
+                    return parsed
         return None
 
     @staticmethod
@@ -716,19 +790,37 @@ class RPAAssistant:
         except Exception:
             pass
 
-        # Try extracting from markdown code block
-        match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
-        if match:
+        # Try extracting from markdown code block (```json or bare ```)
+        for pattern in [
+            r"```json\s*\n(.*?)```",
+            r"```\s*\n(.*?)```",
+        ]:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                try:
+                    parsed = json.loads(match.group(1).strip())
+                    if isinstance(parsed, list):
+                        results = [item for item in parsed if isinstance(item, dict) and item.get("action")]
+                        if results:
+                            return results
+                    if isinstance(parsed, dict) and parsed.get("action"):
+                        return [parsed]
+                except Exception:
+                    pass
+
+        # Fallback: scan for a JSON array [...] anywhere in the text
+        decoder = json.JSONDecoder()
+        idx = text.find("[")
+        while idx >= 0:
             try:
-                parsed = json.loads(match.group(1).strip())
+                parsed, _ = decoder.raw_decode(text, idx)
                 if isinstance(parsed, list):
                     results = [item for item in parsed if isinstance(item, dict) and item.get("action")]
                     if results:
                         return results
-                if isinstance(parsed, dict) and parsed.get("action"):
-                    return [parsed]
             except Exception:
                 pass
+            idx = text.find("[", idx + 1)
 
         # Fallback to single intent extraction
         single = RPAAssistant._extract_structured_intent(text)
