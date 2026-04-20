@@ -134,7 +134,7 @@ interface ChatMessage {
   text: string;
   time: string;
   script?: string;
-  status?: 'streaming' | 'executing' | 'done' | 'error';
+  status?: 'streaming' | 'executing' | 'retrying' | 'done' | 'error';
   error?: string;
   showCode?: boolean;
   actions?: Array<{ description: string; code: string; showCode?: boolean }>;  // Track agent actions
