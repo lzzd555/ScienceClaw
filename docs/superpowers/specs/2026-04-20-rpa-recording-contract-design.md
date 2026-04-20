@@ -1,99 +1,102 @@
-# RPA Recording Contract Redesign
+# RPA 录制契约重构设计
 
-Date: 2026-04-20
+日期：2026-04-20
 
-## Goal
+## 目标
 
-Redesign the RPA recording pipeline so that recording-time extraction, runtime context persistence, frontend execution logs, and playback code generation all share one explicit contract.
+重构 RPA 技能录制链路，使录制期的提取行为、运行时上下文持久化、前端执行日志展示以及回放代码生成，共享一套明确且一致的数据契约。
 
-This redesign targets three current failures:
+本次重构针对以下三个现有问题：
 
-1. Retry attempts are not modeled explicitly, so the frontend can show `Retrying` while the final result is actually successful.
-2. Multi-field extraction cannot reliably persist structured values into context, and the frontend cannot show which keys were written and what values they received.
-3. Generated playback code hardcodes recorded page values and brittle locators, which defeats parameterization and makes context rebuild unreliable.
+1. 重试过程没有被显式建模，导致前端可能显示 `Retrying`，但最终结果其实已经成功。
+2. 多字段提取无法稳定地把结构化结果写入上下文，前端也无法展示具体写入了哪些键以及对应的值。
+3. 回放代码生成时会硬编码录制时看到的页面值和脆弱定位器，导致参数化失效、上下文重建不可靠。
 
-## Scope
+## 范围
 
-This work covers the full pipeline for RPA recording assistant steps:
+本次设计覆盖 RPA 录制助手步骤的完整链路：
 
-- Recording-time assistant execution
-- Retry and execution status events
-- Context ledger writes
-- Frontend execution log rendering
-- Generated playback code and rebuild logic
+- 录制期助手执行
+- 重试与执行状态事件
+- 上下文 ledger 写入
+- 前端执行日志渲染
+- 回放代码生成与上下文重建逻辑
 
-This redesign does not attempt to rebuild the entire automation platform or replace the existing agent architecture.
+本次设计不试图重写整个自动化平台，也不替换现有 agent 总体架构。
 
-## Product Decisions
+## 已确认的产品决策
 
-The following product decisions are fixed for this redesign:
+以下决策在本次设计中视为固定前提：
 
-- `extract_text` remains in the system, but only for temporary page reading that does not write to runtime context.
-- Any extraction that writes context, whether single-field or multi-field, must be modeled as `ai_script`.
-- Retry history must be fully visible to the frontend. The UI should show each attempt, each failure, and the final recovery or failure result.
-- Single-field context extraction and multi-field context extraction must use the same structured output contract.
+- `extract_text` 继续保留，但仅用于临时读取页面文本，不允许写入运行时上下文。
+- 任何会写入上下文的提取，无论是单字段还是多字段，都必须统一建模为 `ai_script`。
+- 前端必须完整展示每一轮尝试、每一轮失败以及最终恢复或失败结果。
+- 单字段上下文提取与多字段上下文提取必须共用同一套结构化输出契约。
 
-## Problems In Current System
+## 当前系统存在的问题
 
-### 1. Execution Status Is Collapsed
+### 1. 执行状态被压缩成单一结果
 
-The backend currently emits a final `result.success` boolean plus free-form retry text. This makes the frontend infer execution flow from text instead of reading a structured attempt timeline.
+后端当前主要输出最终 `result.success` 布尔值，再附加自由文本形式的重试提示。前端只能从文本中猜测执行过程，而不是消费结构化尝试时间线。
 
-As a result:
+直接后果是：
 
-- first-attempt failures are not represented as first-class events
-- successful retry recovery is indistinguishable from immediate success
-- user-visible logs can look contradictory
+- 第一轮失败不会作为一等事件暴露出来
+- “重试后成功”和“首轮直接成功”无法区分
+- 用户看到的日志会出现明显矛盾
 
-### 2. Context Writes Are Key-Only, Not Value-Aware
+### 2. 上下文写入只有 Key，没有 Value 语义
 
-Current recording-time context promotion is based on `result_key`, `result_keys`, and `context_writes`, but the saved step model does not reliably preserve a structured payload for multi-field extraction.
+当前录制期的上下文提升主要依赖 `result_key`、`result_keys` 与 `context_writes`，但保存下来的步骤模型无法稳定保留多字段提取对应的结构化 payload。
 
-As a result:
+直接后果是：
 
-- multi-field extraction can print JSON output without actually producing usable context state
-- the frontend can list keys, but not the concrete values that were written
-- the generator cannot safely distinguish single-value extraction from structured extraction
+- 多字段提取可能打印了 JSON，但没有真正形成可用的上下文状态
+- 前端最多只能列出 key，无法展示具体写入了什么值
+- 生成器无法安全地区分“单值提取”和“结构化提取”
 
-### 3. Playback Generation Replays Recorded Values Instead Of Intent
+### 3. 回放代码生成回放的是录制值，而不是语义意图
 
-Generated code uses recorded URLs, recorded texts, recorded values, and brittle text locators such as `"购买人 李雨晨"` when rebuilding context or replaying extraction.
+当前生成代码会把录制时的 URL、文本、字段值以及脆弱文本定位器，例如 `"购买人 李雨晨"`，直接用于上下文重建或提取逻辑。
 
-As a result:
+直接后果是：
 
-- generated code loses the semantic meaning of parameters
-- context rebuild depends on exact recorded page content
-- playback becomes fragile and environment-specific
+- 生成代码丢失了参数真正的业务语义
+- 上下文重建依赖录制时页面的精确文本
+- 回放脚本脆弱、强依赖环境、难以复用
 
-## Design Summary
+## 设计总览
 
-The redesign introduces one explicit extraction contract and one explicit execution-attempt model.
+本次重构引入两套核心契约：
 
-### Extraction Model
+- 一套明确的提取契约
+- 一套明确的执行尝试模型
 
-Two extraction modes remain, with strict semantics:
+### 提取模型
+
+系统中保留两类提取能力，但语义必须严格收敛：
 
 - `extract_text`
-  - reads display text for the current interaction only
-  - does not write runtime context
-  - does not declare `result_key` or `result_keys`
+  - 只用于当前交互里读取显示文本
+  - 不写入运行时上下文
+  - 不允许声明 `result_key` 或 `result_keys`
 - `ai_script`
-  - performs all context-producing extraction
-  - may extract one field or many fields
-  - must return a structured JSON object
-  - may declare one or more context bindings
+  - 承担所有会写入上下文的提取
+  - 既可以提取单字段，也可以提取多字段
+  - 必须返回结构化 JSON 对象
+  - 可以声明一个或多个上下文绑定
 
-### Execution Model
+### 执行模型
 
-Each assistant action execution is represented as a sequence of explicit attempts. Every attempt emits structured events and produces a structured result or failure. The final step result is derived from the full attempt history, not from a single boolean.
+每次助手动作执行，都应被表示为一组显式尝试。每轮尝试都要发出结构化事件，并产生结构化成功结果或失败结果。最终步骤状态来自整条尝试时间线，而不是单个布尔值。
 
-### Generation Model
+### 生成模型
 
-Playback code generation consumes the saved semantic contract, not the recorded raw output. Rebuild logic reconstructs page state and extraction intent, rather than replaying recorded values.
+回放代码生成必须消费保存下来的语义契约，而不是消费录制时原始输出。上下文重建逻辑应重建页面状态与提取意图，而不是回放录制时看见的具体值。
 
-## New Step Contract
+## 新的步骤契约
 
-For any context-producing extraction step, the saved step payload must include the following conceptual fields:
+对于任何会写入上下文的提取步骤，保存后的步骤载荷必须具备以下概念字段：
 
 - `action`
 - `description`
@@ -106,13 +109,13 @@ For any context-producing extraction step, the saved step payload must include t
 - `extraction_source`
 - `attempt_summary`
 
-### Field Definitions
+### 字段定义
 
 #### `output_schema`
 
-Declares the expected structured result shape.
+用于声明这一步预期输出的结构化结果形状。
 
-Example:
+示例：
 
 ```json
 {
@@ -126,9 +129,9 @@ Example:
 
 #### `output_payload`
 
-Stores the actual structured extraction result returned by the successful attempt.
+保存成功尝试实际产出的结构化提取结果。
 
-Example:
+示例：
 
 ```json
 {
@@ -142,9 +145,9 @@ Example:
 
 #### `context_bindings`
 
-Lists which fields from `output_payload` are written into runtime context.
+用于声明 `output_payload` 中哪些字段会被写入运行时上下文。
 
-Example:
+示例：
 
 ```json
 ["buyer", "department", "acceptor", "supplier", "expected_arrival_date"]
@@ -152,22 +155,22 @@ Example:
 
 #### `extraction_source`
 
-Captures the semantic source of extraction, such as page section, field group, or extraction strategy. This is used for debugging, replay generation, and future repair logic.
+记录提取来源的语义信息，例如页面区域、字段分组、提取策略等。该字段用于调试、回放生成以及后续修复逻辑。
 
 #### `attempt_summary`
 
-Stores normalized information derived from the attempt timeline, such as:
+保存从尝试时间线归纳出的标准化摘要，例如：
 
-- attempt count
-- whether recovery required retry
-- final status
-- failure categories encountered before recovery
+- 尝试次数
+- 是否经过重试恢复
+- 最终状态
+- 恢复前出现过哪些失败类别
 
-## Execution Attempt Contract
+## 执行尝试契约
 
-The backend must emit structured attempt events for every assistant execution.
+后端必须为每次助手执行输出结构化尝试事件。
 
-### Required Event Types
+### 必需事件类型
 
 - `attempt_started`
 - `attempt_output`
@@ -176,261 +179,262 @@ The backend must emit structured attempt events for every assistant execution.
 - `result`
 - `done`
 
-### Event Semantics
+### 事件语义
 
 #### `attempt_started`
 
-Emitted at the start of each execution attempt.
+在每轮尝试开始时发出。
 
-Carries:
+应包含：
 
-- attempt index
-- action kind
-- short description
+- 尝试序号
+- 动作类型
+- 本轮执行摘要
 
 #### `attempt_output`
 
-Emitted when the backend has a concrete plan for that attempt.
+在后端拿到本轮可执行方案后发出。
 
-For `ai_script`, this includes:
+对于 `ai_script`，至少应包含：
 
-- script summary or structured extraction summary
-- expected output keys
+- 脚本摘要或结构化提取摘要
+- 预期输出字段列表
 
 #### `attempt_failed`
 
-Emitted whenever an attempt fails.
+在任意一轮尝试失败时发出。
 
-Carries:
+应包含：
 
-- attempt index
-- failure category
-- raw error
-- whether retry will proceed
+- 尝试序号
+- 失败类别
+- 原始错误信息
+- 是否会继续进入下一轮重试
 
 #### `attempt_succeeded`
 
-Emitted when an attempt completes successfully.
+在某轮尝试成功时发出。
 
-Carries:
+应包含：
 
-- attempt index
-- final structured output payload
-- context writes with concrete values
+- 尝试序号
+- 最终结构化输出 payload
+- 本轮写入的上下文键值对
 
 #### `result`
 
-Represents the final conclusion after all attempts.
+表示全部尝试结束后的最终结论。
 
-Allowed statuses:
+允许状态：
 
 - `success`
 - `failed`
 - `recovered_after_retry`
 - `partial_success`
 
-`partial_success` is required for structured extraction when some requested fields are produced and others are missing or invalid.
+其中 `partial_success` 对结构化提取是必需状态。例如请求了 5 个字段，只提取到其中 4 个，就不能简单归为成功或失败。
 
-## Frontend UX Contract
+## 前端 UX 契约
 
-The frontend must render the attempt timeline directly from structured events instead of inferring state from assistant text.
+前端必须直接消费结构化尝试事件来渲染时间线，而不是从助手文本中推断状态。
 
-### Log Presentation Rules
+### 日志展示规则
 
-- each attempt is displayed as its own log unit
-- failed attempts remain visible after later recovery
-- retry recovery is shown explicitly, not silently collapsed into generic success
-- final context writes are rendered as key-value pairs
+- 每轮尝试都应显示为独立日志单元
+- 某轮失败后，即使后续恢复成功，该失败记录也必须保留
+- “重试后恢复”必须显式展示，不能被静默折叠成普通成功
+- 最终上下文写入必须按 key-value 形式展示
 
-### Example User-Facing Output
+### 示例展示
 
-For a successful retry flow:
+对于“首轮失败、第二轮成功”的情况：
 
-1. Attempt 1 started
-2. Attempt 1 failed: execution error
-3. Attempt 2 started
-4. Attempt 2 succeeded
-5. Final status: `成功（经历 1 次重试）`
+1. 第 1 轮尝试开始
+2. 第 1 轮尝试失败：执行错误
+3. 第 2 轮尝试开始
+4. 第 2 轮尝试成功
+5. 最终状态：`成功（经历 1 次重试）`
 
-For successful context extraction:
+对于成功写入上下文的情况：
 
 - `写入上下文: buyer = 李雨晨`
 - `写入上下文: department = 研发效能组`
 
-The frontend should no longer show raw placeholder text as the only execution state indicator.
+前端不应再把占位文案当作唯一执行状态来源。
 
-## Context Ledger Redesign
+## 上下文 Ledger 重构
 
-The context ledger must store structured values, not only key presence.
+上下文 ledger 必须存储结构化值，而不是只知道某个 key 被写过。
 
-### Required Behavior
+### 必需行为
 
-- single-field and multi-field context extraction both promote from `output_payload`
-- `context_writes` is derived from `context_bindings`, not guessed from loosely coupled fields
-- each context write includes both key and concrete value
-- ledger entries preserve source step identity and extraction source metadata
+- 单字段与多字段上下文提取都统一从 `output_payload` 提升
+- `context_writes` 应由 `context_bindings` 推导，而不是从松散字段中猜测
+- 每次上下文写入都必须同时保留 key 与具体 value
+- ledger 条目应保留来源步骤 ID 与提取来源元信息
 
-### Promotion Rules
+### 提升规则
 
-- `extract_text` never promotes values into ledger
-- `ai_script` may promote values only if they appear in both:
+- `extract_text` 永远不允许提升到 ledger
+- `ai_script` 只有当某字段同时存在于：
   - `output_payload`
   - `context_bindings`
-- missing keys referenced by `context_bindings` are a contract failure, not silent success
+  时，才允许提升到 ledger
+- 如果 `context_bindings` 引用了不存在于 `output_payload` 的字段，应视为契约失败，而不是静默成功
 
-## Code Generation Redesign
+## 代码生成重构
 
-Generated playback code must compile semantic extraction intent, not replay recorded observed values.
+回放代码生成必须编译语义提取意图，而不是回放录制时观察到的具体值。
 
-### Generation Rules
+### 生成规则
 
-#### 1. `rebuild_context` Rebuilds Preconditions Only
+#### 1. `rebuild_context` 只负责重建前置条件
 
-`rebuild_context` is responsible for getting the page to the right semantic state before extraction.
+`rebuild_context` 的职责是把页面带到正确的语义状态，再执行提取。
 
-It must not:
+它不应：
 
-- hardcode previously extracted values as locators
-- hardcode recorded page text as stable identifiers
+- 将先前提取到的值硬编码为定位器
+- 将录制时页面文本硬编码为稳定标识
 
-It may:
+它可以：
 
-- navigate to prerequisite pages
-- perform prerequisite actions
-- invoke semantic extraction logic using declared source and schema
+- 导航到前置页面
+- 执行前置动作
+- 基于声明的来源与 schema 调用语义提取逻辑
 
-#### 2. Extraction Code Uses Semantic Targets
+#### 2. 提取代码应使用语义目标，而不是录制值
 
-Generated extraction logic should preserve:
+生成出来的提取逻辑应保留：
 
-- section semantics
-- field semantics
-- parameter semantics
+- 区域语义
+- 字段语义
+- 参数语义
 
-Generated extraction logic should not preserve:
+生成逻辑不应保留：
 
-- recorded result values
-- brittle text blobs copied from the recorded DOM
-- environment-specific URLs unless explicitly modeled as parameters or fixed navigation prerequisites
+- 录制时看到的结果值
+- 从 DOM 原样复制出来的脆弱文本块
+- 除非被明确建模为固定前置导航或参数，否则不应保留环境特定 URL
 
-#### 3. Parameterization Wins Over Hardcoding
+#### 3. 参数化优先于硬编码
 
-Whenever a value belongs to business input, runtime context, or user-supplied arguments, generation must prefer:
+凡是属于业务输入、运行时上下文或用户传入参数的值，生成器都必须优先从以下位置读取：
 
 - `context`
 - `kwargs`
-- declared parameters
+- 明确声明的参数
 
-over embedding the recorded literal into generated code.
+而不是直接把录制时的字面量嵌入脚本。
 
-## Error Model
+## 错误模型
 
-Execution errors must be normalized into explicit categories.
+执行失败必须被归一化为明确的错误类别。
 
-### Categories
-
-- `planning_error`
-  - assistant output is invalid or unusable
-- `execution_error`
-  - script fails at runtime, locator fails, page state is wrong
-- `contract_error`
-  - execution returned data that does not satisfy declared `output_schema` or `context_bindings`
-
-### Retry Policy
+### 错误类别
 
 - `planning_error`
-  - may retry generation
+  - 助手输出本身不合法或不可执行
 - `execution_error`
-  - may retry execution with error feedback
+  - 脚本运行失败、定位失败、页面状态不满足
 - `contract_error`
-  - should be treated as a system bug or generation defect, not silently hidden by free-form retry text
+  - 执行返回的数据不满足声明的 `output_schema` 或 `context_bindings`
 
-## Migration Strategy
+### 重试策略
 
-This redesign should be rolled out in four stages.
+- `planning_error`
+  - 允许重试生成
+- `execution_error`
+  - 允许带错误反馈进行重试
+- `contract_error`
+  - 应优先视为系统缺陷或生成缺陷，不应继续依赖自由文本重试掩盖问题
 
-### Stage 1. Introduce New Contracts
+## 迁移策略
 
-- extend step schema to support structured output and attempt summaries
-- add new backend event types
-- keep old fields temporarily for compatibility
+本次重构建议分四个阶段落地。
 
-### Stage 2. Move Context-Producing Extraction To `ai_script`
+### 阶段 1：引入新契约
 
-- prevent `extract_text` from writing context
-- require structured output for context-producing extraction
-- promote context from `output_payload`
+- 扩展步骤模型，支持结构化输出与尝试摘要
+- 新增后端事件类型
+- 临时保留旧字段用于兼容
 
-### Stage 3. Upgrade Frontend Attempt Timeline
+### 阶段 2：上下文提取统一迁移到 `ai_script`
 
-- render structured attempt events
-- render retry history and recovery
-- render key-value context writes
+- 禁止 `extract_text` 写入上下文
+- 要求所有上下文提取返回结构化输出
+- 统一从 `output_payload` 提升上下文
 
-### Stage 4. Rewrite Generator Consumption Path
+### 阶段 3：升级前端尝试时间线
 
-- generate playback from semantic extraction contract
-- remove value-based hardcoded extraction patterns
-- reduce dependence on recorded raw DOM text
+- 渲染结构化尝试事件
+- 展示完整重试历史与恢复结果
+- 展示带值的上下文写入项
 
-## Testing Strategy
+### 阶段 4：重写生成器消费路径
 
-### 1. Runtime Unit Tests
+- 让回放代码从语义提取契约生成
+- 去除基于录制值的硬编码提取模式
+- 降低对录制期原始 DOM 文本的依赖
 
-Add tests for:
+## 测试策略
 
-- single-field `ai_script` extraction producing structured payload
-- multi-field `ai_script` extraction producing structured payload
-- ledger promotion from `output_payload`
-- contract failure when `context_bindings` reference missing keys
+### 1. 运行时单元测试
 
-### 2. Attempt Event Tests
+新增以下测试：
 
-Add tests for:
+- 单字段 `ai_script` 提取返回结构化 payload
+- 多字段 `ai_script` 提取返回结构化 payload
+- ledger 能从 `output_payload` 正确提升上下文
+- `context_bindings` 引用缺失字段时，会触发契约失败
 
-- first attempt fails, second succeeds
-- final result is `recovered_after_retry`
-- frontend receives both failed and successful attempts in order
+### 2. 尝试事件测试
 
-### 3. Generator Tests
+新增以下测试：
 
-Add tests to ensure generated code:
+- 首轮失败、第二轮成功
+- 最终结果标记为 `recovered_after_retry`
+- 前端按顺序接收失败与成功尝试事件
 
-- does not embed recorded extracted values as locators
-- rebuilds context through semantic prerequisites
-- parameterizes runtime values correctly
+### 3. 生成器测试
 
-### 4. End-to-End Regression Tests
+新增以下测试，确保生成代码：
 
-Use the PR core field scenario as a fixed regression suite for:
+- 不会把录制期提取值嵌入为定位器
+- 通过语义前置条件重建上下文
+- 能正确参数化运行时值
 
-- single-field context extraction
-- multi-field context extraction
-- retry recovery visibility
-- frontend key-value context write rendering
+### 4. 端到端回归测试
 
-## Risks
+使用 PR 核心字段场景作为固定回归样板，覆盖：
 
-### Backward Compatibility Risk
+- 单字段上下文提取
+- 多字段上下文提取
+- 重试恢复可视化
+- 前端 key-value 上下文写入展示
 
-Older recordings may only contain `result_key`, `result_keys`, and legacy extraction semantics. A compatibility layer will be needed during migration.
+## 风险
 
-### Scope Risk
+### 向后兼容风险
 
-This touches backend execution, frontend logs, context storage, and generation. The work should be staged to avoid mixed-contract states remaining in production for too long.
+旧录制数据可能只包含 `result_key`、`result_keys` 与旧版提取语义，因此迁移期需要兼容层。
 
-### False Compatibility Risk
+### 范围风险
 
-Keeping legacy `extract_text` semantics too long will recreate the current ambiguity. Compatibility should be transitional, not permanent.
+本次重构会同时触达后端执行、前端日志、上下文存储与代码生成，必须分阶段实施，避免长期处于混合契约状态。
 
-## Recommended Outcome
+### 虚假兼容风险
 
-Adopt a contract where:
+如果旧版 `extract_text` 语义长期保留，当前的语义混乱会再次出现。因此兼容应是过渡手段，而不应成为永久双轨。
 
-- `extract_text` is read-only and non-contextual
-- all context-producing extraction is structured `ai_script`
-- retries are explicit attempt timelines
-- context writes are key-value aware
-- generated playback code compiles semantic intent instead of recorded literal values
+## 推荐结论
 
-This is the smallest redesign that solves the three reported failures as one system problem instead of treating them as isolated bugs.
+本次应建立如下契约：
+
+- `extract_text` 只读，不参与上下文
+- 所有上下文提取统一采用结构化 `ai_script`
+- 重试过程采用显式尝试时间线
+- 上下文写入必须是带值的 key-value 语义
+- 回放代码生成必须编译语义意图，而不是回放录制字面值
+
+这是当前范围内，能够同时解决三类问题的最小完整重构方案。它将这些问题收敛为同一个系统问题，而不是继续分别打补丁。
