@@ -16,7 +16,7 @@ from backend.rpa.manager import rpa_manager
 from backend.rpa.generator import PlaywrightGenerator
 from backend.rpa.executor import ScriptExecutor
 from backend.rpa.skill_exporter import SkillExporter
-from backend.rpa.assistant import RPAAssistant, RPAReActAgent, _active_agents
+from backend.rpa.assistant import RPAAssistant
 from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.screencast import SessionScreencastController
 from backend.user.dependencies import get_current_user, User
@@ -555,51 +555,22 @@ async def chat_with_assistant(
         try:
             rpa_manager.pause_recording(session_id)
 
-            if request.mode == "react":
-                # Reuse existing agent for this session to preserve history across turns
-                agent = _active_agents.get(session_id)
-                if agent is None:
-                    agent = RPAReActAgent()
-                    _active_agents[session_id] = agent
-                try:
-                    async for event in agent.run(
-                        session_id=session_id,
-                        page=page,
-                        goal=request.message,
-                        existing_steps=steps,
-                        model_config=model_config,
-                        page_provider=lambda: rpa_manager.get_page(session_id),
-                    ):
-                        evt_type = event.get("event", "message")
-                        evt_data = event.get("data", {})
-                        if evt_type == "agent_step_done" and evt_data.get("step"):
-                            await rpa_manager.add_step(session_id, evt_data["step"])
-                        if evt_type == "agent_aborted":
-                            _active_agents.pop(session_id, None)
-                        yield {
-                            "event": evt_type,
-                            "data": json.dumps(evt_data, ensure_ascii=False),
-                        }
-                except Exception:
-                    _active_agents.pop(session_id, None)
-                    raise
-            else:
-                async for event in assistant.chat(
-                    session_id=session_id,
-                    page=page,
-                    message=request.message,
-                    steps=steps,
-                    model_config=model_config,
-                    page_provider=lambda: rpa_manager.get_page(session_id),
-                ):
-                    evt_type = event.get("event", "message")
-                    evt_data = event.get("data", {})
-                    if evt_type == "result" and evt_data.get("success") and evt_data.get("step"):
-                        await rpa_manager.add_step(session_id, evt_data["step"])
-                    yield {
-                        "event": evt_type,
-                        "data": json.dumps(evt_data, ensure_ascii=False),
-                    }
+            async for event in assistant.chat(
+                session_id=session_id,
+                page=page,
+                message=request.message,
+                steps=steps,
+                model_config=model_config,
+                page_provider=lambda: rpa_manager.get_page(session_id),
+            ):
+                evt_type = event.get("event", "message")
+                evt_data = event.get("data", {})
+                if evt_type == "result" and evt_data.get("success") and evt_data.get("step"):
+                    await rpa_manager.add_step(session_id, evt_data["step"])
+                yield {
+                    "event": evt_type,
+                    "data": json.dumps(evt_data, ensure_ascii=False),
+                }
         except Exception as e:
             logger.error(f"Chat error: {e}")
             yield {"event": "error", "data": json.dumps({"message": str(e)}, ensure_ascii=False)}
@@ -608,29 +579,6 @@ async def chat_with_assistant(
             rpa_manager.resume_recording(session_id)
 
     return EventSourceResponse(event_generator())
-
-
-@router.post("/session/{session_id}/agent/confirm")
-async def agent_confirm(
-    session_id: str,
-    body: ConfirmRequest,
-    current_user: User = Depends(get_current_user),
-):
-    agent = _active_agents.get(session_id)
-    if agent:
-        agent.resolve_confirm(body.approved)
-    return {"ok": True}
-
-
-@router.post("/session/{session_id}/agent/abort")
-async def agent_abort(
-    session_id: str,
-    current_user: User = Depends(get_current_user),
-):
-    agent = _active_agents.get(session_id)
-    if agent:
-        agent.abort()
-    return {"ok": True}
 
 
 @router.websocket("/session/{session_id}/steps")
