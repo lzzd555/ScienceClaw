@@ -615,6 +615,7 @@ class RPAAssistant:
         self._trim_history(session_id)
 
         step_data = None
+        ai_context_writes: List[str] = []
         if result["success"]:
             if result.get("step"):
                 step_data = result["step"]
@@ -627,6 +628,8 @@ class RPAAssistant:
                     "description": message,
                     "prompt": message,
                 }
+            # Collect new context keys written by AI script code
+            ai_context_writes = list(result.get("context_writes_from_ai", []))
 
         # ── Compute context reads / writes ─────────────────────────
         context_writes: List[str] = []
@@ -637,6 +640,10 @@ class RPAAssistant:
                 step_data=step_data,
                 resolution=resolution,
             )
+            # Merge AI script writes (context["key"] = value in code)
+            for kw in ai_context_writes:
+                if kw not in context_writes:
+                    context_writes.append(kw)
 
             # Persist promoted values into the session ledger
             self._promote_to_ledger(
