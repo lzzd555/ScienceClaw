@@ -1283,8 +1283,11 @@ class RPAAssistantContextPromotionTests(unittest.IsolatedAsyncioTestCase):
         result_data = result_events[-1]["data"]
         self.assertIn("context_writes", result_data,
                        "result event must include context_writes list")
-        self.assertIn("person_name", result_data["context_writes"],
-                       "context_writes should contain 'person_name' for extract_text with result_key")
+        self.assertEqual(
+            result_data["context_writes"],
+            [],
+            "extract_text must never promote context writes",
+        )
 
     async def test_assistant_promotes_runtime_required_cross_page_value(self):
         """When the user describes cross-page data transfer (e.g. copying a
@@ -1357,8 +1360,11 @@ class RPAAssistantContextPromotionTests(unittest.IsolatedAsyncioTestCase):
         result_data = result_events[-1]["data"]
         self.assertIn("context_writes", result_data,
                        "result event must include context_writes list for cross-page transfer")
-        self.assertIn("contract_number", result_data["context_writes"],
-                       "context_writes should contain 'contract_number' for cross-page value transfer")
+        self.assertEqual(
+            result_data["context_writes"],
+            [],
+            "extract_text must never promote cross-page context writes",
+        )
 
     async def test_assistant_ignores_nonessential_observations(self):
         """When the user gives a simple continuation command (e.g. '继续下一步'),
@@ -1460,14 +1466,91 @@ class RPAStepContractTests(unittest.TestCase):
 
 
 class RPAAssistantReviewFixTests(unittest.TestCase):
-    def test_context_write_entries_skip_missing_payload_keys(self):
+    def test_compute_context_writes_never_promotes_extract_text(self):
+        writes = ASSISTANT_MODULE.RPAAssistant._compute_context_writes(
+            "读取 buyer",
+            {
+                "action": "extract_text",
+                "result_key": "buyer",
+                "description": "读取 buyer",
+                "prompt": "读取 buyer",
+            },
+            None,
+        )
+
+        self.assertEqual(writes, [])
+
+    def test_ai_script_missing_output_payload_binding_raises_contract_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            ASSISTANT_MODULE.RPAAssistant._compute_context_writes(
+                "提取 buyer",
+                {
+                    "action": "ai_script",
+                    "output_payload": {"buyer": "李雨晨"},
+                    "context_bindings": ["buyer", "department"],
+                    "description": "提取 buyer",
+                    "prompt": "提取 buyer",
+                },
+                None,
+            )
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("department", str(ctx.exception))
+
+    def test_ai_script_without_context_bindings_does_not_write_context(self):
+        writes = ASSISTANT_MODULE.RPAAssistant._compute_context_writes(
+            "提取 buyer",
+            {
+                "action": "ai_script",
+                "output_payload": {"buyer": "李雨晨"},
+                "description": "提取 buyer",
+                "prompt": "提取 buyer",
+            },
+            None,
+        )
+
+        self.assertEqual(writes, [])
+
+    def test_ai_script_promotes_to_ledger_without_cross_page_heuristics(self):
+        ledger = SimpleNamespace(should_promote_value=lambda **_: False)
+        session = SimpleNamespace(context_ledger=ledger)
+        manager = SimpleNamespace(
+            sessions={"session-1": session},
+            record_context_value=unittest.mock.Mock(),
+        )
+
+        ASSISTANT_MODULE.RPAAssistant._promote_to_ledger(
+            rpa_manager=manager,
+            session_id="session-1",
+            context_writes=["buyer"],
+            step_data={
+                "action": "ai_script",
+                "prompt": "提取 buyer",
+                "description": "提取 buyer",
+                "output_payload": {"buyer": "李雨晨"},
+            },
+            output=None,
+        )
+
+        manager.record_context_value.assert_called_once()
+        call_kwargs = manager.record_context_value.call_args.kwargs
+        self.assertEqual(call_kwargs["key"], "buyer")
+        self.assertEqual(call_kwargs["value"], "李雨晨")
+
+    def test_context_write_entries_use_structured_payload_values(self):
         entries = ASSISTANT_MODULE.RPAAssistant._build_context_write_entries(
             ["buyer", "department"],
-            {"buyer": "李雨晨"},
+            {"buyer": "李雨晨", "department": "研发效能组"},
             "RAW_OUTPUT_SHOULD_NOT_LEAK",
         )
 
-        self.assertEqual(entries, [{"key": "buyer", "value": "李雨晨"}])
+        self.assertEqual(
+            entries,
+            [
+                {"key": "buyer", "value": "李雨晨"},
+                {"key": "department", "value": "研发效能组"},
+            ],
+        )
 
     def test_resolve_context_in_intent_preserves_falsy_values(self):
         ledger = SimpleNamespace(
@@ -1502,6 +1585,145 @@ class RPAAssistantReviewFixTests(unittest.TestCase):
 
 
 class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_executes_ai_script_prefers_runtime_payload_over_envelope_payload(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        session_id = "ai-script-real-path"
+        MANAGER_MODULE.rpa_manager.sessions[session_id] = SimpleNamespace(
+            context_ledger=MANAGER_MODULE.TaskContextLedger(),
+            task_context_id=None,
+        )
+        self.addCleanup(lambda: MANAGER_MODULE.rpa_manager.sessions.pop(session_id, None))
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        code = "async def run(page):\n    return " + repr(json.dumps({"buyer": "runtime"}, ensure_ascii=False))
+        ai_script_response = json.dumps(
+            {
+                "action": "ai_script",
+                "description": "提取 buyer",
+                "prompt": "提取 buyer",
+                "code": code,
+                "context_bindings": ["buyer"],
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "envelope"},
+            },
+            ensure_ascii=False,
+        )
+
+        async def fake_stream(_messages, _model_config=None):
+            yield ai_script_response
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch.object(
+            assistant,
+            "_stream_llm",
+            fake_stream,
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id=session_id,
+                page=page,
+                message="提取 buyer",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_event = next(event for event in events if event["event"] == "result")
+        result_data = result_event["data"]
+
+        self.assertEqual(result_data["context_writes"], ["buyer"])
+        self.assertEqual(result_data["step"]["action"], "ai_script")
+        self.assertEqual(result_data["step"]["context_bindings"], ["buyer"])
+        self.assertEqual(result_data["step"]["output_payload"], {"buyer": "runtime"})
+        self.assertEqual(result_data["step"]["output_schema"], {"buyer": "string"})
+
+        ledger_entry = MANAGER_MODULE.rpa_manager.sessions[session_id].context_ledger.observed_values["buyer"]
+        self.assertEqual(ledger_entry.value, "runtime")
+        self.assertEqual(ledger_entry.source_kind, "assistant_extraction")
+
+    async def test_execute_single_response_keeps_empty_runtime_payload_over_envelope_payload(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        code = "async def run(page):\n    return " + repr(json.dumps({}, ensure_ascii=False))
+        ai_script_response = json.dumps(
+            {
+                "action": "ai_script",
+                "description": "提取 buyer",
+                "prompt": "提取 buyer",
+                "code": code,
+                "context_bindings": ["buyer"],
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "envelope"},
+            },
+            ensure_ascii=False,
+        )
+
+        async def fake_stream(_messages, _model_config=None):
+            yield ai_script_response
+
+        with patch.object(
+            assistant,
+            "_stream_llm",
+            fake_stream,
+        ):
+            result, code, resolution, context_reads = await assistant._execute_single_response(
+                current_page=page,
+                snapshot=snapshot,
+                full_response=ai_script_response,
+                context_ledger=MANAGER_MODULE.TaskContextLedger(),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["step"]["output_payload"], {})
+        self.assertEqual(result["step"]["context_bindings"], ["buyer"])
+        self.assertEqual(context_reads, [])
+        self.assertIsNone(resolution)
+
+        with self.assertRaises(ValueError) as ctx:
+            assistant._compute_context_writes(
+                "提取 buyer",
+                result["step"],
+                None,
+            )
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("buyer", str(ctx.exception))
+
     async def test_chat_emits_attempt_events_and_recovered_after_retry_status(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()
@@ -1747,7 +1969,7 @@ class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
             "prompt": "提取 buyer",
             "output_schema": {"buyer": "string", "department": "string"},
             "output_payload": {"buyer": "李雨晨"},
-            "context_bindings": ["buyer", "department"],
+            "context_bindings": ["buyer"],
             "attempt_summary": {},
         }
 
@@ -1766,7 +1988,7 @@ class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
                     "description": "提取 buyer",
                     "output_schema": {"buyer": "string", "department": "string"},
                     "output_payload": {"buyer": "李雨晨"},
-                    "context_bindings": ["buyer", "department"],
+                    "context_bindings": ["buyer"],
                 },
                 [],
             )
@@ -1801,6 +2023,7 @@ class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result_data["status"], "partial_success")
         self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["context_writes"], ["buyer"])
         self.assertEqual(result_data["step"]["attempt_summary"]["final_status"], "partial_success")
         self.assertEqual(result_data["step"]["attempt_summary"]["attempt_count"], 1)
         self.assertEqual(result_data["step"]["output_payload"], {"buyer": "李雨晨"})
@@ -1835,13 +2058,28 @@ class RPAAssistantPromptFormattingTests(unittest.TestCase):
         self.assertIn("Frame: iframe title=results", content)
         self.assertIn("Collection: search_results (2 items)", content)
 
-    def test_react_system_prompt_requires_explicit_extraction_before_done(self):
+    def test_system_prompt_separates_extract_text_from_context_producing_ai_script(self):
+        prompt = ASSISTANT_MODULE.SYSTEM_PROMPT
+
+        self.assertIn("extract_text is for temporary page reading only", prompt)
+        self.assertIn("must not write context", prompt)
+        self.assertIn("Any context-producing extraction", prompt)
+        self.assertIn("must use ai_script / code path", prompt)
+        self.assertIn("context_bindings", prompt)
+        self.assertIn("output_payload", prompt)
+        self.assertIn("Do not use result_key or result_keys for context writes.", prompt)
+        self.assertNotIn("For extract_text actions, include result_key", prompt)
+        self.assertNotIn("For extract_text actions, include result_key as a short ASCII snake_case key", prompt)
+
+    def test_react_system_prompt_separates_extract_text_from_context_producing_ai_script(self):
         prompt = ASSISTANT_MODULE.REACT_SYSTEM_PROMPT
 
-        self.assertIn("For extraction tasks, use operation=extract_text", prompt)
-        self.assertIn('"result_key": "short_ascii_snake_case_key_for_extracted_value"', prompt)
-        self.assertIn("Do not mark the task done just because the data is visible on the page.", prompt)
-        self.assertIn("Execute the extraction step first and return the extracted value.", prompt)
+        self.assertIn("Any context-producing extraction", prompt)
+        self.assertIn("must use ai_script / code path", prompt)
+        self.assertIn("context_bindings", prompt)
+        self.assertIn("output_payload", prompt)
+        self.assertIn("Do not use result_key or result_keys for context writes.", prompt)
+        self.assertNotIn("For extraction tasks, use operation=extract_text", prompt)
 
 
 if __name__ == "__main__":

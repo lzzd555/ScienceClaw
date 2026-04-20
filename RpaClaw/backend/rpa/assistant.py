@@ -77,8 +77,6 @@ For common atomic actions, respond with JSON in this shape:
   "action": "navigate|click|fill|extract_text|press",
   "description": "short action summary",
   "prompt": "original user instruction",
-  "result_key": "short_ascii_snake_case_key_for_extracted_value",
-  "result_keys": ["key1", "key2"],
   "target_hint": {
     "role": "button|link|textbox|...",
     "name": "semantic label if known"
@@ -97,8 +95,10 @@ Rules:
 4. The backend resolves frame context automatically, so do not invent iframe selectors unless the user explicitly names a frame.
 5. Only output Python code for genuinely complex custom logic that cannot be expressed as one atomic structured action.
 6. If you output Python, define async def run(page): and use Playwright async API.
-7. For extract_text actions, include result_key as a short ASCII snake_case key such as latest_issue_title. Do not use Chinese, spaces, or hyphens.
-8. When extracting multiple values in one step (via Python code), include result_keys as a list of all extracted key names. The code should print a JSON object mapping each key to its value.
+7. extract_text is for temporary page reading only; it must not write context and must not declare result_key or result_keys.
+8. Any context-producing extraction, whether single-field or multi-field, must use ai_script / code path and declare context_bindings as the exact ASCII snake_case keys to write, then return an output_payload JSON object containing those keys.
+9. Do not use result_key or result_keys for context writes.
+10. When extracting multiple values in one step via Python code, print a JSON object mapping each declared context_bindings key to its value.
 """
 
 async def _get_page_elements(page: Page) -> str:
@@ -312,7 +312,6 @@ Preferred format:
   "action": "execute|done|abort",
   "operation": "navigate|click|fill|extract_text|press",
   "description": "short action summary",
-  "result_key": "short_ascii_snake_case_key_for_extracted_value",
   "target_hint": {
     "role": "button|link|textbox|...",
     "name": "semantic label if known"
@@ -333,10 +332,11 @@ Rules:
 4. The backend resolves iframe context automatically from the snapshot. Do not invent iframe selectors unless the user explicitly names a frame.
 5. Only use the code field for custom Playwright code when the action cannot be expressed as one atomic structured action.
 6. For irreversible operations such as submit, delete, pay, or authorize, set risk to high.
-7. For extraction tasks, use operation=extract_text, describe what data is being extracted, and include result_key as a short ASCII snake_case key such as latest_issue_title.
-8. Do not mark the task done just because the data is visible on the page.
-9. Execute the extraction step first and return the extracted value.
-10. For example, if the user asks to get or read a title, first run extract_text on the target element, set result_key to something like latest_issue_title, then summarize the extracted value in description.
+7. extract_text is for temporary page reading only; it must not write context.
+8. Any context-producing extraction, whether single-field or multi-field, must use ai_script / code path and declare context_bindings as the exact ASCII snake_case keys to write, then return an output_payload JSON object containing those keys.
+9. Do not use result_key or result_keys for context writes.
+10. When the extraction output must be written to context, do not rely on extract_text; use ai_script or Python code with explicit context_bindings and output_payload.
+11. When extracting multiple values in one step via Python code, print a JSON object mapping each declared context_bindings key to its value.
 """
 
 
@@ -686,6 +686,9 @@ class RPAAssistant:
         context_writes: List[str] = []
 
         if result["success"] and step_data:
+            output_payload = self._normalize_output_payload(step_data, result.get("output"))
+            step_data["output_payload"] = output_payload
+            step_data["output_schema"] = self._normalize_output_schema(step_data, output_payload)
             context_writes = self._compute_context_writes(
                 message=message,
                 step_data=step_data,
@@ -705,9 +708,6 @@ class RPAAssistant:
         if step_data is not None:
             step_data["context_reads"] = context_reads
             step_data["context_writes"] = context_writes
-            output_payload = self._normalize_output_payload(step_data, result.get("output"))
-            step_data["output_payload"] = output_payload
-            step_data["output_schema"] = self._normalize_output_schema(step_data, output_payload)
             step_data["context_bindings"] = self._normalize_context_bindings(step_data, context_writes)
             step_data["attempt_summary"] = self._build_attempt_summary(
                 execution_trace.get("attempts", []),
@@ -744,47 +744,30 @@ class RPAAssistant:
     ) -> List[str]:
         """Determine which context keys should be written after this step.
 
-        Supports both single ``result_key`` (string) and ``result_keys`` (list).
-        Works for ``extract_text`` actions and ``ai_script`` actions.
+        ``extract_text`` never promotes context. ``ai_script`` promotes only
+        the declared ``context_bindings`` and requires that each binding exists
+        in ``output_payload``.
         """
         action = step_data.get("action", "")
+        if action == "extract_text" or action != "ai_script":
+            return []
 
-        # Collect all candidate keys from result_key / result_keys
-        keys: List[str] = []
-        result_key = step_data.get("result_key")
-        if isinstance(result_key, str) and result_key:
-            keys.append(result_key)
-        result_keys = step_data.get("result_keys")
-        if isinstance(result_keys, list):
-            for k in result_keys:
-                if isinstance(k, str) and k and k not in keys:
-                    keys.append(k)
+        output_payload = step_data.get("output_payload")
+        if not isinstance(output_payload, dict):
+            output_payload = {}
+
         context_bindings = step_data.get("context_bindings")
-        if not keys and action == "ai_script" and isinstance(context_bindings, list):
-            for k in context_bindings:
-                if isinstance(k, str) and k and k not in keys:
-                    keys.append(k)
+        if isinstance(context_bindings, list):
+            keys = [k for k in context_bindings if isinstance(k, str) and k]
+        else:
+            keys = []
 
         if not keys:
             return []
 
-        # For extract_text: require explicit extraction or cross-page transfer
-        # For ai_script: always promote declared result_keys
-        if action == "ai_script":
-            return keys
-
-        if action != "extract_text":
-            return []
-
-        # Rule 1: user explicitly asked to extract / read / record
-        if _is_explicit_extraction_request(message):
-            return keys
-
-        # Rule 2: prompt or description hints at cross-page transfer
-        transfer_keywords = ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
-        description = step_data.get("description", "")
-        if any(kw in message for kw in transfer_keywords) or any(kw in description for kw in transfer_keywords):
-            return keys
+        missing_keys = [key for key in keys if key not in output_payload]
+        if missing_keys:
+            raise ValueError(f"contract_error: missing payload key(s): {', '.join(missing_keys)}")
 
         return keys
 
@@ -1048,15 +1031,28 @@ class RPAAssistant:
 
         ledger = session.context_ledger
 
-        # Try to parse structured output (JSON dict) for per-key values
-        output_parsed: Optional[Dict[str, Any]] = None
-        if output:
-            try:
-                parsed = json.loads(output)
-                if isinstance(parsed, dict):
-                    output_parsed = parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
+        output_payload = step_data.get("output_payload")
+        if not isinstance(output_payload, dict):
+            output_payload = {}
+
+        missing_keys = [key for key in context_writes if key not in output_payload]
+        if missing_keys:
+            raise ValueError(f"contract_error: missing payload key(s): {', '.join(missing_keys)}")
+
+        if step_data.get("action") == "ai_script":
+            user_explicit = _is_explicit_extraction_request(step_data.get("prompt", ""))
+            for key in context_writes:
+                rpa_manager.record_context_value(
+                    session_id,
+                    category="observed",
+                    key=key,
+                    value=output_payload[key],
+                    user_explicit=user_explicit,
+                    runtime_required=False,
+                    source_step_id=step_data.get("id"),
+                    source_kind="assistant_extraction",
+                )
+            return
 
         user_explicit = _is_explicit_extraction_request(step_data.get("prompt", ""))
         is_cross_page = any(
@@ -1072,8 +1068,7 @@ class RPAAssistant:
                 runtime_required=is_cross_page,
                 consumed_later=is_cross_page,
             ):
-                # Use per-key value from structured output if available, else whole output
-                value = output_parsed.get(key, output) if output_parsed else output
+                value = output_payload[key]
                 rpa_manager.record_context_value(
                     session_id,
                     category="observed",
@@ -1287,6 +1282,55 @@ class RPAAssistant:
         """
         structured_intent = self._extract_structured_intent(full_response)
         if structured_intent:
+            action = str(structured_intent.get("action", "") or "").strip().lower()
+            if action == "ai_script":
+                script = structured_intent.get("code") or structured_intent.get("value") or ""
+                if not isinstance(script, str) or not script.strip():
+                    raise ValueError("ai_script envelope must include executable code in code or value")
+
+                executable = RPAReActAgent._wrap_code(script)
+                result = await self._execute_on_page(current_page, executable)
+                runtime_output = result.get("output")
+                runtime_output_payload: Dict[str, Any] = {}
+                runtime_output_is_dict = False
+                if isinstance(runtime_output, dict):
+                    runtime_output_payload = dict(runtime_output)
+                    runtime_output_is_dict = True
+                elif isinstance(runtime_output, str) and runtime_output.strip():
+                    try:
+                        parsed_runtime_output = json.loads(runtime_output)
+                    except (TypeError, json.JSONDecodeError):
+                        parsed_runtime_output = None
+                    if isinstance(parsed_runtime_output, dict):
+                        runtime_output_payload = dict(parsed_runtime_output)
+                        runtime_output_is_dict = True
+
+                envelope_output_payload = structured_intent.get("output_payload")
+                if not isinstance(envelope_output_payload, dict):
+                    envelope_output_payload = {}
+
+                step: Dict[str, Any] = {
+                    "action": "ai_script",
+                    "source": "ai",
+                    "value": script,
+                    "description": structured_intent.get("description", "Execute ai_script"),
+                    "prompt": structured_intent.get("prompt"),
+                }
+                for key in ("context_bindings", "output_schema", "output_payload"):
+                    value = structured_intent.get(key)
+                    if value is not None:
+                        step[key] = value
+                if runtime_output_is_dict:
+                    step["output_payload"] = runtime_output_payload
+                elif envelope_output_payload:
+                    step["output_payload"] = dict(envelope_output_payload)
+                else:
+                    step["output_payload"] = {}
+                output_payload = dict(step["output_payload"])
+                step["output_schema"] = self._normalize_output_schema(step, output_payload)
+                result["step"] = step
+                return result, executable, None, []
+
             # Resolve ${key} references in the intent using context ledger
             context_reads = self._resolve_context_in_intent(structured_intent, context_ledger)
             resolved_intent = resolve_structured_intent(snapshot, structured_intent)
