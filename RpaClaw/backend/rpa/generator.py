@@ -202,6 +202,14 @@ class StepExecutionError(Exception):
                     converted = self._strip_locator_result_capture(converted)
                     for code_line in converted.split("\n"):
                         step_lines.append(f"    {code_line}" if code_line.strip() else "")
+                # Inject context writes: copy ai_script results into context dict
+                context_writes = step.get("context_writes") or []
+                if context_writes:
+                    step_lines.append("    # Write extracted values to context")
+                    for ctx_key in context_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        step_lines.append(f'    try: context["{ctx_key_safe}"] = result.get("{ctx_key_safe}", "")')
+                        step_lines.append("    except Exception: pass")
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                 lines.append("")
                 continue
