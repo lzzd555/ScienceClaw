@@ -59,5 +59,33 @@ class TaskContextLedgerShouldPromoteValueTests(unittest.TestCase):
         self.assertTrue(result)
 
 
+def test_get_rebuild_sequence():
+    ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+    ledger.rebuild_actions.append(CONTEXT_LEDGER_MODULE.ContextRebuildAction(
+        action="navigate", description="https://example.com", writes=[], step_ref="step-1",
+    ))
+    ledger.rebuild_actions.append(CONTEXT_LEDGER_MODULE.ContextRebuildAction(
+        action="extract_text", description="Extract title", writes=["title"], step_ref="step-2",
+    ))
+    ledger.record_value("observed", "token", "abc123", user_explicit=True, source_step_id="step-3")
+    ledger.record_value("derived", "computed_id", "id-456", runtime_required=True, source_step_id="step-4")
+    # Non-promoted observation (no flags)
+    ledger.record_value("observed", "noise", "xxx", source_step_id="step-5")
+
+    seq = ledger.get_rebuild_sequence()
+
+    assert len(seq) == 4
+    assert seq[0]["action"] == "navigate"
+    assert seq[0]["url"] == "https://example.com"
+    assert seq[1]["action"] == "extract_text"
+    assert seq[1]["writes"] == ["title"]
+    assert seq[2]["action"] == "observe"
+    assert seq[2]["value"] == "abc123"
+    assert seq[3]["action"] == "derive"
+    assert seq[3]["value"] == "id-456"
+    # "noise" should not appear (no flags set)
+    assert all("noise" not in entry.get("writes", []) for entry in seq)
+
+
 if __name__ == "__main__":
     unittest.main()

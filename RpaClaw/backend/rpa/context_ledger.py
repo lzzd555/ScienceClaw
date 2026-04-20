@@ -169,3 +169,43 @@ class TaskContextLedger(BaseModel):
                 writes=writes or [],
             )
         )
+
+    def get_rebuild_sequence(self) -> list[dict]:
+        """按依赖顺序返回重建动作列表，供代码生成器消费。"""
+        sequence: list[dict] = []
+        seen_keys: set[str] = set()
+
+        for action in self.rebuild_actions:
+            entry = {
+                "action": action.action,
+                "description": action.description,
+                "writes": list(action.writes),
+                "source_step_id": action.step_ref,
+            }
+            if action.action == "navigate":
+                entry["url"] = action.description
+            sequence.append(entry)
+            seen_keys.update(action.writes)
+
+        for key, cv in self.observed_values.items():
+            if key not in seen_keys and cv.user_explicit:
+                sequence.append({
+                    "action": "observe",
+                    "description": f"Observed value: {key}",
+                    "writes": [key],
+                    "source_step_id": cv.source_step_id,
+                    "value": cv.value,
+                })
+                seen_keys.add(key)
+
+        for key, cv in self.derived_values.items():
+            if key not in seen_keys and cv.runtime_required:
+                sequence.append({
+                    "action": "derive",
+                    "description": f"Derived value: {key}",
+                    "writes": [key],
+                    "source_step_id": cv.source_step_id,
+                    "value": cv.value,
+                })
+
+        return sequence
