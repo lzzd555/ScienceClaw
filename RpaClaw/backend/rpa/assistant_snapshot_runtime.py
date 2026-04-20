@@ -348,6 +348,11 @@ SNAPSHOT_V2_JS = r"""() => {
                 if (fieldName && fieldName !== text) {
                     node.field_name = fieldName;
                 }
+                // Use a specific CSS locator for data-field elements to avoid
+                // strict-mode violations when the same text appears elsewhere.
+                if (dataField) {
+                    node.locator = { method: 'css', value: '[data-field="' + dataField + '"]' };
+                }
             }
         }
         result.content_nodes.push(node);
