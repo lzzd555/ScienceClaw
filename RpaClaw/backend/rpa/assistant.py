@@ -495,6 +495,10 @@ class RPAAssistant:
 
                         if not intent_result.get("success"):
                             intent_error = intent_result.get("error", "")
+                            yield {
+                                "event": "retry_start",
+                                "data": {"original_error": intent_error, "intent_index": i},
+                            }
                             retry_prompt = (
                                 f"Original intent:\n{json.dumps(intent_json, ensure_ascii=False)}\n\n"
                                 f"Execution error: {intent_error}\n\n"
@@ -508,6 +512,9 @@ class RPAAssistant:
                             async for chunk_text in self._stream_llm(retry_llm_msgs, model_config):
                                 rr += chunk_text
                                 yield {"event": "retry_chunk", "data": {"text": chunk_text, "intent_index": i}}
+
+                            yield {"event": "retry_executing", "data": {"intent_index": i}}
+
                             retry_intent = self._extract_structured_intent(rr)
                             if retry_intent:
                                 try:
@@ -519,6 +526,15 @@ class RPAAssistant:
                                     context_reads.extend(retry_reads)
                                 except Exception as exc2:
                                     multi_results[-1] = {"success": False, "error": str(exc2), "output": ""}
+
+                            yield {
+                                "event": "retry_result",
+                                "data": {
+                                    "success": multi_results[-1].get("success", False),
+                                    "error": multi_results[-1].get("error"),
+                                    "intent_index": i,
+                                },
+                            }
 
                     result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
                     code = None
