@@ -4,6 +4,7 @@ from __future__ import annotations
 SNAPSHOT_V2_JS = r"""() => {
     const ACTIONABLE = 'a,button,input,textarea,select,[role=button],[role=link],[role=menuitem],[role=menuitemradio],[role=tab],[role=checkbox],[role=radio],[contenteditable=true]';
     const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,label,[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
+    const FORM_FIELD = '.form-item,.form-group,.field-item,.detail-item,.el-descriptions-item,.ant-descriptions-item,.info-item,.field,[class*="detail"]:not(th):not(td),[class*="info-row"],[class*="form-row"],[class*="label-value"],[data-field]';
     const recorder = globalThis.__rpaPlaywrightRecorder || null;
     const result = { actionable_nodes: [], content_nodes: [], containers: [] };
     const containerMap = new Map();
@@ -322,6 +323,48 @@ SNAPSHOT_V2_JS = r"""() => {
                 container.child_content_ids.push(node.node_id);
         }
         if (result.content_nodes.length >= 160)
+            break;
+    }
+
+    // Extra pass: extract form field key-value pairs from common CSS patterns
+    // These are often <div>/<span> pairs that the CONTENT selector misses.
+    // Only keep outermost matches to avoid parent-child duplication.
+    const formFieldSeen = new Set();
+    const allFormFieldEls = Array.from(document.querySelectorAll(FORM_FIELD));
+    for (const el of allFormFieldEls) {
+        // Skip if a closer ancestor also matches FORM_FIELD (keep outermost only)
+        const closerAncestor = el.parentElement && el.parentElement.closest(FORM_FIELD);
+        if (closerAncestor && allFormFieldEls.includes(closerAncestor))
+            continue;
+        const rect = el.getBoundingClientRect();
+        if (!isVisible(el, rect))
+            continue;
+        const text = normalizeText(el.innerText || '', 200);
+        if (!text || text.length < 2)
+            continue;
+        const key = [text, bbox(rect).x, bbox(rect).y].join('|');
+        if (formFieldSeen.has(key))
+            continue;
+        formFieldSeen.add(key);
+        const containerId = ensureContainer(el);
+        const node = {
+            node_id: 'content-' + contentIndex++,
+            frame_path: [],
+            container_id: containerId,
+            semantic_kind: 'field',
+            role: '',
+            text,
+            bbox: bbox(rect),
+            locator: buildFallbackLocator(el, '', '', text, '', '').primary,
+            element_snapshot: { tag: el.tagName.toLowerCase(), text },
+        };
+        result.content_nodes.push(node);
+        if (containerId) {
+            const container = Array.from(containerMap.values()).find(item => item.container_id === containerId);
+            if (container)
+                container.child_content_ids.push(node.node_id);
+        }
+        if (result.content_nodes.length >= 200)
             break;
     }
 

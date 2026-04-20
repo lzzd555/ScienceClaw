@@ -239,14 +239,38 @@ def _extract_llm_chunk_fallback_text(chunk: Any) -> str:
 
 def _snapshot_frame_lines(snapshot: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
+
+    # Build lookup: node_id -> content_node for rendering inside containers
+    content_by_id: Dict[str, Dict[str, Any]] = {}
+    for cn in snapshot.get("content_nodes", []):
+        nid = cn.get("node_id")
+        if nid:
+            content_by_id[nid] = cn
+
+    # Group content nodes by container_id
+    container_content: Dict[str, List[Dict[str, Any]]] = {}
+    for cn in snapshot.get("content_nodes", []):
+        cid = cn.get("container_id")
+        if cid:
+            container_content.setdefault(cid, []).append(cn)
+
     for container in snapshot.get("containers", []):
+        cid = container.get("container_id", "")
+        content_ids = container.get("child_content_ids") or []
         lines.append(
             "Container: "
             f"{container.get('container_kind', 'container')} "
             f"{container.get('name', '')} "
             f"(actionable={len(container.get('child_actionable_ids') or [])}, "
-            f"content={len(container.get('child_content_ids') or [])})"
+            f"content={len(content_ids)})"
         )
+        # Render content nodes inside this container so the LLM sees field values
+        for cn in container_content.get(cid, []):
+            kind = cn.get("semantic_kind", "text")
+            text = cn.get("text", "")
+            if text:
+                lines.append(f"  - {kind}: {text}")
+
     for frame in snapshot.get("frames", []):
         lines.append(f"Frame: {frame.get('frame_hint', 'main document')}")
         for collection in frame.get("collections", []):
