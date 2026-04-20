@@ -644,6 +644,22 @@ const sendMessage = async () => {
               if (!chatMessages.value[msgIdx].text.trim()) {
                 chatMessages.value[msgIdx].text = '代码已生成，正在执行浏览器操作。';
               }
+            } else if (eventType === 'retry_start') {
+              const errMsg = data.original_error || '未知错误';
+              chatMessages.value[msgIdx].text += `\n\n执行失败: ${errMsg}`;
+              chatMessages.value[msgIdx].status = 'retrying';
+              chatMessages.value[msgIdx].text += '\n\n正在修正并重试...';
+            } else if (eventType === 'retry_chunk') {
+              chatMessages.value[msgIdx].text += data.text || '';
+            } else if (eventType === 'retry_executing') {
+              chatMessages.value[msgIdx].status = 'executing';
+              chatMessages.value[msgIdx].text += '\n\n修正完成，重新执行中...';
+            } else if (eventType === 'retry_result') {
+              if (data.success) {
+                chatMessages.value[msgIdx].text += '\n重试成功';
+              } else {
+                chatMessages.value[msgIdx].text += `\n重试失败: ${data.error || ''}`;
+              }
             } else if (eventType === 'result') {
               chatMessages.value[msgIdx].status = data.success ? 'done' : 'error';
               if (data.error) chatMessages.value[msgIdx].error = data.error;
@@ -652,6 +668,10 @@ const sendMessage = async () => {
               }
               if (Array.isArray(data.context_writes) && data.context_writes.length > 0) {
                 chatMessages.value[msgIdx].text += `\n📋 已记录上下文变量：${data.context_writes.join(', ')}`;
+              }
+              if (data.retried) {
+                const retryStatus = data.success ? '重试后成功' : '重试后仍然失败';
+                chatMessages.value[msgIdx].text += `\n[${retryStatus}]`;
               }
             } else if (eventType === 'agent_thought') {
               chatMessages.value[msgIdx].text += (chatMessages.value[msgIdx].text ? '\n' : '') + `💭 ${data.text || ''}`;
