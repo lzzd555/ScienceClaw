@@ -621,23 +621,77 @@ class RPAAssistant:
 
         yield {"event": "executing", "data": {}}
         _session = rpa_manager.sessions.get(session_id)
-        result, final_response, code, resolution, retry_notice, context_reads = await self._execute_with_retry(
-            page=page,
-            page_provider=page_provider,
-            snapshot=snapshot,
-            full_response=full_response,
-            messages=messages,
-            model_config=model_config,
-            context_ledger=_session.context_ledger if _session else None,
-        )
+        context_ledger = _session.context_ledger if _session else None
 
-        if retry_notice:
-            yield {"event": "message_chunk", "data": {"text": retry_notice}}
+        # ── 首次执行 ──────────────────────────────────────────
+        current_page = page_provider() if page_provider else page
+        result = {"success": False, "error": "No active page available", "output": ""}
+        code = None
+        resolution = None
+        context_reads: List[str] = []
+
+        if current_page is not None:
+            try:
+                result, code, resolution, context_reads = await self._execute_single_response(
+                    current_page, snapshot, full_response, context_ledger
+                )
+            except Exception as exc:
+                result = {"success": False, "error": str(exc), "output": ""}
+                code = None
+                resolution = None
+
+        # ── 首次失败则重试 ──────────────────────────────────
+        retried = False
+        original_error = ""
+
+        if not result.get("success"):
+            original_error = result.get("error", "")
+            retried = True
+
+            yield {
+                "event": "retry_start",
+                "data": {"original_error": original_error},
+            }
+
+            retry_messages = messages + [
+                {"role": "assistant", "content": full_response},
+                {"role": "user", "content": f"Execution error: {result['error']}\nPlease fix it and retry."},
+            ]
+            retry_response = ""
+            async for chunk_text in self._stream_llm(retry_messages, model_config):
+                retry_response += chunk_text
+                yield {"event": "retry_chunk", "data": {"text": chunk_text}}
+
+            yield {"event": "retry_executing", "data": {}}
+
+            current_page = page_provider() if page_provider else page
+            if current_page is None:
+                result = {"success": False, "error": "No active page available", "output": ""}
+            else:
+                retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
+                try:
+                    result, code, resolution, context_reads = await self._execute_single_response(
+                        current_page, retry_snapshot, retry_response, context_ledger
+                    )
+                except Exception as exc:
+                    result = {"success": False, "error": str(exc), "output": ""}
+                    code = None
+                    resolution = None
+
+            full_response = retry_response
+
+            yield {
+                "event": "retry_result",
+                "data": {
+                    "success": result.get("success", False),
+                    "error": result.get("error"),
+                },
+            }
         if resolution:
             yield {"event": "resolution", "data": {"intent": resolution}}
 
         history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": final_response})
+        history.append({"role": "assistant", "content": full_response})
         self._trim_history(session_id)
 
         step_data = None
@@ -687,6 +741,8 @@ class RPAAssistant:
                 "output": result.get("output"),
                 "context_reads": context_reads,
                 "context_writes": context_writes,
+                "retried": retried,
+                "original_error": original_error if retried else None,
             },
         }
         yield {"event": "done", "data": {}}
@@ -764,53 +820,6 @@ class RPAAssistant:
                     source_step_id=step_data.get("id"),
                     source_kind="assistant_extraction",
                 )
-
-    async def _execute_with_retry(
-        self,
-        page: Page,
-        page_provider: Optional[Callable[[], Optional[Page]]],
-        snapshot: Dict[str, Any],
-        full_response: str,
-        messages: List[Dict[str, str]],
-        model_config: Optional[Dict[str, Any]],
-        context_ledger: Optional[Any] = None,
-    ) -> tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str, List[str]]:
-        current_page = page_provider() if page_provider else page
-        if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, full_response, None, None, "", []
-
-        try:
-            result, code, resolution, context_reads = await self._execute_single_response(current_page, snapshot, full_response, context_ledger)
-            if result["success"]:
-                return result, full_response, code, resolution, "", context_reads
-        except Exception as exc:
-            result = {"success": False, "error": str(exc), "output": ""}
-            code = None
-            resolution = None
-
-        retry_messages = messages + [
-            {"role": "assistant", "content": full_response},
-            {"role": "user", "content": f"Execution error: {result['error']}\nPlease fix it and retry."},
-        ]
-        retry_response = ""
-        async for chunk_text in self._stream_llm(retry_messages, model_config):
-            retry_response += chunk_text
-
-        current_page = page_provider() if page_provider else page
-        if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
-
-        retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
-        try:
-            retry_result, retry_code, retry_resolution, retry_reads = await self._execute_single_response(
-                current_page,
-                retry_snapshot,
-                retry_response,
-                context_ledger,
-            )
-            return retry_result, retry_response, retry_code, retry_resolution, "\n\nExecution failed. Retrying.\n\n", retry_reads
-        except Exception as exc:
-            return {"success": False, "error": str(exc), "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
 
     async def _execute_single_response(
         self,
