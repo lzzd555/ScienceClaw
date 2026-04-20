@@ -633,7 +633,7 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { getTools, blockTool, deleteTool as apiDeleteTool } from '../api/agent';
 import type { ExternalToolItem } from '../types/response';
 import { listCredentials, type Credential } from '../api/credential';
@@ -669,11 +669,13 @@ import {
   stringifyHttpHeaders,
 } from '../utils/mcpUi';
 import { convertCookieInputToPlaywrightCookies, type CookieInputMode } from '../utils/rpaMcpTest';
+import { resolveInitialToolsTab } from '../utils/toolsPage';
 
+const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
-const activeTab = ref<'external' | 'mcp'>('external');
+const activeTab = ref<'external' | 'mcp'>(resolveInitialToolsTab(route.query.tab));
 const searchQuery = ref('');
 const externalTools = ref<ExternalToolItem[]>([]);
 const extLoading = ref(false);
