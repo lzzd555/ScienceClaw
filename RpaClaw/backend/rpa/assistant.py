@@ -94,6 +94,12 @@ Rules:
 5. Only output Python code for genuinely complex custom logic that cannot be expressed as one atomic structured action.
 6. If you output Python, define async def run(page): and use Playwright async API.
 7. For extract_text actions, include result_key as a short ASCII snake_case key such as latest_issue_title. Do not use Chinese, spaces, or hyphens.
+8. When the user asks to extract multiple values (e.g. "提取购买人、使用部门和供应商"), output a JSON array of actions. Each action should have its own `result_key` and `target_hint`. Example:
+[
+  {"action": "extract_text", "description": "Extract requestor", "prompt": "提取购买人、使用部门和供应商", "result_key": "requestor", "target_hint": {"name": "购买人"}},
+  {"action": "extract_text", "description": "Extract department", "prompt": "提取购买人、使用部门和供应商", "result_key": "department", "target_hint": {"name": "使用部门"}},
+  {"action": "extract_text", "description": "Extract supplier", "prompt": "提取购买人、使用部门和供应商", "result_key": "supplier", "target_hint": {"name": "供应商"}}
+]
 """
 
 async def _get_page_elements(page: Page) -> str:
@@ -331,14 +337,79 @@ class RPAAssistant:
         context_reads: List[str] = []
 
         if current_page is not None:
-            try:
-                result, code, resolution, context_reads = await self._execute_single_response(
-                    current_page, snapshot, full_response, context_ledger
-                )
-            except Exception as exc:
-                result = {"success": False, "error": str(exc), "output": ""}
+            intents = self._extract_structured_intents(full_response)
+            if len(intents) > 1:
+                # ── Multi-action: execute each intent sequentially ──
+                multi_results = []
+                for i, intent_json in enumerate(intents):
+                    intent_response = json.dumps(intent_json, ensure_ascii=False)
+                    try:
+                        intent_result, _, intent_resolution, intent_reads = await self._execute_single_response(
+                            current_page, snapshot, intent_response, context_ledger
+                        )
+                        multi_results.append(intent_result)
+                        context_reads.extend(intent_reads)
+                        if intent_result.get("success") and intent_resolution:
+                            step_data = intent_result.get("step")
+                            if step_data:
+                                context_writes_multi = self._compute_context_writes(
+                                    message=message,
+                                    step_data=step_data,
+                                    resolution=intent_resolution,
+                                )
+                                self._promote_to_ledger(
+                                    rpa_manager=rpa_manager,
+                                    session_id=session_id,
+                                    context_writes=context_writes_multi,
+                                    step_data=step_data,
+                                    output=intent_result.get("output"),
+                                )
+                                step_data["context_reads"] = intent_reads
+                                step_data["context_writes"] = context_writes_multi
+                                await rpa_manager.add_step(session_id, step_data)
+                    except Exception as exc:
+                        multi_results.append({"success": False, "error": str(exc), "output": ""})
+
+                result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
                 code = None
                 resolution = None
+
+                all_success = all(r.get("success") for r in multi_results)
+                result["success"] = all_success
+                if not all_success:
+                    errors = [r.get("error", "") for r in multi_results if not r.get("success")]
+                    result["error"] = "; ".join(errors)
+
+                history.append({"role": "user", "content": message})
+                history.append({"role": "assistant", "content": full_response})
+                self._trim_history(session_id)
+
+                yield {
+                    "event": "result",
+                    "data": {
+                        "success": result["success"],
+                        "error": result.get("error"),
+                        "step": None,
+                        "output": result.get("output"),
+                        "context_reads": context_reads,
+                        "context_writes": [],
+                        "retried": False,
+                        "original_error": None,
+                        "multi_action_count": len(intents),
+                    },
+                }
+                yield {"event": "done", "data": {}}
+                return
+            else:
+                # ── Single action: original flow ──
+                try:
+                    result, code, resolution, context_reads = await self._execute_single_response(
+                        current_page, snapshot, full_response, context_ledger
+                    )
+                except Exception as exc:
+                    result = {"success": False, "error": str(exc), "output": ""}
+                    code = None
+                    resolution = None
 
         # ── 首次失败则重试 ──────────────────────────────────
         retried = False
@@ -623,6 +694,47 @@ class RPAAssistant:
             if isinstance(parsed, dict) and parsed.get("action"):
                 return parsed
         return None
+
+    @staticmethod
+    def _extract_structured_intents(text: str) -> List[Dict[str, Any]]:
+        """Extract one or more structured intents from LLM response.
+
+        Supports both single JSON object and JSON array of objects.
+        Returns a list (empty if no valid intent found).
+        """
+        stripped = text.strip()
+
+        # Try direct JSON parse
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                results = [item for item in parsed if isinstance(item, dict) and item.get("action")]
+                if results:
+                    return results
+            if isinstance(parsed, dict) and parsed.get("action"):
+                return [parsed]
+        except Exception:
+            pass
+
+        # Try extracting from markdown code block
+        match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(1).strip())
+                if isinstance(parsed, list):
+                    results = [item for item in parsed if isinstance(item, dict) and item.get("action")]
+                    if results:
+                        return results
+                if isinstance(parsed, dict) and parsed.get("action"):
+                    return [parsed]
+            except Exception:
+                pass
+
+        # Fallback to single intent extraction
+        single = RPAAssistant._extract_structured_intent(text)
+        if single:
+            return [single]
+        return []
 
     @staticmethod
     def _resolve_context_in_intent(
