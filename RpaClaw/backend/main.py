@@ -1,8 +1,8 @@
 """
-FastAPI 搴旂敤鍏ュ彛 鈥?绮剧畝鐗堛€?
+FastAPI 应用入口 — 精简版。
 
-鎸傝浇璺敱锛歛uth / models / sessions / file / rpa / chat / statistics
-鍚姩鏃讹細杩炴帴 MongoDB 鈫?鍒濆鍖栫郴缁熸ā鍨?鈫?鍒涘缓榛樿 admin
+挂载路由：auth / models / sessions / file / rpa / chat / statistics
+启动时：连接 MongoDB → 初始化系统模型 → 创建默认 admin
 """
 import asyncio
 import os
@@ -190,4 +190,3 @@ if frontend_dist:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
