@@ -706,6 +706,40 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
     return score
 
 
+def _extract_field_value_from_content_node(
+    resolved: Dict[str, Any],
+    intent: Dict[str, Any],
+) -> Optional[str]:
+    content_node = resolved.get("content_node")
+    if not isinstance(content_node, dict):
+        return None
+    if _normalize_hint(content_node.get("semantic_kind")) != "field":
+        return None
+
+    raw_text = str(content_node.get("text") or "").strip()
+    if not raw_text:
+        return None
+
+    target_hint = intent.get("target_hint", {}) or {}
+    field_name = str(
+        target_hint.get("name")
+        or target_hint.get("text")
+        or target_hint.get("value")
+        or ""
+    ).strip()
+    if not field_name:
+        return None
+
+    compact_text = re.sub(r"\s+", "", raw_text)
+    compact_field_name = re.sub(r"\s+", "", field_name)
+    if not compact_field_name or compact_field_name not in compact_text:
+        return None
+
+    suffix = compact_text.split(compact_field_name, 1)[1]
+    suffix = re.sub(r"^[：:;；,，=\\-\\s]+", "", suffix)
+    return suffix or None
+
+
 def _collection_score(collection: Dict[str, Any], intent: Dict[str, Any]) -> int:
     score = 0
     collection_hint = intent.get("collection_hint", {}) or {}
@@ -923,17 +957,24 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         scope = scope.frame_locator(frame_selector)
 
     locator_payload = resolved["locator"]
-    locator = _locator_from_payload(scope, locator_payload)
-    if action == "click":
-        await locator.click()
-    elif action == "extract_text":
-        output = await locator.inner_text()
-    elif action == "fill":
-        await locator.fill(intent.get("value", ""))
-    elif action == "press":
-        await locator.press(intent.get("value", "Enter"))
+    parsed_field_value = None
+    if action == "extract_text":
+        parsed_field_value = _extract_field_value_from_content_node(resolved, intent)
+
+    if parsed_field_value is not None:
+        output = parsed_field_value
     else:
-        raise ValueError(f"Unsupported action: {action}")
+        locator = _locator_from_payload(scope, locator_payload)
+        if action == "click":
+            await locator.click()
+        elif action == "extract_text":
+            output = await locator.inner_text()
+        elif action == "fill":
+            await locator.fill(intent.get("value", ""))
+        elif action == "press":
+            await locator.press(intent.get("value", "Enter"))
+        else:
+            raise ValueError(f"Unsupported action: {action}")
 
     step_target = _build_collection_item_payload(
         resolved.get("collection_hint", {}) or {},
@@ -963,4 +1004,3 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         "value": intent.get("value"),
     }
     return {"success": True, "step": step, "output": output}
-

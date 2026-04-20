@@ -1724,6 +1724,71 @@ class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("contract_error", str(ctx.exception))
         self.assertIn("buyer", str(ctx.exception))
 
+    async def test_execute_single_response_rejects_plain_text_runtime_payload_for_structured_context(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        code = "async def run(page):\n    return 'plain text result'"
+        ai_script_response = json.dumps(
+            {
+                "action": "ai_script",
+                "description": "提取 buyer",
+                "prompt": "提取 buyer",
+                "code": code,
+                "context_bindings": ["buyer"],
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "envelope"},
+            },
+            ensure_ascii=False,
+        )
+
+        async def fake_execute_on_page(_page, _code):
+            return {"success": True, "error": None, "output": "plain text result"}
+
+        with patch.object(
+            assistant,
+            "_execute_on_page",
+            fake_execute_on_page,
+        ):
+            result, _code, resolution, context_reads = await assistant._execute_single_response(
+                current_page=page,
+                snapshot=snapshot,
+                full_response=ai_script_response,
+                context_ledger=MANAGER_MODULE.TaskContextLedger(),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["step"]["output_payload"], {})
+        self.assertEqual(result["step"]["context_bindings"], ["buyer"])
+        self.assertEqual(context_reads, [])
+        self.assertIsNone(resolution)
+
+        with self.assertRaises(ValueError) as ctx:
+            assistant._compute_context_writes(
+                "提取 buyer",
+                result["step"],
+                None,
+            )
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("buyer", str(ctx.exception))
+
     async def test_chat_emits_attempt_events_and_recovered_after_retry_status(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()

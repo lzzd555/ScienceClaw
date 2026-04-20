@@ -125,16 +125,25 @@ class StepExecutionError(Exception):
         """Derive required_context_outputs and context_rebuild_plan from step context_writes/context_reads.
 
         Returns a dict with:
-          - required_context_outputs: sorted list of unique context_writes keys across all steps
-          - context_rebuild_plan: list of step indices that produce context values (context_writes)
+          - required_context_outputs: sorted list of unique context_writes/context_bindings keys
+          - context_rebuild_plan: list of step indices that produce context values
         """
         required_outputs: set = set()
         rebuild_plan: List[int] = []
 
         for step_index, step in enumerate(steps):
             context_writes = step.get("context_writes") or []
+            context_bindings = step.get("context_bindings") or []
+            structured_context_keys = []
+            if step.get("action") == "ai_script":
+                structured_context_keys = [
+                    key for key in context_bindings if isinstance(key, str) and key
+                ]
             if context_writes:
                 required_outputs.update(context_writes)
+            if structured_context_keys:
+                required_outputs.update(structured_context_keys)
+            if context_writes or structured_context_keys:
                 rebuild_plan.append(step_index)
 
         return {
@@ -195,21 +204,7 @@ class StepExecutionError(Exception):
                     for ctx_key in context_reads:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
                         lines.append(f'    {ctx_key} = context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))')
-                ai_code = step.get("value", "")
-                if ai_code:
-                    converted = self._sync_to_async(ai_code)
-                    converted = self._inject_result_capture(converted)
-                    converted = self._strip_locator_result_capture(converted)
-                    for code_line in converted.split("\n"):
-                        step_lines.append(f"    {code_line}" if code_line.strip() else "")
-                # Inject context writes: copy ai_script results into context dict
-                context_writes = step.get("context_writes") or []
-                if context_writes:
-                    step_lines.append("    # Write extracted values to context")
-                    for ctx_key in context_writes:
-                        ctx_key_safe = ctx_key.replace("'", "\\'")
-                        step_lines.append(f'    try: context["{ctx_key_safe}"] = result.get("{ctx_key_safe}", "")')
-                        step_lines.append("    except Exception: pass")
+                step_lines.extend(self._build_structured_context_step_lines(step))
                 lines.extend(self._wrap_step_lines(step_lines, step_index, test_mode))
                 lines.append("")
                 continue
@@ -358,15 +353,8 @@ class StepExecutionError(Exception):
             elif action == "extract_text":
                 result_var = f"extract_text_value_{step_index + 1}"
                 result_key = self._build_extract_result_key(step, used_result_keys)
-                context_writes = step.get("context_writes") or []
                 step_lines.append(f"    {result_var} = await {locator}.inner_text()")
-                if context_writes:
-                    # Context-bound extraction: store into context dict only
-                    for ctx_key in context_writes:
-                        ctx_key_safe = ctx_key.replace("'", "\\'")
-                        step_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
-                else:
-                    step_lines.append(f'    _results["{result_key}"] = {result_var}')
+                step_lines.append(f'    _results["{result_key}"] = {result_var}')
             elif action == "press":
                 step_lines.append(f'    await {locator}.press("{value}")')
             elif action == "select":
@@ -391,6 +379,18 @@ class StepExecutionError(Exception):
 
         rebuild_lines: List[str] = [
             "",
+            "def _normalize_structured_result(value):",
+            "    if isinstance(value, dict):",
+            "        return dict(value)",
+            "    if isinstance(value, str) and value.strip():",
+            "        try:",
+            "            parsed = _json.loads(value)",
+            "        except Exception:",
+            "            parsed = None",
+            "        if isinstance(parsed, dict):",
+            "            return dict(parsed)",
+            "    return {}",
+            "",
             "async def rebuild_context(page, context, **kwargs):",
             '    """Rebuild runtime context by navigating to prerequisite pages and extracting values."""',
             f'    tabs = {{"{root_tab_id}": page}}',
@@ -401,7 +401,9 @@ class StepExecutionError(Exception):
 
         for rebuild_idx, step in enumerate(deduped):
             context_writes = step.get("context_writes") or []
-            if not context_writes:
+            context_bindings = step.get("context_bindings") or []
+            has_structured_context = step.get("action") == "ai_script" and bool(context_bindings)
+            if not context_writes and not has_structured_context:
                 continue
 
             action = step.get("action", "")
@@ -421,8 +423,15 @@ class StepExecutionError(Exception):
                 rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
                 rebuild_prev_url = url
 
+            if has_structured_context:
+                rebuild_lines.extend(self._build_structured_context_step_lines(step))
+                continue
+
             # Extract values
             if action == "extract_text":
+                if context_writes:
+                    rebuild_lines.append('    raise ValueError("contract_error: extract_text may not rebuild context")')
+                    continue
                 target = step.get("target", "")
                 frame_path = step.get("frame_path") or []
                 scope_var = "current_page"
@@ -495,6 +504,31 @@ class StepExecutionError(Exception):
         wrapped.append("    except Exception as _e:")
         wrapped.append(f"        raise StepExecutionError(step_index={step_index}, original_error=str(_e))")
         return wrapped
+
+    def _build_structured_context_step_lines(self, step: Dict[str, Any], context_var: str = "context") -> List[str]:
+        """Emit runtime ai_script execution plus binding validation for structured context."""
+        step_lines: List[str] = []
+        ai_code = step.get("value", "")
+        step_lines.append("    result = None")
+        if ai_code:
+            converted = self._sync_to_async(ai_code)
+            converted = self._inject_result_capture(converted)
+            converted = self._strip_locator_result_capture(converted)
+            for code_line in converted.split("\n"):
+                step_lines.append(f"    {code_line}" if code_line.strip() else "")
+
+        context_bindings = [key for key in (step.get("context_bindings") or []) if isinstance(key, str) and key]
+        if not context_bindings:
+            return step_lines
+
+        step_lines.append('    runtime_result = _normalize_structured_result(locals().get("result"))')
+        step_lines.append(f"    missing_keys = [key for key in {repr(context_bindings)} if key not in runtime_result]")
+        step_lines.append("    if missing_keys:")
+        step_lines.append('        raise ValueError("contract_error: missing payload key(s): " + ", ".join(missing_keys))')
+        for ctx_key in context_bindings:
+            ctx_key_safe = ctx_key.replace("'", "\\'")
+            step_lines.append(f'    {context_var}["{ctx_key_safe}"] = runtime_result["{ctx_key_safe}"]')
+        return step_lines
 
     def _build_extract_result_key(self, step: Dict[str, Any], used_result_keys: Dict[str, int]) -> str:
         key = self._normalize_result_key(step.get("result_key"))

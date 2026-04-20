@@ -1305,10 +1305,6 @@ class RPAAssistant:
                         runtime_output_payload = dict(parsed_runtime_output)
                         runtime_output_is_dict = True
 
-                envelope_output_payload = structured_intent.get("output_payload")
-                if not isinstance(envelope_output_payload, dict):
-                    envelope_output_payload = {}
-
                 step: Dict[str, Any] = {
                     "action": "ai_script",
                     "source": "ai",
@@ -1322,8 +1318,6 @@ class RPAAssistant:
                         step[key] = value
                 if runtime_output_is_dict:
                     step["output_payload"] = runtime_output_payload
-                elif envelope_output_payload:
-                    step["output_payload"] = dict(envelope_output_payload)
                 else:
                     step["output_payload"] = {}
                 output_payload = dict(step["output_payload"])

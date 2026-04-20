@@ -5,6 +5,13 @@ import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, House,
 import { apiClient } from '@/api/client';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
+  cleanupAssistantText,
+  formatAttemptStatusLabel,
+  formatResultOutput,
+  formatResultStatusSummary,
+  formatResultContextWrites,
+} from '@/utils/rpaChat';
+import {
   getFrameSizeFromMetadata,
   getInputSizeFromMetadata,
   mapClientPointToViewportPoint,
@@ -171,14 +178,14 @@ const syncTabs = (nextTabs: BrowserTab[]) => {
 
 const codeActionIndex = (part: string) => Number(part.match(/\[\[CODE_(\d+)\]\]/)?.[1] ?? -1);
 
-const cleanupAssistantText = (text: string, script = '') => {
-  let next = text;
-  next = next.replace(/^正在分析当前页面\.\.\.\s*/u, '');
-  next = next.replace(/```python[\s\S]*?```/gu, '');
-  if (script) {
-    next = next.replace(script, '');
-  }
-  return next.trim();
+const appendAssistantTimelineLine = (message: ChatMessage, line: string) => {
+  if (!line) return;
+  const nextText = message.text ? `${message.text}\n${line}` : line;
+  message.text = cleanupAssistantText(nextText, message.script || '');
+};
+
+const appendAssistantTimelineLines = (message: ChatMessage, lines: string[]) => {
+  lines.forEach((line) => appendAssistantTimelineLine(message, line));
 };
 
 const initSession = async () => {
@@ -604,6 +611,9 @@ const sendMessage = async () => {
             const data = JSON.parse(raw);
             if (eventType === 'message_chunk') {
               chatMessages.value[msgIdx].text += data.text || '';
+              if (chatMessages.value[msgIdx].text.includes('正在分析当前页面')) {
+                chatMessages.value[msgIdx].text = cleanupAssistantText(chatMessages.value[msgIdx].text);
+              }
             } else if (eventType === 'script') {
               chatMessages.value[msgIdx].script = data.code || '';
               chatMessages.value[msgIdx].text = cleanupAssistantText(
@@ -621,18 +631,36 @@ const sendMessage = async () => {
               }
             } else if (eventType === 'executing') {
               chatMessages.value[msgIdx].status = 'executing';
+              chatMessages.value[msgIdx].text = cleanupAssistantText(
+                chatMessages.value[msgIdx].text,
+                chatMessages.value[msgIdx].script || '',
+              );
               if (!chatMessages.value[msgIdx].text.trim()) {
                 chatMessages.value[msgIdx].text = '代码已生成，正在执行浏览器操作。';
               }
+            } else if (
+              eventType === 'attempt_started' ||
+              eventType === 'attempt_output' ||
+              eventType === 'attempt_failed' ||
+              eventType === 'attempt_succeeded'
+            ) {
+              const attemptEventType = eventType as 'attempt_started' | 'attempt_output' | 'attempt_failed' | 'attempt_succeeded';
+              const attemptLine = formatAttemptStatusLabel(attemptEventType, data);
+              appendAssistantTimelineLine(chatMessages.value[msgIdx], `⏱️ ${attemptLine}`);
             } else if (eventType === 'result') {
-              chatMessages.value[msgIdx].status = data.success ? 'done' : 'error';
+              const finalStatus = data.status || (data.success === false ? 'failed' : 'success');
+              chatMessages.value[msgIdx].status = finalStatus === 'failed' ? 'error' : 'done';
               if (data.error) chatMessages.value[msgIdx].error = data.error;
-              if (data.output && data.output !== 'ok' && data.output !== 'None') {
-                chatMessages.value[msgIdx].text += `${chatMessages.value[msgIdx].text ? '\n' : ''}输出: ${data.output}`;
-              }
-              if (Array.isArray(data.context_writes) && data.context_writes.length > 0) {
-                chatMessages.value[msgIdx].text += `\n📋 已记录上下文变量：${data.context_writes.join(', ')}`;
-              }
+              chatMessages.value[msgIdx].text = cleanupAssistantText(
+                chatMessages.value[msgIdx].text,
+                chatMessages.value[msgIdx].script || '',
+              );
+              appendAssistantTimelineLine(chatMessages.value[msgIdx], formatResultStatusSummary(data));
+              appendAssistantTimelineLine(chatMessages.value[msgIdx], formatResultOutput(data));
+              appendAssistantTimelineLines(
+                chatMessages.value[msgIdx],
+                formatResultContextWrites(data).map((line) => `📋 ${line}`),
+              );
             } else if (eventType === 'agent_thought') {
               chatMessages.value[msgIdx].text += (chatMessages.value[msgIdx].text ? '\n' : '') + `💭 ${data.text || ''}`;
             } else if (eventType === 'agent_action') {
@@ -651,10 +679,6 @@ const sendMessage = async () => {
                   source: 'ai',
                   sensitive: s.sensitive || false,
                 });
-              }
-              // Show output if present
-              if (data.output) {
-                chatMessages.value[msgIdx].text += `\n✓ 输出：${data.output}`;
               }
             } else if (eventType === 'confirm_required') {
               pendingConfirm.value = data;

@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import unittest
@@ -621,14 +622,16 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         self.assertIn('await current_page.locator("main article.card").first.locator("h2 a").click()', script)
         self.assertNotIn('forrestchang / andrej-karpathy-skills', script)
 
-    def test_generate_script_extract_text_step_reads_text_and_persists_result(self):
+    def test_generate_script_ai_script_step_rebuilds_structured_context_from_runtime_result(self):
         generator = PlaywrightGenerator()
         steps = [
             {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "link", "name": "Issue Title"}),
-                "description": "提取最近一条 issue 的标题",
-                "result_key": "latest_issue_title",
+                "action": "ai_script",
+                "description": "提取购买人",
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "李雨晨"},
+                "context_bindings": ["buyer"],
+                "value": 'result = {"buyer": "runtime buyer"}',
                 "url": "https://example.com/repo/issues",
                 "source": "ai",
             }
@@ -636,28 +639,23 @@ class PlaywrightGeneratorTests(unittest.TestCase):
 
         script = generator.generate_script(steps, is_local=True)
 
-        self.assertIn(
-            'extract_text_value_1 = await current_page.get_by_role("link", name="Issue Title", exact=True).inner_text()',
-            script,
-        )
-        self.assertIn('_results["latest_issue_title"] = extract_text_value_1', script)
+        self.assertIn('runtime_result = _normalize_structured_result(locals().get("result"))', script)
+        self.assertIn("missing_keys = [key for key in ['buyer'] if key not in runtime_result]", script)
+        self.assertIn('context["buyer"] = runtime_result["buyer"]', script)
+        self.assertNotIn('李雨晨', script)
+        self.assertNotIn("extract_text", script)
+        self.assertNotIn("result_key", script)
 
-    def test_generate_script_extract_text_step_uses_stable_suffix_for_duplicate_result_keys(self):
+    def test_generate_script_ai_script_step_rebuilds_multiple_context_values_from_runtime_result(self):
         generator = PlaywrightGenerator()
         steps = [
             {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "link", "name": "Issue Title A"}),
-                "description": "提取最近一条 issue 的标题",
-                "result_key": "latest_issue_title",
-                "url": "https://example.com/repo/issues",
-                "source": "ai",
-            },
-            {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "link", "name": "Issue Title B"}),
-                "description": "提取最近一条 issue 的标题",
-                "result_key": "latest_issue_title",
+                "action": "ai_script",
+                "description": "提取多字段上下文",
+                "output_schema": {"buyer": "string", "department": "string"},
+                "output_payload": {"buyer": "李雨晨", "department": "研发效能组"},
+                "context_bindings": ["buyer", "department"],
+                "value": 'result = {"buyer": "runtime buyer", "department": "runtime department"}',
                 "url": "https://example.com/repo/issues",
                 "source": "ai",
             }
@@ -665,24 +663,36 @@ class PlaywrightGeneratorTests(unittest.TestCase):
 
         script = generator.generate_script(steps, is_local=True)
 
-        self.assertIn('_results["latest_issue_title"] = extract_text_value_1', script)
-        self.assertIn('_results["latest_issue_title_2"] = extract_text_value_2', script)
+        self.assertIn('runtime_result = _normalize_structured_result(locals().get("result"))', script)
+        self.assertIn("missing_keys = [key for key in ['buyer', 'department'] if key not in runtime_result]", script)
+        self.assertIn('context["buyer"] = runtime_result["buyer"]', script)
+        self.assertIn('context["department"] = runtime_result["department"]', script)
+        self.assertNotIn('李雨晨', script)
+        self.assertNotIn("extract_text", script)
 
-    def test_generate_script_extract_text_step_falls_back_to_default_key_without_result_key(self):
+    def test_generate_script_ai_script_missing_structured_binding_raises_contract_error(self):
         generator = PlaywrightGenerator()
         steps = [
             {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "link", "name": "Issue Title"}),
-                "description": "提取最近一条 issue 的标题",
-                "url": "https://example.com/repo/issues",
+                "action": "ai_script",
+                "description": "提取购买人",
+                "output_schema": {"buyer": "string", "department": "string"},
+                "output_payload": {"buyer": "李雨晨"},
+                "context_bindings": ["buyer", "department"],
+                "value": 'result = {"buyer": "runtime buyer"}',
                 "source": "ai",
             }
         ]
 
         script = generator.generate_script(steps, is_local=True)
+        namespace = {}
+        exec(compile(script, "<test>", "exec"), namespace)
 
-        self.assertIn('_results["extract_text_1"] = extract_text_value_1', script)
+        with self.assertRaises(ValueError) as ctx:
+            asyncio.run(namespace["rebuild_context"](object(), {}))
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("department", str(ctx.exception))
 
 
     def test_generate_script_test_mode_wraps_click_in_try_except(self):
@@ -792,6 +802,22 @@ class PlaywrightGeneratorTests(unittest.TestCase):
         generic_except_pos = script.index("except Exception as _e:", step_error_pos)
         self.assertLess(raise_pos, generic_except_pos)
 
+    def test_collect_context_contract_includes_structured_ai_script_bindings(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_script",
+                "value": 'result = {"buyer": "runtime", "department": "runtime"}',
+                "context_bindings": ["buyer", "department"],
+                "output_payload": {"buyer": "李雨晨", "department": "研发效能组"},
+            }
+        ]
+
+        contract = generator._collect_context_contract(steps)
+
+        self.assertEqual(contract["required_context_outputs"], ["buyer", "department"])
+        self.assertEqual(contract["context_rebuild_plan"], [0])
+
 
     def test_test_mode_script_raises_parseable_step_error_on_missing_locator(self):
         """Integration: generate a test_mode script, exec it, verify the error carries step_index."""
@@ -831,13 +857,7 @@ class PlaywrightGeneratorTests(unittest.TestCase):
 
 
 class ContextRebuildTests(unittest.TestCase):
-    """Tests for the context-rebuild phase in generated scripts.
-
-    These tests verify that the generator emits a rebuild_context function
-    and cross-page value transfer logic when steps carry context_writes /
-    context_reads fields.  They are expected to FAIL until the generator
-    implementation is updated (Task 6).
-    """
+    """Tests for the structured context-rebuild phase in generated scripts."""
 
     def test_generator_emits_rebuild_context_function(self):
         """The generated script must contain an async rebuild_context function."""
@@ -872,7 +892,7 @@ class ContextRebuildTests(unittest.TestCase):
         """Cross-page value transfer: rebuild_context must appear before fill()."""
         generator = PlaywrightGenerator()
         steps = [
-            # Page A — extract a value
+            # Page A — produce structured context output
             {
                 "action": "navigate",
                 "target": "",
@@ -880,13 +900,15 @@ class ContextRebuildTests(unittest.TestCase):
                 "description": "Open search page",
             },
             {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "cell", "name": "Result Name"}),
+                "action": "ai_script",
+                "target": "",
                 "description": "Extract person name from search results",
-                "result_key": "person_name",
+                "output_schema": {"person_name": "string"},
+                "output_payload": {"person_name": "录制值"},
+                "context_bindings": ["person_name"],
+                "value": 'result = {"person_name": "runtime person"}',
                 "url": "https://site.com/search",
                 "source": "ai",
-                "context_writes": ["person_name"],
             },
             # Page B — fill the extracted value
             {
@@ -908,13 +930,10 @@ class ContextRebuildTests(unittest.TestCase):
 
         script = generator.generate_script(steps, params=params, is_local=True)
 
-        # The script must reference the transferred value via context
-        self.assertIn(
-            'context["person_name"]',
-            script,
-            "Generated script must read person_name from the context dict "
-            "for cross-page value transfer.",
-        )
+        self.assertIn('runtime_result = _normalize_structured_result(locals().get("result"))', script)
+        self.assertIn('context["person_name"] = runtime_result["person_name"]', script)
+        self.assertNotIn('录制值', script)
+        self.assertNotIn("extract_text", script)
 
         # rebuild_context must appear before the first fill() call so the
         # context is populated before the value is consumed.
@@ -937,6 +956,30 @@ class ContextRebuildTests(unittest.TestCase):
             "the context dict is populated before values are consumed.",
         )
 
+    def test_extract_text_context_writes_fail_in_rebuild_context(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "Buyer"}),
+                "description": "Extract buyer name",
+                "context_writes": ["buyer"],
+            }
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+        self.assertNotIn('context["buyer"]', script)
+        self.assertIn("contract_error: extract_text may not rebuild context", script)
+
+        namespace = {}
+        exec(compile(script, "<test>", "exec"), namespace)
+
+        with self.assertRaises(ValueError) as ctx:
+            asyncio.run(namespace["rebuild_context"](object(), {}))
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("extract_text may not rebuild context", str(ctx.exception))
+
     def test_ai_script_step_still_reads_runtime_context(self):
         """Steps with context_reads should generate code that reads from context."""
         generator = PlaywrightGenerator()
@@ -948,13 +991,15 @@ class ContextRebuildTests(unittest.TestCase):
                 "description": "Open page",
             },
             {
-                "action": "extract_text",
-                "target": json.dumps({"method": "role", "role": "cell", "name": "ID"}),
+                "action": "ai_script",
+                "target": "",
                 "description": "Extract person ID",
-                "result_key": "person_id",
+                "output_schema": {"person_id": "string"},
+                "output_payload": {"person_id": "recorded-person-id"},
+                "context_bindings": ["person_id"],
+                "value": 'result = {"person_id": "runtime-person-id"}',
                 "url": "https://example.com",
                 "source": "ai",
-                "context_writes": ["person_id"],
             },
             {
                 "action": "ai_script",
@@ -989,6 +1034,41 @@ class ContextRebuildTests(unittest.TestCase):
             "context dict (context.get('person_id', ...) or context['person_id']) "
             "for steps that declare context_reads.",
         )
+        self.assertIn('context["person_id"] = runtime_result["person_id"]', script)
+        self.assertNotIn("recorded-person-id", script)
+
+    def test_rebuild_context_resets_ai_script_result_between_steps(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_script",
+                "description": "First structured extraction",
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "first"},
+                "context_bindings": ["buyer"],
+                "value": 'result = {"buyer": "first"}',
+                "source": "ai",
+            },
+            {
+                "action": "ai_script",
+                "description": "Second structured extraction without result",
+                "output_schema": {"buyer": "string"},
+                "output_payload": {"buyer": "second"},
+                "context_bindings": ["buyer"],
+                "value": "",
+                "source": "ai",
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+        namespace = {}
+        exec(compile(script, "<test>", "exec"), namespace)
+
+        with self.assertRaises(ValueError) as ctx:
+            asyncio.run(namespace["rebuild_context"](object(), {}))
+
+        self.assertIn("contract_error", str(ctx.exception))
+        self.assertIn("buyer", str(ctx.exception))
 
 
 if __name__ == "__main__":
