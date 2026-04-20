@@ -569,9 +569,11 @@ Expected: build succeeds. Existing Browserslist and chunk-size warnings are acce
 
 ```bash
 git diff --check
+$mojibakeChars = @([char]0xFFFD, [char]0x9427, [char]0x93BC, [char]0x93CC, [char]0x934F, [char]0x7EDB, [char]0x6D93)
+$encodingPattern = '[\\]u[0-9a-fA-F]{4}|' + (($mojibakeChars | ForEach-Object { [regex]::Escape([string]$_) }) -join '|')
 git diff origin/master --name-only | ForEach-Object {
   if (Test-Path $_) {
-    Select-String -Path $_ -Pattern '\\u[0-9a-fA-F]{4}|ï¿½|鐧|鎼|鏌|鍏|绛|涓|�' -ErrorAction SilentlyContinue
+    Select-String -Path $_ -Pattern $encodingPattern -ErrorAction SilentlyContinue
   }
 }
 ```
