@@ -101,6 +101,7 @@ Rules:
   {"action": "extract_text", "description": "Extract department", "prompt": "提取购买人、使用部门和供应商", "result_key": "department", "target_hint": {"name": "使用部门"}},
   {"action": "extract_text", "description": "Extract supplier", "prompt": "提取购买人、使用部门和供应商", "result_key": "supplier", "target_hint": {"name": "供应商"}}
 ]
+9. When writing Python code, you have access to a `context` dict containing values extracted in previous steps. Use `context.get("key", "default")` to read previous values, and `context["key"] = value` to store new values. Do NOT use globals() or hardcoded values for data that comes from previous steps. The function signature remains `async def run(page)`.
 """
 
 async def _get_page_elements(page: Page) -> str:
