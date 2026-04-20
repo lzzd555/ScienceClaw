@@ -932,13 +932,13 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
     locator_payload = resolved["locator"]
     locator = _locator_from_payload(scope, locator_payload)
     if action == "click":
-        await locator.click()
+        await locator.first.click()
     elif action == "extract_text":
-        output = await locator.inner_text()
+        output = await locator.first.inner_text()
     elif action == "fill":
-        await locator.fill(intent.get("value", ""))
+        await locator.first.fill(intent.get("value", ""))
     elif action == "press":
-        await locator.press(intent.get("value", "Enter"))
+        await locator.first.press(intent.get("value", "Enter"))
     else:
         raise ValueError(f"Unsupported action: {action}")
 
