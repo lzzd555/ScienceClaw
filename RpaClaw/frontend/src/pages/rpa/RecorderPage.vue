@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, House, FolderOpen, Globe } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
@@ -146,6 +146,26 @@ interface ChatMessage {
 const chatMessages = ref<ChatMessage[]>([]);
 const newMessage = ref('');
 const sending = ref(false);
+const isComposing = ref(false);
+const messageInputRef = ref<HTMLTextAreaElement | null>(null);
+
+const handleMessageKeydown = (event: KeyboardEvent) => {
+  if (isComposing.value) return;
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+};
+
+watch(newMessage, () => {
+  nextTick(() => {
+    const el = messageInputRef.value;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    }
+  });
+});
 const agentRunning = ref(false);
 
 interface PendingConfirm {
@@ -981,13 +1001,16 @@ const sendMessage = async () => {
 
         <div class="p-4 bg-[#eff1f2] dark:bg-[#212122] border-t border-gray-100 dark:border-gray-800">
           <div class="relative">
-            <input
+            <textarea
+              ref="messageInputRef"
               v-model="newMessage"
-              @keyup.enter="sendMessage"
+              @compositionstart="isComposing = true"
+              @compositionend="isComposing = false"
+              @keydown="handleMessageKeydown"
               :disabled="sending || agentRunning"
-              class="w-full bg-white dark:bg-[#272728] border border-gray-200 dark:border-gray-700 rounded-2xl py-3 pl-4 pr-12 text-xs focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
+              rows="1"
+              class="w-full bg-white dark:bg-[#272728] border border-gray-200 dark:border-gray-700 rounded-2xl py-3 pl-4 pr-12 text-xs resize-none overflow-hidden focus:ring-2 focus:ring-[#831bd7] focus:border-transparent shadow-sm placeholder:text-gray-400 outline-none disabled:opacity-50"
               :placeholder="agentRunning ? 'AI 正在执行录制任务...' : (sending ? 'AI 正在处理...' : '向助手提问...')"
-              type="text"
             />
             <button
               @click="sendMessage"
