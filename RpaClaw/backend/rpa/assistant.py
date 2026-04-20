@@ -119,25 +119,37 @@ async def _get_page_elements(page: Page) -> str:
         return "[]"
 
 
-async def _execute_on_page(page: Page, code: str) -> Dict[str, Any]:
-    """Execute AI-generated code directly on the page object."""
+async def _execute_on_page(
+    page: Page, code: str, context: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """Execute AI-generated code directly on the page object.
+
+    Parameters
+    ----------
+    context : dict, optional
+        A read-write context dict built from the session's context_ledger.
+        Injected into the exec namespace so LLM-generated code can use
+        ``context.get("key")`` to read previous-step values and
+        ``context["key"] = value`` to write new values.
+    """
+    ctx = dict(context) if context else {}
     try:
         await page.evaluate("window.__rpa_paused = true")
     except Exception:
         pass
     try:
-        namespace: Dict[str, Any] = {"page": page}
+        namespace: Dict[str, Any] = {"page": page, "context": ctx}
         exec(compile(code, "<rpa_assistant>", "exec"), namespace)
         if "run" in namespace and callable(namespace["run"]):
             ret = await asyncio.wait_for(namespace["run"](page), timeout=EXECUTION_TIMEOUT_S)
-            return {"success": True, "output": str(ret) if ret else "ok", "error": None}
+            return {"success": True, "output": str(ret) if ret else "ok", "error": None, "context": ctx}
         else:
-            return {"success": False, "output": "", "error": "No run(page) function defined"}
+            return {"success": False, "output": "", "error": "No run(page) function defined", "context": ctx}
     except asyncio.TimeoutError:
-        return {"success": False, "output": "", "error": f"Command execution timed out ({EXECUTION_TIMEOUT_S:.0f}s)"}
+        return {"success": False, "output": "", "error": f"Command execution timed out ({EXECUTION_TIMEOUT_S:.0f}s)", "context": ctx}
     except Exception:
         import traceback
-        return {"success": False, "output": "", "error": traceback.format_exc()}
+        return {"success": False, "output": "", "error": traceback.format_exc(), "context": ctx}
     finally:
         try:
             await page.evaluate("window.__rpa_paused = false")
@@ -997,8 +1009,8 @@ class RPAAssistant:
     async def _get_page_elements(self, page: Page) -> str:
         return await _get_page_elements(page)
 
-    async def _execute_on_page(self, page: Page, code: str) -> Dict[str, Any]:
-        return await _execute_on_page(page, code)
+    async def _execute_on_page(self, page: Page, code: str, context: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        return await _execute_on_page(page, code, context)
 
 
 
