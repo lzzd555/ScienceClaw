@@ -78,6 +78,7 @@ For common atomic actions, respond with JSON in this shape:
   "description": "short action summary",
   "prompt": "original user instruction",
   "result_key": "short_ascii_snake_case_key_for_extracted_value",
+  "result_keys": ["key1", "key2"],
   "target_hint": {
     "role": "button|link|textbox|...",
     "name": "semantic label if known"
@@ -97,6 +98,7 @@ Rules:
 5. Only output Python code for genuinely complex custom logic that cannot be expressed as one atomic structured action.
 6. If you output Python, define async def run(page): and use Playwright async API.
 7. For extract_text actions, include result_key as a short ASCII snake_case key such as latest_issue_title. Do not use Chinese, spaces, or hyphens.
+8. When extracting multiple values in one step (via Python code), include result_keys as a list of all extracted key names. The code should print a JSON object mapping each key to its value.
 """
 
 async def _get_page_elements(page: Page) -> str:
@@ -494,7 +496,7 @@ Return the next JSON action."""
             "description": parsed.get("description", operation),
             "prompt": prompt,
         }
-        for key in ("target_hint", "collection_hint", "ordinal", "value", "result_key"):
+        for key in ("target_hint", "collection_hint", "ordinal", "value", "result_key", "result_keys"):
             value = parsed.get(key)
             if value is not None:
                 intent[key] = value
@@ -699,30 +701,44 @@ class RPAAssistant:
     ) -> List[str]:
         """Determine which context keys should be written after this step.
 
-        An extracted value is promoted to context when:
-        * The action is ``extract_text`` with a ``result_key``, AND
-        * The user explicitly requested extraction, OR
-        * The prompt references cross-page transfer (e.g. "fill into", "copy to").
+        Supports both single ``result_key`` (string) and ``result_keys`` (list).
+        Works for ``extract_text`` actions and ``ai_script`` actions.
         """
         action = step_data.get("action", "")
+
+        # Collect all candidate keys from result_key / result_keys
+        keys: List[str] = []
         result_key = step_data.get("result_key")
-        if not result_key:
+        if isinstance(result_key, str) and result_key:
+            keys.append(result_key)
+        result_keys = step_data.get("result_keys")
+        if isinstance(result_keys, list):
+            for k in result_keys:
+                if isinstance(k, str) and k and k not in keys:
+                    keys.append(k)
+
+        if not keys:
             return []
+
+        # For extract_text: require explicit extraction or cross-page transfer
+        # For ai_script: always promote declared result_keys
+        if action == "ai_script":
+            return keys
 
         if action != "extract_text":
             return []
 
         # Rule 1: user explicitly asked to extract / read / record
         if _is_explicit_extraction_request(message):
-            return [result_key]
+            return keys
 
         # Rule 2: prompt or description hints at cross-page transfer
         transfer_keywords = ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
         description = step_data.get("description", "")
         if any(kw in message for kw in transfer_keywords) or any(kw in description for kw in transfer_keywords):
-            return [result_key]
+            return keys
 
-        return []
+        return keys
 
     @staticmethod
     def _promote_to_ledger(
@@ -741,12 +757,24 @@ class RPAAssistant:
             return
 
         ledger = session.context_ledger
+
+        # Try to parse structured output (JSON dict) for per-key values
+        output_parsed: Optional[Dict[str, Any]] = None
+        if output:
+            try:
+                parsed = json.loads(output)
+                if isinstance(parsed, dict):
+                    output_parsed = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        user_explicit = _is_explicit_extraction_request(step_data.get("prompt", ""))
+        is_cross_page = any(
+            kw in (step_data.get("description", "") + step_data.get("prompt", ""))
+            for kw in ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
+        )
+
         for key in context_writes:
-            user_explicit = _is_explicit_extraction_request(step_data.get("prompt", ""))
-            is_cross_page = any(
-                kw in (step_data.get("description", "") + step_data.get("prompt", ""))
-                for kw in ["填写", "填入", "复制", "copy", "fill", "transfer", "另一个", "其它", "其他"]
-            )
             if ledger.should_promote_value(
                 key=key,
                 source="observation",
@@ -754,11 +782,13 @@ class RPAAssistant:
                 runtime_required=is_cross_page,
                 consumed_later=is_cross_page,
             ):
+                # Use per-key value from structured output if available, else whole output
+                value = output_parsed.get(key, output) if output_parsed else output
                 rpa_manager.record_context_value(
                     session_id,
                     category="observed",
                     key=key,
-                    value=output,
+                    value=value,
                     user_explicit=user_explicit,
                     runtime_required=is_cross_page,
                     source_step_id=step_data.get("id"),
