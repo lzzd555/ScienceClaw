@@ -3,7 +3,7 @@ from __future__ import annotations
 
 SNAPSHOT_V2_JS = r"""() => {
     const ACTIONABLE = 'a,button,input,textarea,select,[role=button],[role=link],[role=menuitem],[role=menuitemradio],[role=tab],[role=checkbox],[role=radio],[contenteditable=true]';
-    const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,label,[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
+    const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,label,span,div,figcaption,caption,time,mark,strong,em,[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
     const recorder = globalThis.__rpaPlaywrightRecorder || null;
     const result = { actionable_nodes: [], content_nodes: [], containers: [] };
     const containerMap = new Map();
@@ -303,6 +303,12 @@ SNAPSHOT_V2_JS = r"""() => {
         const key = [text, bbox(rect).x, bbox(rect).y].join('|');
         if (contentSeen.has(key))
             continue;
+        // Deduplicate span/div text already captured by a heading or paragraph
+        const ctag = el.tagName.toLowerCase();
+        if (ctag === 'span' || ctag === 'div') {
+            const isDupText = result.content_nodes.some(n => n.text === text);
+            if (isDupText) continue;
+        }
         contentSeen.add(key);
         const role = getRole(el);
         const containerId = ensureContainer(el);
