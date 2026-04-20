@@ -44,6 +44,11 @@ class RPAStep(BaseModel):
     source_tab_id: Optional[str] = None
     target_tab_id: Optional[str] = None
     result_key: Optional[str] = None
+    output_schema: Dict[str, Any] = Field(default_factory=dict)
+    output_payload: Dict[str, Any] = Field(default_factory=dict)
+    context_bindings: List[str] = Field(default_factory=list)
+    attempt_summary: Dict[str, Any] = Field(default_factory=dict)
+    extraction_source: Dict[str, Any] = Field(default_factory=dict)
     collection_hint: Dict[str, Any] = Field(default_factory=dict)
     item_hint: Dict[str, Any] = Field(default_factory=dict)
     ordinal: Optional[str] = None
@@ -1263,4 +1268,3 @@ class RPASessionManager:
 
 # ── Global instance ──────────────────────────────────────────────────
 rpa_manager = RPASessionManager()
-

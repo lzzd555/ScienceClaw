@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 ASSISTANT_MODULE = importlib.import_module("backend.rpa.assistant")
 ASSISTANT_RUNTIME_MODULE = importlib.import_module("backend.rpa.assistant_runtime")
+MANAGER_MODULE = importlib.import_module("backend.rpa.manager")
 
 
 class _FakeModel:
@@ -761,6 +762,42 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved["resolved"]["locator"]["method"], "text")
         self.assertEqual(resolved["resolved"]["content_node"]["semantic_kind"], "heading")
 
+    async def test_execute_structured_extract_text_parses_field_value_from_content_node(self):
+        page = _FakeActionPage()
+        intent = {
+            "action": "extract_text",
+            "description": "获取购买人字段值",
+            "prompt": "帮我获取购买人",
+            "result_key": "buyer_name",
+            "target_hint": {"role": "field", "name": "购买人"},
+            "resolved": {
+                "frame_path": [],
+                "locator": {"method": "text", "value": "购买人李雨晨"},
+                "locator_candidates": [],
+                "collection_hint": {},
+                "item_hint": {},
+                "ordinal": None,
+                "selected_locator_kind": "text",
+                "content_node": {
+                    "node_id": "content-1",
+                    "frame_path": [],
+                    "container_id": "field-1",
+                    "semantic_kind": "field",
+                    "role": "",
+                    "text": "购买人李雨晨",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "购买人李雨晨"},
+                    "element_snapshot": {"tag": "div", "text": "购买人李雨晨"},
+                },
+            },
+        }
+
+        result = await ASSISTANT_MODULE.execute_structured_intent(page, intent)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "李雨晨")
+        self.assertEqual(page.scope.locator_calls, [])
+
     async def test_execute_structured_click_does_not_mark_local_expansion_in_single_pass_mode(self):
         page = _FakeActionPage()
         intent = {
@@ -1409,6 +1446,366 @@ class RPAAssistantContextPromotionTests(unittest.IsolatedAsyncioTestCase):
         # For a simple click with no extraction, the list should be empty.
         self.assertEqual(context_writes, [],
                           "context_writes should be empty for a simple continuation command")
+
+
+class RPAStepContractTests(unittest.TestCase):
+    def test_rpa_step_exposes_new_contract_fields(self):
+        step = MANAGER_MODULE.RPAStep(id="step-1", action="ai_script")
+
+        self.assertEqual(step.output_schema, {})
+        self.assertEqual(step.output_payload, {})
+        self.assertEqual(step.context_bindings, [])
+        self.assertEqual(step.attempt_summary, {})
+        self.assertEqual(step.extraction_source, {})
+
+
+class RPAAssistantReviewFixTests(unittest.TestCase):
+    def test_context_write_entries_skip_missing_payload_keys(self):
+        entries = ASSISTANT_MODULE.RPAAssistant._build_context_write_entries(
+            ["buyer", "department"],
+            {"buyer": "李雨晨"},
+            "RAW_OUTPUT_SHOULD_NOT_LEAK",
+        )
+
+        self.assertEqual(entries, [{"key": "buyer", "value": "李雨晨"}])
+
+    def test_resolve_context_in_intent_preserves_falsy_values(self):
+        ledger = SimpleNamespace(
+            observed_values={"empty_text": "", "zero_value": 0, "false_value": False},
+            derived_values={"missing": "fallback"},
+        )
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        intent = {
+            "action": "fill",
+            "description": "fill from context",
+            "value": "${empty_text}-${zero_value}-${false_value}",
+        }
+
+        reads = assistant._resolve_context_in_intent(intent, ledger)
+
+        self.assertEqual(reads, ["empty_text", "zero_value", "false_value"])
+        self.assertEqual(intent["value"], "-0-False")
+
+    def test_empty_step_payload_dicts_do_not_block_json_recovery(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        step_data = {
+            "output_payload": {},
+            "output_schema": {},
+        }
+        raw_output = json.dumps({"buyer": "李雨晨"}, ensure_ascii=False)
+
+        output_payload = assistant._normalize_output_payload(step_data, raw_output)
+        output_schema = assistant._normalize_output_schema(step_data, output_payload)
+
+        self.assertEqual(output_payload, {"buyer": "李雨晨"})
+        self.assertEqual(output_schema, {"buyer": "string"})
+
+
+class RPAAssistantAttemptEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_emits_attempt_events_and_recovered_after_retry_status(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        success_step = {
+            "action": "ai_script",
+            "source": "ai",
+            "description": "提取 buyer",
+            "prompt": "提取 buyer",
+            "output_schema": {"buyer": "string"},
+            "output_payload": {"buyer": "李雨晨"},
+            "context_bindings": ["buyer"],
+            "attempt_summary": {},
+        }
+
+        execution_results = [
+            (
+                {"success": False, "error": "boom", "output": ""},
+                None,
+                {
+                    "action": "ai_script",
+                    "description": "提取 buyer",
+                    "output_schema": {"buyer": "string"},
+                    "context_bindings": ["buyer"],
+                },
+                [],
+            ),
+            (
+                {"success": True, "error": None, "output": json.dumps({"buyer": "李雨晨"}, ensure_ascii=False), "step": success_step},
+                None,
+                {
+                    "action": "ai_script",
+                    "description": "提取 buyer",
+                    "output_schema": {"buyer": "string"},
+                    "output_payload": {"buyer": "李雨晨"},
+                    "context_bindings": ["buyer"],
+                },
+                [],
+            ),
+        ]
+
+        async def fake_execute_single_response(*_args, **_kwargs):
+            return execution_results.pop(0)
+
+        async def fake_stream(_messages, _model_config=None):
+            yield json.dumps(
+                {
+                    "action": "ai_script",
+                    "description": "提取 buyer",
+                    "prompt": "提取 buyer",
+                    "output_schema": {"buyer": "string"},
+                    "context_bindings": ["buyer"],
+                    "thought": "retry",
+                },
+                ensure_ascii=False,
+            )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch.object(
+            assistant,
+            "_execute_single_response",
+            side_effect=fake_execute_single_response,
+        ), patch.object(
+            assistant,
+            "_stream_llm",
+            fake_stream,
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="attempt-test-1",
+                page=page,
+                message="提取 buyer",
+                steps=[],
+            ):
+                events.append(event)
+
+        event_types = [event["event"] for event in events if event["event"] in {
+            "attempt_started",
+            "attempt_output",
+            "attempt_failed",
+            "attempt_succeeded",
+            "result",
+        }]
+        self.assertEqual(
+            event_types,
+            [
+                "attempt_started",
+                "attempt_output",
+                "attempt_failed",
+                "attempt_started",
+                "attempt_output",
+                "attempt_succeeded",
+                "result",
+            ],
+        )
+
+        attempt_output_events = [event for event in events if event["event"] == "attempt_output"]
+        self.assertEqual(len(attempt_output_events), 2)
+        self.assertEqual(attempt_output_events[0]["data"]["attempt"], 1)
+        self.assertEqual(attempt_output_events[0]["data"]["action"], "ai_script")
+        self.assertEqual(attempt_output_events[0]["data"]["summary"], "提取 buyer")
+        self.assertEqual(attempt_output_events[0]["data"]["expected_output_keys"], ["buyer"])
+        self.assertEqual(attempt_output_events[1]["data"]["attempt"], 2)
+        self.assertEqual(attempt_output_events[1]["data"]["expected_output_keys"], ["buyer"])
+
+        attempt_succeeded_events = [event for event in events if event["event"] == "attempt_succeeded"]
+        self.assertEqual(len(attempt_succeeded_events), 1)
+        self.assertEqual(
+            attempt_succeeded_events[0]["data"]["context_writes"],
+            [{"key": "buyer", "value": "李雨晨"}],
+        )
+
+        result_event = next(event for event in events if event["event"] == "result")
+        result_data = result_event["data"]
+
+        self.assertEqual(result_data["status"], "recovered_after_retry")
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["step"]["output_schema"], {"buyer": "string"})
+        self.assertEqual(result_data["step"]["output_payload"], {"buyer": "李雨晨"})
+        self.assertEqual(result_data["step"]["context_bindings"], ["buyer"])
+        self.assertEqual(result_data["step"]["attempt_summary"]["attempt_count"], 2)
+        self.assertEqual(result_data["step"]["attempt_summary"]["final_status"], "recovered_after_retry")
+        self.assertEqual(result_data["step"]["extraction_source"], {"kind": "ai_script", "action": "ai_script"})
+
+    async def test_chat_emits_attempt_output_before_execution_error(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        async def fake_execute_single_response(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        async def fake_stream(_messages, _model_config=None):
+            yield json.dumps(
+                {
+                    "action": "ai_script",
+                    "description": "提取 buyer",
+                    "prompt": "提取 buyer",
+                    "output_schema": {"buyer": "string"},
+                    "context_bindings": ["buyer"],
+                    "thought": "plan ready",
+                },
+                ensure_ascii=False,
+            )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch.object(
+            assistant,
+            "_execute_single_response",
+            side_effect=fake_execute_single_response,
+        ), patch.object(
+            assistant,
+            "_stream_llm",
+            fake_stream,
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="attempt-test-2",
+                page=page,
+                message="提取 buyer",
+                steps=[],
+            ):
+                events.append(event)
+
+        event_types = [event["event"] for event in events if event["event"] in {
+            "attempt_started",
+            "attempt_output",
+            "attempt_failed",
+            "result",
+        }]
+        self.assertEqual(
+            event_types[:3],
+            ["attempt_started", "attempt_output", "attempt_failed"],
+        )
+        attempt_output_event = next(event for event in events if event["event"] == "attempt_output")
+        self.assertEqual(attempt_output_event["data"]["summary"], "提取 buyer")
+        self.assertEqual(attempt_output_event["data"]["expected_output_keys"], ["buyer"])
+
+        result_event = next(event for event in events if event["event"] == "result")
+        self.assertEqual(result_event["data"]["status"], "failed")
+
+    async def test_chat_propagates_partial_success_status(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+
+        snapshot = {
+            "url": "https://example.com",
+            "title": "Example",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [],
+                    "collections": [],
+                }
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [],
+            "containers": [],
+        }
+
+        partial_step = {
+            "action": "ai_script",
+            "source": "ai",
+            "description": "提取 buyer",
+            "prompt": "提取 buyer",
+            "output_schema": {"buyer": "string", "department": "string"},
+            "output_payload": {"buyer": "李雨晨"},
+            "context_bindings": ["buyer", "department"],
+            "attempt_summary": {},
+        }
+
+        async def fake_execute_single_response(*_args, **_kwargs):
+            return (
+                {
+                    "success": True,
+                    "status": "partial_success",
+                    "error": None,
+                    "output": json.dumps({"buyer": "李雨晨"}, ensure_ascii=False),
+                    "step": partial_step,
+                },
+                None,
+                {
+                    "action": "ai_script",
+                    "description": "提取 buyer",
+                    "output_schema": {"buyer": "string", "department": "string"},
+                    "output_payload": {"buyer": "李雨晨"},
+                    "context_bindings": ["buyer", "department"],
+                },
+                [],
+            )
+
+        async def fake_stream(_messages, _model_config=None):
+            yield "{\"thought\":\"done\"}"
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch.object(
+            assistant,
+            "_execute_single_response",
+            side_effect=fake_execute_single_response,
+        ), patch.object(
+            assistant,
+            "_stream_llm",
+            fake_stream,
+        ):
+            events = []
+            async for event in assistant.chat(
+                session_id="partial-test-1",
+                page=page,
+                message="提取 buyer",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_event = next(event for event in events if event["event"] == "result")
+        result_data = result_event["data"]
+
+        self.assertEqual(result_data["status"], "partial_success")
+        self.assertTrue(result_data["success"])
+        self.assertEqual(result_data["step"]["attempt_summary"]["final_status"], "partial_success")
+        self.assertEqual(result_data["step"]["attempt_summary"]["attempt_count"], 1)
+        self.assertEqual(result_data["step"]["output_payload"], {"buyer": "李雨晨"})
+        self.assertEqual(result_data["step"]["output_schema"], {"buyer": "string", "department": "string"})
+        self.assertEqual(result_data["step"]["extraction_source"], {"kind": "ai_script", "action": "ai_script"})
 
 
 class RPAAssistantPromptFormattingTests(unittest.TestCase):

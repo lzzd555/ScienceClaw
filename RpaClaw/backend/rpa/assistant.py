@@ -647,7 +647,7 @@ class RPAAssistant:
 
         yield {"event": "executing", "data": {}}
         _session = rpa_manager.sessions.get(session_id)
-        result, final_response, code, resolution, retry_notice, context_reads = await self._execute_with_retry(
+        result, final_response, code, resolution, retry_notice, context_reads, execution_trace = await self._execute_with_retry(
             page=page,
             page_provider=page_provider,
             snapshot=snapshot,
@@ -665,6 +665,8 @@ class RPAAssistant:
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": final_response})
         self._trim_history(session_id)
+
+        final_status = self._normalize_final_status(result, retry_happened=bool(execution_trace.get("retry_happened")))
 
         step_data = None
         if result["success"]:
@@ -703,11 +705,28 @@ class RPAAssistant:
         if step_data is not None:
             step_data["context_reads"] = context_reads
             step_data["context_writes"] = context_writes
+            output_payload = self._normalize_output_payload(step_data, result.get("output"))
+            step_data["output_payload"] = output_payload
+            step_data["output_schema"] = self._normalize_output_schema(step_data, output_payload)
+            step_data["context_bindings"] = self._normalize_context_bindings(step_data, context_writes)
+            step_data["attempt_summary"] = self._build_attempt_summary(
+                execution_trace.get("attempts", []),
+                final_status,
+            )
+            step_data["extraction_source"] = self._normalize_extraction_source(step_data, resolution)
+            attempt_context_writes = self._build_context_write_entries(context_writes, output_payload, result.get("output"))
+            for attempt_event in execution_trace.get("events", []):
+                if attempt_event.get("event") == "attempt_succeeded":
+                    attempt_event.setdefault("data", {})["context_writes"] = attempt_context_writes
+
+        for attempt_event in execution_trace.get("events", []):
+            yield attempt_event
 
         yield {
             "event": "result",
             "data": {
                 "success": result["success"],
+                "status": final_status,
                 "error": result.get("error"),
                 "step": step_data,
                 "output": result.get("output"),
@@ -740,6 +759,11 @@ class RPAAssistant:
             for k in result_keys:
                 if isinstance(k, str) and k and k not in keys:
                     keys.append(k)
+        context_bindings = step_data.get("context_bindings")
+        if not keys and action == "ai_script" and isinstance(context_bindings, list):
+            for k in context_bindings:
+                if isinstance(k, str) and k and k not in keys:
+                    keys.append(k)
 
         if not keys:
             return []
@@ -763,6 +787,248 @@ class RPAAssistant:
             return keys
 
         return keys
+
+    @staticmethod
+    def _extract_action_name(response_text: str) -> str:
+        try:
+            parsed = json.loads(response_text)
+        except (TypeError, json.JSONDecodeError):
+            return "unknown"
+        if isinstance(parsed, dict):
+            action = parsed.get("action")
+            if isinstance(action, str) and action:
+                return action
+        return "unknown"
+
+    @staticmethod
+    def _extract_attempt_summary(response_text: str) -> str:
+        try:
+            parsed = json.loads(response_text)
+        except (TypeError, json.JSONDecodeError):
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        for key in ("description", "thought", "summary"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @staticmethod
+    def _build_attempt_event(
+        event_type: str,
+        *,
+        attempt_number: int,
+        action: str,
+        summary: str = "",
+        error: Optional[str] = None,
+        retrying: bool = False,
+        output_payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "attempt": attempt_number,
+            "action": action,
+        }
+        if summary:
+            data["summary"] = summary
+        if event_type == "attempt_failed":
+            data["failure_kind"] = "execution_error"
+            data["error"] = error
+            data["retrying"] = retrying
+        elif event_type == "attempt_succeeded":
+            data["output_payload"] = output_payload or {}
+        return {"event": event_type, "data": data}
+
+    @staticmethod
+    def _build_context_write_entries(
+        context_writes: List[str],
+        output_payload: Dict[str, Any],
+        output: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
+        for key in context_writes or []:
+            if not isinstance(output_payload, dict) or key not in output_payload:
+                continue
+            value = output_payload[key]
+            entries.append({"key": key, "value": value})
+        return entries
+
+    @staticmethod
+    def _build_attempt_output_event(
+        *,
+        attempt_number: int,
+        plan_source: Dict[str, Any],
+        response_text: str,
+        fallback_action: str,
+    ) -> Dict[str, Any]:
+        action = ""
+        if isinstance(plan_source.get("action"), str) and plan_source["action"]:
+            action = plan_source["action"]
+        if not action:
+            action = fallback_action
+
+        summary = ""
+        for key in ("summary", "description", "prompt", "thought"):
+            value = plan_source.get(key)
+            if isinstance(value, str) and value.strip():
+                summary = value.strip()
+                break
+        if not summary:
+            summary = RPAAssistant._extract_attempt_summary(response_text)
+
+        expected_output_keys = RPAAssistant._collect_expected_output_keys(plan_source)
+        data: Dict[str, Any] = {
+            "attempt": attempt_number,
+            "action": action,
+            "summary": summary,
+            "expected_output_keys": expected_output_keys,
+        }
+        return {"event": "attempt_output", "data": data}
+
+    @staticmethod
+    def _collect_expected_output_keys(plan_source: Dict[str, Any]) -> List[str]:
+        keys: List[str] = []
+        output_schema = plan_source.get("output_schema")
+        if isinstance(output_schema, dict):
+            for key in output_schema.keys():
+                if isinstance(key, str) and key and key not in keys:
+                    keys.append(key)
+        output_payload = plan_source.get("output_payload")
+        if isinstance(output_payload, dict):
+            for key in output_payload.keys():
+                if isinstance(key, str) and key and key not in keys:
+                    keys.append(key)
+        context_bindings = plan_source.get("context_bindings")
+        if isinstance(context_bindings, list):
+            for key in context_bindings:
+                if isinstance(key, str) and key and key not in keys:
+                    keys.append(key)
+        result_key = plan_source.get("result_key")
+        if isinstance(result_key, str) and result_key and result_key not in keys:
+            keys.append(result_key)
+        result_keys = plan_source.get("result_keys")
+        if isinstance(result_keys, list):
+            for key in result_keys:
+                if isinstance(key, str) and key and key not in keys:
+                    keys.append(key)
+        return keys
+
+    @staticmethod
+    def _build_attempt_record(
+        *,
+        attempt_number: int,
+        result: Dict[str, Any],
+        code: Optional[str],
+        resolution: Optional[Dict[str, Any]],
+        context_reads: List[str],
+        retrying: bool,
+    ) -> Dict[str, Any]:
+        success = bool(result.get("success"))
+        return {
+            "attempt": attempt_number,
+            "status": "succeeded" if success else "failed",
+            "failure_kind": None if success else "execution_error",
+            "error": result.get("error"),
+            "output": result.get("output"),
+            "code": code,
+            "resolution": resolution,
+            "context_reads": context_reads,
+            "retrying": retrying,
+        }
+
+    @staticmethod
+    def _normalize_output_payload(step_data: Dict[str, Any], output: Optional[str]) -> Dict[str, Any]:
+        existing = step_data.get("output_payload")
+        if isinstance(existing, dict) and existing:
+            return dict(existing)
+        if isinstance(output, str) and output.strip():
+            try:
+                parsed = json.loads(output)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    @staticmethod
+    def _normalize_output_schema(step_data: Dict[str, Any], output_payload: Dict[str, Any]) -> Dict[str, Any]:
+        existing = step_data.get("output_schema")
+        if isinstance(existing, dict) and existing:
+            return dict(existing)
+        if output_payload:
+            return {key: "string" for key in output_payload.keys()}
+        return {}
+
+    @staticmethod
+    def _normalize_context_bindings(step_data: Dict[str, Any], context_writes: List[str]) -> List[str]:
+        bindings = step_data.get("context_bindings")
+        if isinstance(bindings, list):
+            normalized = [key for key in bindings if isinstance(key, str) and key]
+            if normalized:
+                return normalized
+        return list(context_writes or [])
+
+    @staticmethod
+    def _build_attempt_summary(attempts: List[Dict[str, Any]], final_status: str) -> Dict[str, Any]:
+        if not attempts:
+            return {}
+        failure_kinds = [
+            attempt["failure_kind"]
+            for attempt in attempts
+            if attempt.get("status") == "failed" and attempt.get("failure_kind")
+        ]
+        return {
+            "attempt_count": len(attempts),
+            "final_status": final_status,
+            "failure_kinds": failure_kinds,
+        }
+
+    @staticmethod
+    def _normalize_final_status(result: Dict[str, Any], retry_happened: bool) -> str:
+        explicit_status = result.get("status")
+        if explicit_status == "partial_success":
+            return "partial_success"
+        if retry_happened and result.get("success"):
+            return "recovered_after_retry"
+        if isinstance(explicit_status, str) and explicit_status in {
+            "success",
+            "failed",
+            "recovered_after_retry",
+            "partial_success",
+        }:
+            return explicit_status
+        return "success" if result.get("success") else "failed"
+
+    @staticmethod
+    def _normalize_extraction_source(
+        step_data: Dict[str, Any],
+        resolution: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        kind = "ai_script"
+        if isinstance(resolution, dict):
+            if resolution.get("selected_locator_kind") or resolution.get("locator"):
+                kind = "structured_intent"
+
+        source: Dict[str, Any] = {
+            "kind": kind,
+            "action": step_data.get("action", kind if kind != "structured_intent" else "ai_script"),
+        }
+
+        frame_path = None
+        if isinstance(step_data.get("frame_path"), list) and step_data["frame_path"]:
+            frame_path = list(step_data["frame_path"])
+        elif isinstance(resolution, dict) and isinstance(resolution.get("frame_path"), list) and resolution["frame_path"]:
+            frame_path = list(resolution["frame_path"])
+        if frame_path:
+            source["frame_path"] = frame_path
+
+        if isinstance(step_data.get("assistant_diagnostics"), dict):
+            diagnostics = step_data["assistant_diagnostics"]
+            selected_locator_kind = diagnostics.get("selected_locator_kind")
+            if isinstance(selected_locator_kind, str) and selected_locator_kind:
+                source["locator_kind"] = selected_locator_kind
+
+        return source
 
     @staticmethod
     def _promote_to_ledger(
@@ -828,19 +1094,86 @@ class RPAAssistant:
         messages: List[Dict[str, str]],
         model_config: Optional[Dict[str, Any]],
         context_ledger: Optional[Any] = None,
-    ) -> tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str, List[str]]:
+    ) -> tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str, List[str], Dict[str, Any]]:
+        attempts: List[Dict[str, Any]] = []
+        attempt_events: List[Dict[str, Any]] = []
         current_page = page_provider() if page_provider else page
         if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, full_response, None, None, "", []
+            execution_trace = {"attempts": attempts, "events": attempt_events, "final_status": "failed", "retry_happened": False}
+            return {"success": False, "error": "No active page available", "output": ""}, full_response, None, None, "", [], execution_trace
 
         try:
+            plan_source = self._extract_structured_intent(full_response) or {}
+            attempt_events.append(
+                self._build_attempt_event(
+                    "attempt_started",
+                    attempt_number=1,
+                    action=self._extract_action_name(full_response),
+                    summary=self._extract_attempt_summary(full_response),
+                )
+            )
+            attempt_events.append(
+                self._build_attempt_output_event(
+                    attempt_number=1,
+                    plan_source=plan_source,
+                    response_text=full_response,
+                    fallback_action=self._extract_action_name(full_response),
+                )
+            )
             result, code, resolution, context_reads = await self._execute_single_response(current_page, snapshot, full_response, context_ledger)
+            attempts.append(
+                self._build_attempt_record(
+                    attempt_number=1,
+                    result=result,
+                    code=code,
+                    resolution=resolution,
+                    context_reads=context_reads,
+                    retrying=not result["success"],
+                )
+            )
             if result["success"]:
-                return result, full_response, code, resolution, "", context_reads
+                attempt_events.append(
+                    self._build_attempt_event(
+                        "attempt_succeeded",
+                        attempt_number=1,
+                        action=self._extract_action_name(full_response),
+                        output_payload=self._normalize_output_payload(result.get("step") or {}, result.get("output")),
+                    )
+                )
+                execution_trace = {"attempts": attempts, "events": attempt_events, "final_status": "success", "retry_happened": False}
+                return result, full_response, code, resolution, "", context_reads, execution_trace
+            attempt_events.append(
+                self._build_attempt_event(
+                    "attempt_failed",
+                    attempt_number=1,
+                    action=self._extract_action_name(full_response),
+                    error=result.get("error"),
+                    retrying=True,
+                )
+            )
         except Exception as exc:
             result = {"success": False, "error": str(exc), "output": ""}
             code = None
             resolution = None
+            attempts.append(
+                self._build_attempt_record(
+                    attempt_number=1,
+                    result=result,
+                    code=code,
+                    resolution=resolution,
+                    context_reads=[],
+                    retrying=True,
+                )
+            )
+            attempt_events.append(
+                self._build_attempt_event(
+                    "attempt_failed",
+                    attempt_number=1,
+                    action=self._extract_action_name(full_response),
+                    error=str(exc),
+                    retrying=True,
+                )
+            )
 
         retry_messages = messages + [
             {"role": "assistant", "content": full_response},
@@ -852,19 +1185,94 @@ class RPAAssistant:
 
         current_page = page_provider() if page_provider else page
         if current_page is None:
-            return {"success": False, "error": "No active page available", "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
+            execution_trace = {"attempts": attempts, "events": attempt_events, "final_status": "failed", "retry_happened": True}
+            return {"success": False, "error": "No active page available", "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", [], execution_trace
 
         retry_snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
+        attempt_events.append(
+            self._build_attempt_event(
+                "attempt_started",
+                attempt_number=2,
+                action=self._extract_action_name(retry_response),
+                summary=self._extract_attempt_summary(retry_response),
+            )
+        )
         try:
+            retry_plan_source = self._extract_structured_intent(retry_response) or {}
+            attempt_events.append(
+                self._build_attempt_output_event(
+                    attempt_number=2,
+                    plan_source=retry_plan_source,
+                    response_text=retry_response,
+                    fallback_action=self._extract_action_name(retry_response),
+                )
+            )
             retry_result, retry_code, retry_resolution, retry_reads = await self._execute_single_response(
                 current_page,
                 retry_snapshot,
                 retry_response,
                 context_ledger,
             )
-            return retry_result, retry_response, retry_code, retry_resolution, "\n\nExecution failed. Retrying.\n\n", retry_reads
+            attempts.append(
+                self._build_attempt_record(
+                    attempt_number=2,
+                    result=retry_result,
+                    code=retry_code,
+                    resolution=retry_resolution,
+                    context_reads=retry_reads,
+                    retrying=False,
+                )
+            )
+            if retry_result["success"]:
+                attempt_events.append(
+                    self._build_attempt_event(
+                        "attempt_succeeded",
+                        attempt_number=2,
+                        action=self._extract_action_name(retry_response),
+                        output_payload=self._normalize_output_payload(retry_result.get("step") or {}, retry_result.get("output")),
+                    )
+                )
+                final_status = self._normalize_final_status(retry_result, retry_happened=True)
+            else:
+                attempt_events.append(
+                    self._build_attempt_event(
+                        "attempt_failed",
+                        attempt_number=2,
+                        action=self._extract_action_name(retry_response),
+                        error=retry_result.get("error"),
+                        retrying=False,
+                    )
+                )
+                final_status = self._normalize_final_status(retry_result, retry_happened=True)
+            execution_trace = {
+                "attempts": attempts,
+                "events": attempt_events,
+                "final_status": final_status,
+                "retry_happened": True,
+            }
+            return retry_result, retry_response, retry_code, retry_resolution, "\n\nExecution failed. Retrying.\n\n", retry_reads, execution_trace
         except Exception as exc:
-            return {"success": False, "error": str(exc), "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", []
+            attempts.append(
+                self._build_attempt_record(
+                    attempt_number=2,
+                    result={"success": False, "error": str(exc), "output": ""},
+                    code=None,
+                    resolution=None,
+                    context_reads=[],
+                    retrying=False,
+                )
+            )
+            attempt_events.append(
+                self._build_attempt_event(
+                    "attempt_failed",
+                    attempt_number=2,
+                    action=self._extract_action_name(retry_response),
+                    error=str(exc),
+                    retrying=False,
+                )
+            )
+            execution_trace = {"attempts": attempts, "events": attempt_events, "final_status": "failed", "retry_happened": True}
+            return {"success": False, "error": str(exc), "output": ""}, retry_response, None, None, "\n\nExecution failed. Retrying.\n\n", [], execution_trace
 
     async def _execute_single_response(
         self,
@@ -986,11 +1394,11 @@ class RPAAssistant:
 
         def _replace_ref(match: Any) -> str:
             key = match.group(1)
-            cv = context_ledger.observed_values.get(key) or context_ledger.derived_values.get(key)
-            if cv is not None and cv.value is not None:
+            has_value, value = RPAAssistant._lookup_context_value(context_ledger, key)
+            if has_value:
                 if key not in context_reads:
                     context_reads.append(key)
-                return str(cv.value)
+                return str(value)
             return match.group(0)  # leave unresolved references as-is
 
         for field in ("value",):
@@ -999,6 +1407,20 @@ class RPAAssistant:
                 intent[field] = _re.sub(r"\$\{(\w+)\}", _replace_ref, val)
 
         return context_reads
+
+    @staticmethod
+    def _lookup_context_value(context_ledger: Any, key: str) -> tuple[bool, Any]:
+        for store_name in ("observed_values", "derived_values"):
+            store = getattr(context_ledger, store_name, None)
+            if not isinstance(store, dict) or key not in store:
+                continue
+            entry = store[key]
+            if isinstance(entry, dict):
+                return True, entry.get("value")
+            if hasattr(entry, "value"):
+                return True, getattr(entry, "value")
+            return True, entry
+        return False, None
 
     @staticmethod
     def _extract_code(text: str) -> Optional[str]:
@@ -1040,6 +1462,3 @@ class RPAAssistant:
 
     async def _execute_on_page(self, page: Page, code: str) -> Dict[str, Any]:
         return await _execute_on_page(page, code)
-
-
-
