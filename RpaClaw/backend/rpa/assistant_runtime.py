@@ -45,8 +45,6 @@ EXTRACT_ELEMENTS_JS = r"""() => {
     function stableSelector(el) {
         const tag = el.tagName.toLowerCase();
         if (el.id && !isGuidLike(el.id)) return `${tag}#${cssEsc(el.id)}`;
-        const classes = Array.from(el.classList || []).filter(cls => cls && !isGuidLike(cls)).slice(0, 2);
-        if (classes.length) return `${tag}.${classes.map(cssEsc).join('.')}`;
         const role = el.getAttribute('role');
         if (role) return `${tag}[role="${cssEsc(role)}"]`;
         return tag;
@@ -77,7 +75,7 @@ EXTRACT_ELEMENTS_JS = r"""() => {
     }
     function findUniqueAnchor(start) {
         let current = start;
-        for (let depth = 0; current && current !== document.body && depth < 4; depth++, current = current.parentElement) {
+        for (let depth = 0; current && current !== document.body && depth < 20; depth++, current = current.parentElement) {
             const sel = stableSelector(current);
             if (selectorIsUnique(sel)) return { node: current, selector: sel };
         }
@@ -86,7 +84,7 @@ EXTRACT_ELEMENTS_JS = r"""() => {
     function findCollectionContext(el) {
         let repeatedRoot = null;
         let current = el.parentElement;
-        for (let depth = 0; current && current !== document.body && depth < 6; depth++, current = current.parentElement) {
+        for (let depth = 0; current && current !== document.body && depth < 20; depth++, current = current.parentElement) {
             if (countSiblingMatches(current) >= 2) {
                 repeatedRoot = current;
                 break;
@@ -107,6 +105,7 @@ EXTRACT_ELEMENTS_JS = r"""() => {
             item_count: countSiblingMatches(repeatedRoot),
         };
     }
+    const ELEMENT_CAP = Math.min(els.length, 200);
     for (const el of els) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
@@ -142,7 +141,7 @@ EXTRACT_ELEMENTS_JS = r"""() => {
 
         results.push(info);
         index++;
-        if (results.length >= 80) break;
+        if (results.length >= ELEMENT_CAP) break;
     }
     return JSON.stringify(results);
 }"""

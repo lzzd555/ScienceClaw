@@ -232,6 +232,10 @@ SNAPSHOT_V2_JS = r"""() => {
         return 'text';
     }
 
+    const totalActionable = document.querySelectorAll(ACTIONABLE).length;
+    const totalContent = document.querySelectorAll(CONTENT).length;
+    const ACTIONABLE_CAP = Math.min(totalActionable, 300);
+    const CONTENT_CAP = Math.min(totalContent, 400);
     const actionableSeen = new Set();
     for (const el of Array.from(document.querySelectorAll(ACTIONABLE))) {
         const rect = el.getBoundingClientRect();
@@ -273,7 +277,8 @@ SNAPSHOT_V2_JS = r"""() => {
             element_snapshot: {
                 tag: el.tagName.toLowerCase(),
                 text,
-                title,
+                role,
+                name,
                 href: normalizeText(el.getAttribute('href') || '', 120),
             },
         };
@@ -283,7 +288,7 @@ SNAPSHOT_V2_JS = r"""() => {
             if (container)
                 container.child_actionable_ids.push(node.node_id);
         }
-        if (result.actionable_nodes.length >= 120)
+        if (result.actionable_nodes.length >= ACTIONABLE_CAP)
             break;
     }
 
@@ -321,7 +326,7 @@ SNAPSHOT_V2_JS = r"""() => {
             if (container)
                 container.child_content_ids.push(node.node_id);
         }
-        if (result.content_nodes.length >= 160)
+        if (result.content_nodes.length >= CONTENT_CAP)
             break;
     }
 
