@@ -60,6 +60,7 @@ const MOVE_THROTTLE = 50; // 50ms 节流
 const steps = ref<any[]>([
   { id: '0', title: '初始化环境', description: '正在配置沙箱录制环境...', status: 'active' }
 ]);
+const acceptedTraces = ref<any[]>([]);
 
 const parseLocator = (raw: unknown) => {
   if (!raw) return null;
@@ -137,6 +138,45 @@ const mapServerSteps = (serverSteps: any[]) => ([
     validationDetails: s.validation?.details || '',
   }))
 ]);
+
+const formatTraceType = (traceType?: string) => {
+  const value = traceType || '';
+  if (value === 'ai_operation') return 'AI Trace';
+  if (value === 'data_capture') return 'Data Capture';
+  if (value === 'dataflow_fill') return 'Dataflow Fill';
+  if (value === 'navigation') return 'Navigation';
+  if (value === 'manual_action') return 'Manual';
+  return value || 'Trace';
+};
+
+const mapServerTraces = (serverTraces: any[]) => ([
+  { id: '0', title: 'Environment ready', description: 'Playwright browser is ready', status: 'completed', deletable: false },
+  ...serverTraces.map((t: any, i: number) => ({
+    id: String(i + 1),
+    title: t.description || t.user_instruction || formatTraceType(t.trace_type),
+    description: t.user_instruction || t.action || formatTraceType(t.trace_type),
+    status: 'completed',
+    source: t.source === 'ai' || t.trace_type === 'ai_operation' ? 'ai' : 'record',
+    traceType: t.trace_type,
+    sensitive: false,
+    deletable: false,
+    locatorSummary: t.locator_candidates?.length ? formatLocator(t.locator_candidates[0]?.locator || t.locator_candidates[0]) : '',
+    frameSummary: t.after_page?.url || '',
+    validationStatus: t.accepted === false ? 'warning' : 'ok',
+    validationDetails: formatTraceType(t.trace_type),
+  }))
+]);
+
+const refreshTimeline = (serverSteps: any[] = [], serverTraces: any[] = []) => {
+  if (serverTraces.length > 0) {
+    acceptedTraces.value = serverTraces;
+    steps.value = mapServerTraces(serverTraces);
+    return;
+  }
+  if (serverSteps.length > 0) {
+    steps.value = mapServerSteps(serverSteps);
+  }
+};
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -230,9 +270,8 @@ const startPollingSteps = () => {
     try {
       const resp = await apiClient.get(`/rpa/session/${sessionId.value}`);
       const serverSteps = resp.data.session?.steps || [];
-      if (serverSteps.length > 0) {
-        steps.value = mapServerSteps(serverSteps);
-      }
+      const serverTraces = resp.data.session?.traces || [];
+      refreshTimeline(serverSteps, serverTraces);
     } catch (err) {
       // Ignore polling errors
     }
@@ -582,7 +621,8 @@ const deleteStep = async (stepIndex: number) => {
     await apiClient.delete(`/rpa/session/${sessionId.value}/step/${stepIndex}`);
     const resp = await apiClient.get(`/rpa/session/${sessionId.value}`);
     const serverSteps = resp.data.session?.steps || [];
-    steps.value = mapServerSteps(serverSteps);
+    const serverTraces = resp.data.session?.traces || [];
+    refreshTimeline(serverSteps, serverTraces);
   } catch (err) {
     console.error('Failed to delete step:', err);
   }
@@ -688,6 +728,10 @@ const sendMessage = async () => {
               if (!chatMessages.value[msgIdx].actions) chatMessages.value[msgIdx].actions = [];
               chatMessages.value[msgIdx].actions!.push({ description: data.description || '', code: data.code || '', showCode: false });
             } else if (eventType === 'agent_step_done') {
+              if (data.trace) {
+                acceptedTraces.value = [...acceptedTraces.value.filter((t: any) => t.trace_id !== data.trace.trace_id), data.trace];
+                steps.value = mapServerTraces(acceptedTraces.value);
+              }
               if (data.step) {
                 const s = data.step;
                 steps.value.push({
@@ -701,13 +745,20 @@ const sendMessage = async () => {
               }
               // Show output if present
               if (data.output) {
-                chatMessages.value[msgIdx].text += `\n✓ 输出：${data.output}`;
+                const outputText = typeof data.output === 'string' ? data.output : JSON.stringify(data.output);
+                chatMessages.value[msgIdx].text += `\nOutput: ${outputText}`;
+              }
+            } else if (eventType === 'trace_added') {
+              if (data?.trace_id) {
+                acceptedTraces.value = [...acceptedTraces.value.filter((t: any) => t.trace_id !== data.trace_id), data];
+                steps.value = mapServerTraces(acceptedTraces.value);
               }
             } else if (eventType === 'confirm_required') {
               pendingConfirm.value = data;
             } else if (eventType === 'agent_done') {
               chatMessages.value[msgIdx].status = 'done';
-              chatMessages.value[msgIdx].text += `\n✅ 任务完成，共执行 ${data.total_steps ?? 0} 步`;
+              const completedCount = data.trace_count ?? data.total_steps ?? Math.max(steps.value.length - 1, 0);
+              chatMessages.value[msgIdx].text += `\nTask completed, accepted ${completedCount} trace(s).`;
               agentRunning.value = false;
               pendingConfirm.value = null;
             } else if (eventType === 'agent_aborted') {
@@ -800,7 +851,7 @@ const sendMessage = async () => {
               </div>
               <div class="flex items-center gap-1">
                 <button
-                  v-if="index > 0"
+                  v-if="index > 0 && step.deletable !== false"
                   @click="deleteStep(index - 1)"
                   class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
                   title="删除步骤"

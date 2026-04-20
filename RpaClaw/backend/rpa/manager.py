@@ -14,6 +14,8 @@ from playwright.async_api import Page, BrowserContext
 from .cdp_connector import get_cdp_connector
 from .frame_selectors import build_frame_path
 from .playwright_security import get_context_kwargs
+from .trace_models import RPAAcceptedTrace, RPATraceDiagnostic, RPARuntimeResults
+from .trace_recorder import infer_dataflow_for_fill, manual_step_to_trace
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,10 @@ class RPASession(BaseModel):
     user_id: str
     start_time: datetime = Field(default_factory=datetime.now)
     status: str = "recording"  # recording, stopped, testing, saved
-    steps: List[RPAStep] = []
+    steps: List[RPAStep] = Field(default_factory=list)
+    traces: List[RPAAcceptedTrace] = Field(default_factory=list)
+    trace_diagnostics: List[RPATraceDiagnostic] = Field(default_factory=list)
+    runtime_results: RPARuntimeResults = Field(default_factory=RPARuntimeResults)
     sandbox_session_id: str
     paused: bool = False  # pause event recording during AI execution
     active_tab_id: Optional[str] = None
@@ -1140,6 +1145,7 @@ class RPASessionManager:
             previous_step = session.steps[insert_at - 1] if insert_at > 0 else None
             if self._is_same_fill_target(previous_step, step):
                 self._merge_fill_step(previous_step, step)
+                await self._record_manual_trace_for_step(session_id, previous_step)
                 await self._broadcast_step(session_id, previous_step)
                 return previous_step
 
@@ -1148,6 +1154,7 @@ class RPASessionManager:
                 return next_step
 
         session.steps.insert(insert_at, step)
+        await self._record_manual_trace_for_step(session_id, step)
 
         await self._broadcast_step(session_id, step)
         return step
@@ -1212,6 +1219,58 @@ class RPASessionManager:
     async def _broadcast_step(self, session_id: str, step: RPAStep):
         if session_id in self.ws_connections:
             message = {"type": "step", "data": step.model_dump()}
+            for ws in self.ws_connections[session_id]:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    pass
+
+    async def append_trace(self, session_id: str, trace: RPAAcceptedTrace) -> List[RPAAcceptedTrace]:
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        session.traces.append(trace)
+        await self._broadcast_trace(session_id, trace)
+        return session.traces
+
+    async def append_trace_diagnostic(self, session_id: str, diagnostic: RPATraceDiagnostic) -> List[RPATraceDiagnostic]:
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        session.trace_diagnostics.append(diagnostic)
+        if session_id in self.ws_connections:
+            message = {"type": "trace_diagnostic", "data": diagnostic.model_dump(mode="json")}
+            for ws in self.ws_connections[session_id]:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    pass
+        return session.trace_diagnostics
+
+    def write_runtime_result(self, session_id: str, key: Optional[str], value: Any) -> None:
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        session.runtime_results.write(key, value)
+
+    async def _record_manual_trace_for_step(self, session_id: str, step: RPAStep) -> None:
+        if step.source != "record":
+            return
+        session = self.sessions.get(session_id)
+        if not session:
+            return
+        try:
+            trace = manual_step_to_trace(step.model_dump())
+            trace = infer_dataflow_for_fill(trace, session.runtime_results)
+            session.traces = [existing for existing in session.traces if existing.trace_id != trace.trace_id]
+            session.traces.append(trace)
+            await self._broadcast_trace(session_id, trace)
+        except Exception as exc:
+            logger.debug("[RPA] Failed to record manual trace for step %s: %s", step.id, exc)
+
+    async def _broadcast_trace(self, session_id: str, trace: RPAAcceptedTrace) -> None:
+        if session_id in self.ws_connections:
+            message = {"type": "trace_added", "data": trace.model_dump(mode="json")}
             for ws in self.ws_connections[session_id]:
                 try:
                     await ws.send_json(message)

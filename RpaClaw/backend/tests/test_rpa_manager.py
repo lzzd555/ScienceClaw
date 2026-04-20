@@ -13,6 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 MANAGER_MODULE = importlib.import_module("backend.rpa.manager")
+TRACE_MODELS_MODULE = importlib.import_module("backend.rpa.trace_models")
 
 
 class _FakeContext:
@@ -160,6 +161,44 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
             sandbox_session_id="sandbox-1",
         )
         self.manager.sessions[self.session.id] = self.session
+
+    async def test_session_stores_traces_and_runtime_results(self):
+        trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="trace-1",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.NAVIGATION,
+            source="manual",
+            after_page=TRACE_MODELS_MODULE.RPAPageState(url="https://example.test"),
+        )
+
+        await self.manager.append_trace(self.session.id, trace)
+        self.manager.write_runtime_result(
+            self.session.id,
+            "selected_project",
+            {"url": "https://github.com/owner/repo"},
+        )
+
+        self.assertEqual(self.session.traces[0].trace_id, "trace-1")
+        self.assertEqual(
+            self.session.runtime_results.resolve_ref("selected_project.url"),
+            "https://github.com/owner/repo",
+        )
+
+    async def test_add_step_records_manual_trace_without_breaking_steps(self):
+        step = await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.test",
+                "description": "Open example",
+                "source": "record",
+            },
+        )
+
+        self.assertEqual(self.session.steps[0].id, step.id)
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].trace_type, "navigation")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.test")
 
     async def test_create_session_uses_https_ignoring_context(self):
         fake_browser = _FakeBrowser()
