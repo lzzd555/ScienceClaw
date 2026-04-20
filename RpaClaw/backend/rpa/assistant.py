@@ -13,6 +13,7 @@ from backend.rpa.assistant_runtime import (
     resolve_structured_intent,
     resolve_collection_target,
 )
+from backend.rpa.context_ledger import ContextValue
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +453,7 @@ class RPAAssistant:
             else:
                 # ── Single action: original flow ──
                 try:
-                    result, code, resolution, context_reads = await self._execute_single_response(
+                    result, code, resolution, context_reads, _ai_writes = await self._execute_single_response(
                         current_page, snapshot, full_response, context_ledger
                     )
                 except Exception as exc:
@@ -588,7 +589,7 @@ class RPAAssistant:
                 else:
                     # ── Retry single-action ──
                     try:
-                        result, code, resolution, context_reads = await self._execute_single_response(
+                        result, code, resolution, context_reads, _ai_writes = await self._execute_single_response(
                             current_page, retry_snapshot, retry_response, context_ledger
                         )
                     except Exception as exc:
@@ -754,7 +755,7 @@ class RPAAssistant:
         Returns (result, context_reads).
         """
         intent_response = json.dumps(intent_json, ensure_ascii=False)
-        result, _, resolution, intent_reads = await self._execute_single_response(
+        result, _, resolution, intent_reads, _ai_writes = await self._execute_single_response(
             current_page, snapshot, intent_response, context_ledger
         )
         if result.get("success") and resolution:
@@ -779,10 +780,10 @@ class RPAAssistant:
         snapshot: Dict[str, Any],
         full_response: str,
         context_ledger: Optional[Any] = None,
-    ) -> tuple[Dict[str, Any], Optional[str], Optional[Dict[str, Any]], List[str]]:
+    ) -> tuple[Dict[str, Any], Optional[str], Optional[Dict[str, Any]], List[str], List[str]]:
         """Execute a single LLM response.
 
-        Returns (result, code, resolution, context_reads).
+        Returns (result, code, resolution, context_reads, ai_context_writes).
         """
         structured_intent = self._extract_structured_intent(full_response)
         if structured_intent:
@@ -790,13 +791,30 @@ class RPAAssistant:
             context_reads = self._resolve_context_in_intent(structured_intent, context_ledger)
             resolved_intent = resolve_structured_intent(snapshot, structured_intent)
             result = await execute_structured_intent(current_page, resolved_intent)
-            return result, None, resolved_intent, context_reads
+            return result, None, resolved_intent, context_reads, []
 
         code = self._extract_code(full_response)
         if not code:
             raise ValueError("Unable to extract structured intent or executable code from assistant response")
-        result = await self._execute_on_page(current_page, code)
-        return result, code, None, []
+
+        # Build context dict from ledger for AI script execution
+        pre_context = self._build_context_from_ledger(context_ledger)
+        result = await self._execute_on_page(current_page, code, pre_context)
+
+        # Detect new keys written by the AI script
+        post_context = result.get("context", {})
+        ai_context_writes = [k for k in post_context if k not in pre_context]
+
+        # Sync new values back to context_ledger
+        if ai_context_writes and context_ledger is not None:
+            for key in ai_context_writes:
+                val = post_context[key]
+                context_ledger.observed_values[key] = ContextValue(
+                    key=key, value=val, source_kind="ai_script"
+                )
+
+        result["context_writes_from_ai"] = ai_context_writes
+        return result, code, None, [], ai_context_writes
 
     def _build_messages(
         self,
@@ -939,6 +957,20 @@ class RPAAssistant:
         if single:
             return [single]
         return []
+
+    @staticmethod
+    def _build_context_from_ledger(context_ledger: Any) -> Dict[str, str]:
+        """Build a flat context dict from the session's context ledger."""
+        if context_ledger is None:
+            return {}
+        ctx: Dict[str, str] = {}
+        for key, entry in context_ledger.observed_values.items():
+            if entry.value is not None:
+                ctx[key] = str(entry.value)
+        for key, entry in context_ledger.derived_values.items():
+            if entry.value is not None:
+                ctx[key] = str(entry.value)
+        return ctx
 
     @staticmethod
     def _resolve_context_in_intent(
