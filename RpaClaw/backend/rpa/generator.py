@@ -142,11 +142,12 @@ class StepExecutionError(Exception):
             "context_rebuild_plan": rebuild_plan,
         }
 
-    def generate_script(self, steps: List[Dict[str, Any]], params: Dict[str, Any] = None, is_local: bool = False, test_mode: bool = False) -> str:
+    def generate_script(self, steps: List[Dict[str, Any]], params: Dict[str, Any] = None, is_local: bool = False, test_mode: bool = False, context_ledger: Any = None) -> str:
         params = params or {}
         deduped = self._deduplicate_steps(steps)
         deduped = self._infer_missing_tab_transitions(deduped)
         deduped = self._normalize_step_signals(deduped)
+        context_value_map = self._build_context_value_map(deduped)
         root_tab_id = deduped[0].get("tab_id") if deduped else None
         root_tab_id = root_tab_id or "tab-1"
         used_result_keys: Dict[str, int] = {}
@@ -338,7 +339,16 @@ class StepExecutionError(Exception):
                     ctx_key_safe = ctx_key.replace("'", "\\'")
                     fill_value = f'context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))'
                 else:
-                    fill_value = self._maybe_parameterize(value, params)
+                    ctx_fill_match = None
+                    for ctx_key, ctx_val in context_value_map.items():
+                        if value == ctx_val:
+                            ctx_fill_match = ctx_key
+                            break
+                    if ctx_fill_match:
+                        safe_default = value.replace("'", "\\'")
+                        fill_value = f"context.get('{ctx_fill_match}', '{safe_default}')"
+                    else:
+                        fill_value = self._maybe_parameterize(value, params)
                 step_lines.append(f"    await {locator}.fill({fill_value})")
             elif action == "check":
                 step_lines.append(f"    await {locator}.check()")
@@ -370,8 +380,7 @@ class StepExecutionError(Exception):
 
         lines.append("    return _results, context")
 
-        # Build rebuild_context function body by replaying steps that produce context values
-        # First, build a per-step URL map by tracking navigate actions
+        # Build rebuild_context function body
         step_urls: Dict[int, str] = {}
         running_url = ""
         for i, step in enumerate(deduped):
@@ -391,67 +400,158 @@ class StepExecutionError(Exception):
         rebuild_tab_id = root_tab_id
         rebuild_prev_url = None
 
-        for rebuild_idx, step in enumerate(deduped):
-            context_writes = step.get("context_writes") or []
-            if not context_writes:
-                continue
+        if context_ledger:
+            # ── Phase A: Build from context ledger metadata ──
+            rebuild_sequence = context_ledger.get_rebuild_sequence()
+            already_written: set[str] = set()
+            for entry in rebuild_sequence:
+                already_written.update(entry.get("writes", []))
 
-            action = step.get("action", "")
-            url = step.get("url", "") or step_urls.get(rebuild_idx, "")
-            step_tab_id = step.get("tab_id") or rebuild_tab_id
+            for idx, entry in enumerate(rebuild_sequence):
+                entry_action = entry["action"]
+                writes = entry.get("writes", [])
 
-            # Handle tab switches needed to reach this step
-            if step_tab_id != rebuild_tab_id:
-                if step_tab_id not in [t for t in [root_tab_id, rebuild_tab_id]]:
-                    # Simple approach: navigate to the URL for this step's context
-                    pass
-                rebuild_tab_id = step_tab_id
+                if entry_action == "navigate":
+                    url = entry.get("url", "")
+                    if url and url != rebuild_prev_url:
+                        rebuild_lines.append(f'    await current_page.goto("{url}")')
+                        rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
+                        rebuild_prev_url = url
 
-            # Navigate to the prerequisite page
-            if url and url != rebuild_prev_url:
-                rebuild_lines.append(f'    await current_page.goto("{url}")')
-                rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
-                rebuild_prev_url = url
+                elif entry_action == "extract_text":
+                    source_step_id = entry.get("source_step_id")
+                    matching_step = next(
+                        (s for s in deduped if s.get("id") == source_step_id), None
+                    )
+                    if matching_step:
+                        target = matching_step.get("target", "")
+                        frame_path = matching_step.get("frame_path") or []
+                        scope_var = "current_page"
+                        if frame_path:
+                            scope_var = "frame_scope"
+                            frame_parent = "current_page"
+                            for frame_selector in frame_path:
+                                rebuild_lines.append(
+                                    f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                                )
+                                frame_parent = "frame_scope"
+                        locator = self._build_locator_for_page(target, scope_var)
+                        result_var = f"rebuild_var_ledger_{idx}"
+                        rebuild_lines.append(f"    {result_var} = await {locator}.inner_text()")
+                        for ctx_key in writes:
+                            ctx_key_safe = ctx_key.replace("'", "\\'")
+                            rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
 
-            # Extract values
-            if action == "extract_text":
-                target = step.get("target", "")
-                frame_path = step.get("frame_path") or []
-                scope_var = "current_page"
-                if frame_path:
-                    scope_var = "frame_scope"
-                    frame_parent = "current_page"
-                    for frame_selector in frame_path:
-                        rebuild_lines.append(
-                            f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
-                        )
-                        frame_parent = "frame_scope"
-                locator = self._build_locator_for_page(target, scope_var)
-                result_var = f"rebuild_var_{rebuild_idx}"
-                rebuild_lines.append(f"    {result_var} = await {locator}.inner_text()")
-                for ctx_key in context_writes:
-                    ctx_key_safe = ctx_key.replace("'", "\\'")
-                    rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
-            elif action == "fill":
-                # Fill steps can also write to context (e.g., recording a value to use later)
-                target = step.get("target", "")
-                value = step.get("value", "")
-                frame_path = step.get("frame_path") or []
-                scope_var = "current_page"
-                if frame_path:
-                    scope_var = "frame_scope"
-                    frame_parent = "current_page"
-                    for frame_selector in frame_path:
-                        rebuild_lines.append(
-                            f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
-                        )
-                        frame_parent = "frame_scope"
-                locator = self._build_locator_for_page(target, scope_var)
-                for ctx_key in context_writes:
-                    ctx_key_safe = ctx_key.replace("'", "\\'")
-                    rebuild_lines.append(f'    context["{ctx_key_safe}"] = kwargs.get("{ctx_key_safe}", "")')
-                fill_value = self._maybe_parameterize(value, params)
-                rebuild_lines.append(f"    await {locator}.fill({fill_value})")
+                elif entry_action in ("observe", "derive"):
+                    value = entry.get("value")
+                    for ctx_key in writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        rebuild_lines.append(f'    context["{ctx_key_safe}"] = {repr(value)}')
+
+            # ── Phase B: Supplement from step context_writes (backward compat) ──
+            for rebuild_idx, step in enumerate(deduped):
+                context_writes = step.get("context_writes") or []
+                new_writes = [k for k in context_writes if k not in already_written]
+                if not new_writes:
+                    continue
+                action = step.get("action", "")
+                url = step.get("url", "") or step_urls.get(rebuild_idx, "")
+                step_tab_id = step.get("tab_id") or rebuild_tab_id
+                if step_tab_id != rebuild_tab_id:
+                    rebuild_tab_id = step_tab_id
+                if url and url != rebuild_prev_url:
+                    rebuild_lines.append(f'    await current_page.goto("{url}")')
+                    rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
+                    rebuild_prev_url = url
+                if action == "extract_text":
+                    target = step.get("target", "")
+                    frame_path = step.get("frame_path") or []
+                    scope_var = "current_page"
+                    if frame_path:
+                        scope_var = "frame_scope"
+                        frame_parent = "current_page"
+                        for frame_selector in frame_path:
+                            rebuild_lines.append(
+                                f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                            )
+                            frame_parent = "frame_scope"
+                    locator = self._build_locator_for_page(target, scope_var)
+                    result_var = f"rebuild_var_fallback_{rebuild_idx}"
+                    rebuild_lines.append(f"    {result_var} = await {locator}.inner_text()")
+                    for ctx_key in new_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+                elif action == "fill":
+                    target = step.get("target", "")
+                    value = step.get("value", "")
+                    frame_path = step.get("frame_path") or []
+                    scope_var = "current_page"
+                    if frame_path:
+                        scope_var = "frame_scope"
+                        frame_parent = "current_page"
+                        for frame_selector in frame_path:
+                            rebuild_lines.append(
+                                f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                            )
+                            frame_parent = "frame_scope"
+                    locator = self._build_locator_for_page(target, scope_var)
+                    for ctx_key in new_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        rebuild_lines.append(f'    context["{ctx_key_safe}"] = kwargs.get("{ctx_key_safe}", "")')
+                    fill_value = self._maybe_parameterize(value, params)
+                    rebuild_lines.append(f"    await {locator}.fill({fill_value})")
+        else:
+            # ── Fallback: original step-only approach (no ledger) ──
+            for rebuild_idx, step in enumerate(deduped):
+                context_writes = step.get("context_writes") or []
+                if not context_writes:
+                    continue
+                action = step.get("action", "")
+                url = step.get("url", "") or step_urls.get(rebuild_idx, "")
+                step_tab_id = step.get("tab_id") or rebuild_tab_id
+                if step_tab_id != rebuild_tab_id:
+                    rebuild_tab_id = step_tab_id
+                if url and url != rebuild_prev_url:
+                    rebuild_lines.append(f'    await current_page.goto("{url}")')
+                    rebuild_lines.append('    await current_page.wait_for_load_state("domcontentloaded")')
+                    rebuild_prev_url = url
+                if action == "extract_text":
+                    target = step.get("target", "")
+                    frame_path = step.get("frame_path") or []
+                    scope_var = "current_page"
+                    if frame_path:
+                        scope_var = "frame_scope"
+                        frame_parent = "current_page"
+                        for frame_selector in frame_path:
+                            rebuild_lines.append(
+                                f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                            )
+                            frame_parent = "frame_scope"
+                    locator = self._build_locator_for_page(target, scope_var)
+                    result_var = f"rebuild_var_{rebuild_idx}"
+                    rebuild_lines.append(f"    {result_var} = await {locator}.inner_text()")
+                    for ctx_key in context_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+                elif action == "fill":
+                    target = step.get("target", "")
+                    value = step.get("value", "")
+                    frame_path = step.get("frame_path") or []
+                    scope_var = "current_page"
+                    if frame_path:
+                        scope_var = "frame_scope"
+                        frame_parent = "current_page"
+                        for frame_selector in frame_path:
+                            rebuild_lines.append(
+                                f'    frame_scope = {frame_parent}.frame_locator("{self._escape(frame_selector)}")'
+                            )
+                            frame_parent = "frame_scope"
+                    locator = self._build_locator_for_page(target, scope_var)
+                    for ctx_key in context_writes:
+                        ctx_key_safe = ctx_key.replace("'", "\\'")
+                        rebuild_lines.append(f'    context["{ctx_key_safe}"] = kwargs.get("{ctx_key_safe}", "")')
+                    fill_value = self._maybe_parameterize(value, params)
+                    rebuild_lines.append(f"    await {locator}.fill({fill_value})")
 
         rebuild_lines.append("    return context")
 
@@ -865,6 +965,17 @@ class StepExecutionError(Exception):
                 return f"kwargs.get('{param_name}', '{value}')"
         safe = value.replace("'", "\\'")
         return f"'{safe}'"
+
+    @staticmethod
+    def _build_context_value_map(steps: List[Dict[str, Any]]) -> Dict[str, str]:
+        """构建上下文 key 到录制值的映射，用于防止硬编码。"""
+        value_map: Dict[str, str] = {}
+        for step in steps:
+            for ctx_key in step.get("context_writes", []):
+                output = step.get("output", "")
+                if output:
+                    value_map[ctx_key] = output
+        return value_map
 
     def _build_input_files_value(self, step: Dict[str, Any], value: str, params: Dict[str, Any]) -> str:
         signals = step.get("signals")

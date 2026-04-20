@@ -395,7 +395,7 @@ async def generate_script(
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"))
+    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), context_ledger=None)
     return {"status": "success", "script": script}
 
 
@@ -410,7 +410,7 @@ async def test_script(
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), test_mode=True)
+    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), test_mode=True, context_ledger=None)
 
     logs = []
     browser = await get_cdp_connector().get_browser(
@@ -511,7 +511,9 @@ async def save_skill(
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"))
+    _session_obj = await rpa_manager.get_session(session_id)
+    _context_ledger = _session_obj.context_ledger if _session_obj else None
+    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), context_ledger=_context_ledger)
     context_contract = generator._collect_context_contract(steps)
 
     skill_name = await exporter.export_skill(
