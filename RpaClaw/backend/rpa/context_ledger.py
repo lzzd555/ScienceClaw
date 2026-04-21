@@ -53,6 +53,18 @@ class TaskContextLedger(BaseModel):
     derived_values: dict[str, ContextValue] = Field(default_factory=dict)
     rebuild_actions: list[ContextRebuildAction] = Field(default_factory=list)
 
+    def iter_context_values(self):
+        """Yield recorded context values in a stable order."""
+        yield from self.observed_values.values()
+        yield from self.derived_values.values()
+
+    def build_value_map(self) -> dict[str, Any]:
+        """Return the current context values as a plain dict."""
+        value_map: dict[str, Any] = {}
+        for context_value in self.iter_context_values():
+            value_map[context_value.key] = context_value.value
+        return value_map
+
     # ── Promotion rules ────────────────────────────────────────────────
 
     def should_promote_value(
