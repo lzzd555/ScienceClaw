@@ -1155,6 +1155,63 @@ class ContextRebuildTests(unittest.TestCase):
         self.assertNotIn('"Buyer is context:buyer"', script)
         self.assertNotIn("'Buyer is context:buyer'", script)
 
+    def test_ledger_observed_extraction_prefers_live_extract_step_rebuild(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "id": "open-results",
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/results",
+                "description": "Open results",
+            },
+            {
+                "id": "extract-buyer",
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "Buyer"}),
+                "description": "Extract buyer",
+                "result_key": "buyer",
+                "url": "https://site.com/results",
+                "context_writes": ["buyer"],
+            },
+        ]
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_value(
+            "observed",
+            "buyer",
+            "Recording Time Buyer",
+            user_explicit=True,
+            source_step_id="extract-buyer",
+            source_kind="dom_extraction",
+        )
+
+        script = generator.generate_script(steps, is_local=True, context_ledger=ledger)
+
+        self.assertIn(
+            'rebuild_var_fallback_1 = await current_page.get_by_role("cell", name="Buyer", exact=True).inner_text()',
+            script,
+        )
+        self.assertNotIn('context["buyer"] = \'Recording Time Buyer\'', script)
+        self.assertNotIn('context["buyer"] = "Recording Time Buyer"', script)
+
+    def test_ai_script_context_read_with_invalid_identifier_does_not_emit_local_assignment(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "action": "ai_script",
+                "source": "ai",
+                "description": "Use context directly",
+                "value": 'buyer = context.get("buyer-name", "")\nawait page.goto("https://example.com")',
+                "url": "https://example.com",
+                "context_reads": ["buyer-name"],
+            },
+        ]
+
+        script = generator.generate_script(steps, is_local=True)
+
+        self.assertNotIn('buyer-name = context.get("buyer-name"', script)
+        self.assertIn('buyer = context.get("buyer-name", "")', script)
+
     def test_ai_script_step_still_reads_runtime_context(self):
         """Steps with context_reads should generate code that reads from context."""
         generator = PlaywrightGenerator()

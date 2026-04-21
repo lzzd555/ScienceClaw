@@ -1,4 +1,5 @@
 import json
+import keyword
 import logging
 import re
 from typing import List, Dict, Any, Optional
@@ -202,7 +203,8 @@ class StepExecutionError(Exception):
                 if context_reads:
                     for ctx_key in context_reads:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
-                        lines.append(f'    {ctx_key} = context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))')
+                        if self._is_valid_python_identifier(ctx_key):
+                            lines.append(f'    {ctx_key} = context.get("{ctx_key_safe}", kwargs.get("{ctx_key_safe}", ""))')
                 ai_code = step.get("value", "")
                 if ai_code:
                     converted = self._sync_to_async(ai_code)
@@ -411,8 +413,12 @@ class StepExecutionError(Exception):
         if rebuild_sequence:
             # ── Phase A: Build from context ledger metadata ──
             already_written: set[str] = set()
-            for entry in rebuild_sequence:
-                already_written.update(entry.get("writes", []))
+            extract_step_ids_by_write: Dict[str, set[str]] = {}
+            for step in deduped:
+                if step.get("action") != "extract_text" or not step.get("id"):
+                    continue
+                for ctx_key in self._get_step_context_writes(step):
+                    extract_step_ids_by_write.setdefault(ctx_key, set()).add(str(step.get("id")))
 
             for idx, entry in enumerate(rebuild_sequence):
                 entry_action = entry["action"]
@@ -448,12 +454,20 @@ class StepExecutionError(Exception):
                         for ctx_key in writes:
                             ctx_key_safe = ctx_key.replace("'", "\\'")
                             rebuild_lines.append(f'    context["{ctx_key_safe}"] = {result_var}')
+                        already_written.update(writes)
 
                 elif entry_action in ("observe", "derive"):
+                    if entry_action == "observe":
+                        source_step_id = str(entry.get("source_step_id") or "")
+                        writes = [
+                            ctx_key for ctx_key in writes
+                            if source_step_id not in extract_step_ids_by_write.get(ctx_key, set())
+                        ]
                     value = entry.get("value")
                     for ctx_key in writes:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
                         rebuild_lines.append(f'    context["{ctx_key_safe}"] = {repr(value)}')
+                    already_written.update(writes)
 
             # ── Phase B: Supplement from step context_writes (backward compat) ──
             for rebuild_idx, step in enumerate(deduped):
@@ -1065,6 +1079,10 @@ class StepExecutionError(Exception):
                 seen.add(item)
                 normalized.append(item)
         return normalized
+
+    @staticmethod
+    def _is_valid_python_identifier(value: str) -> bool:
+        return value.isidentifier() and not keyword.iskeyword(value)
 
     def _dehardcode_ai_script(self, code: str, context_value_map: Dict[str, str]) -> str:
         """Replace hardcoded string literals in AI script with context.get() calls.
