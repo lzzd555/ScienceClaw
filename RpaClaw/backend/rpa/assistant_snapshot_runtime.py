@@ -122,6 +122,10 @@ SNAPSHOT_V2_JS = r"""() => {
             return 'form_section';
         if (el.classList && el.classList.contains('field-panel'))
             return 'form_section';
+        if (el.classList && el.classList.contains('field-item'))
+            return 'form_section';
+        if (el.classList && el.classList.contains('aui-collapse-item__content'))
+            return 'form_section';
         return '';
     }
 

@@ -53,3 +53,11 @@ class ContainerDetectionTests(unittest.TestCase):
     def test_ensureContainer_includes_field_panel_selector(self):
         self.assertIn(".field-panel", SNAPSHOT_V2_JS,
                       "ensureContainer should include .field-panel in closest() selector")
+
+    def test_ensureContainer_includes_field_item_selector(self):
+        self.assertIn(".field-item", SNAPSHOT_V2_JS,
+                      "ensureContainer should include .field-item in closest() selector")
+
+    def test_ensureContainer_includes_aui_collapse_content_selector(self):
+        self.assertIn(".aui-collapse-item__content", SNAPSHOT_V2_JS,
+                      "ensureContainer should include .aui-collapse-item__content in closest() selector")
