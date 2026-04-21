@@ -42,6 +42,39 @@ class SessionContextService:
     def __init__(self, ledger: TaskContextLedger):
         self.ledger = ledger
 
+    def export_generator_contract(
+        self,
+        steps: Iterable[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        normalized_steps: list[dict[str, Any]] = []
+        required_outputs: set[str] = set()
+        rebuild_plan: list[int] = []
+
+        for step_index, original_step in enumerate(steps or []):
+            step = dict(original_step)
+            reads = self.collect_step_contract_reads(
+                declared_reads=step.get("context_reads") or [],
+                step_data=step,
+            )
+            writes = StepContextContract(writes=step.get("context_writes") or []).writes
+            step["context_reads"] = reads
+            step["context_writes"] = writes
+            step["context_contract"] = {
+                "reads": reads,
+                "writes": writes,
+            }
+            normalized_steps.append(step)
+            if writes:
+                required_outputs.update(writes)
+                rebuild_plan.append(step_index)
+
+        return {
+            "steps": normalized_steps,
+            "required_context_outputs": sorted(required_outputs),
+            "context_rebuild_plan": rebuild_plan,
+            "rebuild_sequence": self._export_rebuild_sequence(),
+        }
+
     def build_current_context(self) -> dict[str, Any]:
         build_value_map = getattr(self.ledger, "build_value_map", None)
         if callable(build_value_map):
@@ -238,6 +271,53 @@ class SessionContextService:
                 raise ValueError(f"Missing update payload for declared write: {key}")
             payload[key] = contract.updates[key]
         return payload
+
+    def _export_rebuild_sequence(self) -> list[dict[str, Any]]:
+        sequence: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for action in getattr(self.ledger, "rebuild_actions", []) or []:
+            writes = StepContextContract(writes=getattr(action, "writes", []) or []).writes
+            entry: dict[str, Any] = {
+                "action": getattr(action, "action", ""),
+                "description": getattr(action, "description", ""),
+                "writes": writes,
+                "source_step_id": getattr(action, "step_ref", None),
+            }
+            if entry["action"] == "navigate":
+                entry["url"] = entry["description"]
+            sequence.append(entry)
+            seen_keys.update(writes)
+
+        for key, entry in (getattr(self.ledger, "observed_values", {}) or {}).items():
+            if key in seen_keys or not getattr(entry, "user_explicit", False):
+                continue
+            sequence.append(
+                {
+                    "action": "observe",
+                    "description": f"Observed value: {key}",
+                    "writes": [key],
+                    "source_step_id": getattr(entry, "source_step_id", None),
+                    "value": getattr(entry, "value", entry),
+                }
+            )
+            seen_keys.add(key)
+
+        for key, entry in (getattr(self.ledger, "derived_values", {}) or {}).items():
+            if key in seen_keys or not getattr(entry, "runtime_required", False):
+                continue
+            sequence.append(
+                {
+                    "action": "derive",
+                    "description": f"Derived value: {key}",
+                    "writes": [key],
+                    "source_step_id": getattr(entry, "source_step_id", None),
+                    "value": getattr(entry, "value", entry),
+                }
+            )
+            seen_keys.add(key)
+
+        return sequence
 
     def _build_answer_payload(self, mode: str, values: dict[str, Any], query: str) -> dict[str, Any]:
         return {

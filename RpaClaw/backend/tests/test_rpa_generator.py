@@ -1,10 +1,19 @@
+import importlib
 import importlib.util
 import json
+import sys
+import types
 import unittest
 from pathlib import Path
 
 
 GENERATOR_PATH = Path(__file__).resolve().parents[1] / "rpa" / "generator.py"
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+CONTEXT_LEDGER_MODULE = importlib.import_module("backend.rpa.context_ledger")
+SESSION_CONTEXT_SERVICE_MODULE = importlib.import_module("backend.rpa.session_context_service")
 SPEC = importlib.util.spec_from_file_location("rpa_generator_module", GENERATOR_PATH)
 GENERATOR_MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC is not None and SPEC.loader is not None
@@ -868,6 +877,64 @@ class ContextRebuildTests(unittest.TestCase):
             "that receives page, context dict, and kwargs.",
         )
 
+    def test_session_context_service_exports_normalized_generator_contract(self):
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_rebuild_action(
+            "navigate",
+            "https://site.com/search",
+            step_ref="extract-step",
+        )
+        ledger.record_rebuild_action(
+            "extract_text",
+            "Extract buyer name from results",
+            step_ref="extract-step",
+            writes=["buyer"],
+        )
+        service = SESSION_CONTEXT_SERVICE_MODULE.SessionContextService(ledger)
+
+        contract = service.export_generator_contract(
+            [
+                {
+                    "id": "extract-step",
+                    "action": "extract_text",
+                    "target": json.dumps({"method": "role", "role": "cell", "name": "Buyer"}),
+                    "description": "Extract buyer name",
+                    "url": "https://site.com/search",
+                    "context_writes": ["buyer"],
+                },
+                {
+                    "id": "fill-step",
+                    "action": "fill",
+                    "target": json.dumps({"method": "role", "role": "textbox", "name": "Buyer"}),
+                    "value": "context:buyer",
+                    "description": "Fill the saved buyer",
+                    "url": "https://site.com/form",
+                },
+            ]
+        )
+
+        self.assertEqual(contract["steps"][1]["context_contract"]["reads"], ["buyer"])
+        self.assertEqual(contract["steps"][1]["context_contract"]["writes"], [])
+        self.assertEqual(
+            contract["rebuild_sequence"],
+            [
+                {
+                    "action": "navigate",
+                    "description": "https://site.com/search",
+                    "writes": [],
+                    "source_step_id": "extract-step",
+                    "url": "https://site.com/search",
+                },
+                {
+                    "action": "extract_text",
+                    "description": "Extract buyer name from results",
+                    "writes": ["buyer"],
+                    "source_step_id": "extract-step",
+                },
+            ],
+        )
+        self.assertNotIn("context:buyer", contract["steps"][1]["context_contract"]["reads"])
+
     def test_generator_rebuilds_page_a_value_before_page_b_fill(self):
         """Cross-page value transfer: rebuild_context must appear before fill()."""
         generator = PlaywrightGenerator()
@@ -936,6 +1003,78 @@ class ContextRebuildTests(unittest.TestCase):
             "rebuild_context must appear before the first .fill() call so "
             "the context dict is populated before values are consumed.",
         )
+
+    def test_generator_uses_service_exported_contract_for_legacy_context_reads(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "id": "search-step",
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/search",
+                "description": "Open search page",
+            },
+            {
+                "id": "extract-step",
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "Buyer"}),
+                "description": "Extract buyer name from results",
+                "result_key": "buyer",
+                "url": "https://site.com/search",
+                "context_writes": ["buyer"],
+            },
+            {
+                "id": "form-step",
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/form",
+                "description": "Open form page",
+            },
+            {
+                "id": "fill-step",
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Buyer"}),
+                "value": "context:buyer",
+                "description": "Fill the saved buyer",
+                "url": "https://site.com/form",
+            },
+        ]
+
+        exploding_ledger = types.SimpleNamespace(
+            rebuild_actions=[
+                types.SimpleNamespace(
+                    action="navigate",
+                    description="https://site.com/search",
+                    step_ref="extract-step",
+                    writes=[],
+                ),
+                types.SimpleNamespace(
+                    action="extract_text",
+                    description="Extract buyer name from results",
+                    step_ref="extract-step",
+                    writes=["buyer"],
+                ),
+            ],
+            observed_values={},
+            derived_values={},
+        )
+
+        def _unexpected_direct_rebuild_sequence():
+            raise AssertionError("generator should consume the service export, not ledger.get_rebuild_sequence()")
+
+        exploding_ledger.get_rebuild_sequence = _unexpected_direct_rebuild_sequence
+
+        script = generator.generate_script(steps, is_local=True, context_ledger=exploding_ledger)
+
+        self.assertIn(
+            'await current_page.get_by_role("textbox", name="Buyer", exact=True).fill(context.get("buyer", kwargs.get("buyer", "")))',
+            script,
+        )
+        self.assertIn(
+            'rebuild_var_ledger_1 = await current_page.get_by_role("cell", name="Buyer", exact=True).inner_text()',
+            script,
+        )
+        self.assertNotIn("context:buyer", script)
 
     def test_ai_script_step_still_reads_runtime_context(self):
         """Steps with context_reads should generate code that reads from context."""

@@ -4,11 +4,15 @@ import re
 from typing import List, Dict, Any, Optional
 
 from backend.rpa.playwright_security import get_chromium_launch_kwargs, get_context_kwargs
+from backend.rpa.session_context_service import SessionContextService
 
 logger = logging.getLogger(__name__)
 
 RPA_PLAYWRIGHT_TIMEOUT_MS = 60000
 RPA_NAVIGATION_TIMEOUT_MS = 60000
+_LEGACY_CONTEXT_READ_RE = re.compile(r"context:([A-Za-z_][A-Za-z0-9_]*)")
+_LEGACY_CONTEXT_READ_EXACT_RE = re.compile(r"^context:([A-Za-z_][A-Za-z0-9_]*)$")
+_STEP_CONTRACT_LEGACY_FIELDS = ("value", "prompt", "description", "target")
 
 
 class PlaywrightGenerator:
@@ -147,6 +151,9 @@ class StepExecutionError(Exception):
         deduped = self._deduplicate_steps(steps)
         deduped = self._infer_missing_tab_transitions(deduped)
         deduped = self._normalize_step_signals(deduped)
+        exported_contract = self._export_context_contract(deduped, context_ledger)
+        deduped = exported_contract["steps"]
+        rebuild_sequence = exported_contract["rebuild_sequence"]
         context_value_map = self._build_context_value_map(deduped)
         root_tab_id = deduped[0].get("tab_id") if deduped else None
         root_tab_id = root_tab_id or "tab-1"
@@ -191,7 +198,7 @@ class StepExecutionError(Exception):
             # AI-generated script — embed directly with sync→async conversion
             if action == "ai_script":
                 # Inject context variable reads for steps that declare context_reads
-                context_reads = step.get("context_reads") or []
+                context_reads = self._get_step_context_reads(step)
                 if context_reads:
                     for ctx_key in context_reads:
                         ctx_key_safe = ctx_key.replace("'", "\\'")
@@ -333,7 +340,7 @@ class StepExecutionError(Exception):
                 step_lines.append(f"    await _dl.save_as(_dl_dest)")
                 step_lines.append(f'    _results["download_{safe_name}"] = {{"filename": _dl.suggested_filename, "path": _dl_dest}}')
             elif action == "fill":
-                context_reads = step.get("context_reads") or []
+                context_reads = self._get_step_context_reads(step)
                 if context_reads:
                     # Use the first context_reads key as the fill value source
                     ctx_key = context_reads[0]
@@ -361,7 +368,7 @@ class StepExecutionError(Exception):
             elif action == "extract_text":
                 result_var = f"extract_text_value_{step_index + 1}"
                 result_key = self._build_extract_result_key(step, used_result_keys)
-                context_writes = step.get("context_writes") or []
+                context_writes = self._get_step_context_writes(step)
                 step_lines.append(f"    {result_var} = await {locator}.inner_text()")
                 if context_writes:
                     # Context-bound extraction: store into context dict only
@@ -401,9 +408,8 @@ class StepExecutionError(Exception):
         rebuild_tab_id = root_tab_id
         rebuild_prev_url = None
 
-        if context_ledger:
+        if rebuild_sequence:
             # ── Phase A: Build from context ledger metadata ──
-            rebuild_sequence = context_ledger.get_rebuild_sequence()
             already_written: set[str] = set()
             for entry in rebuild_sequence:
                 already_written.update(entry.get("writes", []))
@@ -451,7 +457,7 @@ class StepExecutionError(Exception):
 
             # ── Phase B: Supplement from step context_writes (backward compat) ──
             for rebuild_idx, step in enumerate(deduped):
-                context_writes = step.get("context_writes") or []
+                context_writes = self._get_step_context_writes(step)
                 new_writes = [k for k in context_writes if k not in already_written]
                 if not new_writes:
                     continue
@@ -504,7 +510,7 @@ class StepExecutionError(Exception):
         else:
             # ── Fallback: original step-only approach (no ledger) ──
             for rebuild_idx, step in enumerate(deduped):
-                context_writes = step.get("context_writes") or []
+                context_writes = self._get_step_context_writes(step)
                 if not context_writes:
                     continue
                 action = step.get("action", "")
@@ -972,11 +978,93 @@ class StepExecutionError(Exception):
         """构建上下文 key 到录制值的映射，用于防止硬编码。"""
         value_map: Dict[str, str] = {}
         for step in steps:
-            for ctx_key in step.get("context_writes", []):
+            context_contract = step.get("context_contract") or {}
+            context_writes = context_contract.get("writes")
+            if context_writes is None:
+                context_writes = step.get("context_writes", [])
+            for ctx_key in context_writes:
                 output = step.get("output", "")
                 if output:
                     value_map[ctx_key] = output
         return value_map
+
+    def _export_context_contract(
+        self,
+        steps: List[Dict[str, Any]],
+        context_ledger: Any = None,
+    ) -> Dict[str, Any]:
+        if context_ledger is not None:
+            return SessionContextService(context_ledger).export_generator_contract(steps)
+
+        normalized_steps = [self._normalize_step_context_contract(step) for step in steps]
+        required_outputs: set[str] = set()
+        rebuild_plan: List[int] = []
+        for step_index, step in enumerate(normalized_steps):
+            writes = self._get_step_context_writes(step)
+            if writes:
+                required_outputs.update(writes)
+                rebuild_plan.append(step_index)
+        return {
+            "steps": normalized_steps,
+            "required_context_outputs": sorted(required_outputs),
+            "context_rebuild_plan": rebuild_plan,
+            "rebuild_sequence": [],
+        }
+
+    def _normalize_step_context_contract(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_step = dict(step)
+        reads = self._normalize_step_context_reads(normalized_step)
+        writes = self._normalize_context_keys(normalized_step.get("context_writes") or [])
+        normalized_step["context_reads"] = reads
+        normalized_step["context_writes"] = writes
+        normalized_step["context_contract"] = {
+            "reads": reads,
+            "writes": writes,
+        }
+        return normalized_step
+
+    def _normalize_step_context_reads(self, step: Dict[str, Any]) -> List[str]:
+        reads = self._normalize_context_keys(step.get("context_reads") or [])
+        if reads:
+            return reads
+
+        legacy_parts: List[str] = []
+        for field in _STEP_CONTRACT_LEGACY_FIELDS:
+            value = step.get(field)
+            if isinstance(value, str) and value.strip():
+                legacy_parts.append(value)
+
+        discovered: List[str] = []
+        for part in legacy_parts:
+            discovered.extend(_LEGACY_CONTEXT_READ_RE.findall(part))
+        return self._normalize_context_keys(discovered)
+
+    def _get_step_context_reads(self, step: Dict[str, Any]) -> List[str]:
+        context_contract = step.get("context_contract") or {}
+        reads = context_contract.get("reads")
+        if reads is None:
+            reads = step.get("context_reads") or []
+        return self._normalize_context_keys(reads)
+
+    def _get_step_context_writes(self, step: Dict[str, Any]) -> List[str]:
+        context_contract = step.get("context_contract") or {}
+        writes = context_contract.get("writes")
+        if writes is None:
+            writes = step.get("context_writes") or []
+        return self._normalize_context_keys(writes)
+
+    def _normalize_context_keys(self, values: List[Any]) -> List[str]:
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = str(value).strip()
+            match = _LEGACY_CONTEXT_READ_EXACT_RE.match(item)
+            if match:
+                item = match.group(1)
+            if item and item not in seen:
+                seen.add(item)
+                normalized.append(item)
+        return normalized
 
     def _dehardcode_ai_script(self, code: str, context_value_map: Dict[str, str]) -> str:
         """Replace hardcoded string literals in AI script with context.get() calls.
