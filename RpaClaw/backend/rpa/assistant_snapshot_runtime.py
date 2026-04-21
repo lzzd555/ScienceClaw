@@ -5,11 +5,12 @@ SNAPSHOT_V2_JS = r"""() => {
     const ACTIONABLE = 'a,button,input,textarea,select,[role=button],[role=link],[role=menuitem],[role=menuitemradio],[role=tab],[role=checkbox],[role=radio],[contenteditable=true]';
     const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,label,span,div,figcaption,caption,time,mark,strong,em,[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
     const recorder = globalThis.__rpaPlaywrightRecorder || null;
-    const result = { actionable_nodes: [], content_nodes: [], containers: [] };
+    const result = { actionable_nodes: [], content_nodes: [], containers: [], field_groups: [] };
     const containerMap = new Map();
     let actionableIndex = 1;
     let contentIndex = 1;
     let containerIndex = 1;
+    let fieldGroupIndex = 1;
 
     function normalizeText(value, limit) {
         return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit || 160);
@@ -143,6 +144,7 @@ SNAPSHOT_V2_JS = r"""() => {
             summary: normalizeText(containerEl.innerText || '', 120),
             child_actionable_ids: [],
             child_content_ids: [],
+            child_field_group_ids: [],
         };
         containerMap.set(containerEl, container);
         result.containers.push(container);
@@ -230,6 +232,161 @@ SNAPSHOT_V2_JS = r"""() => {
         if (tag === 'label')
             return 'label';
         return 'text';
+    }
+
+    function isFieldControl(el, role) {
+        const tag = el.tagName.toLowerCase();
+        if (el.isContentEditable)
+            return true;
+        if (tag === 'input' || tag === 'textarea' || tag === 'select')
+            return true;
+        return role === 'textbox' || role === 'combobox' || role === 'checkbox' || role === 'radio';
+    }
+
+    function fieldNameFromElement(el, role) {
+        const labelTexts = [];
+        try {
+            if (el.labels) {
+                for (const labelEl of Array.from(el.labels)) {
+                    const text = normalizeText(labelEl.innerText || labelEl.textContent || '', 80);
+                    if (text)
+                        labelTexts.push(text);
+                }
+            }
+        } catch (e) {}
+        const ariaLabel = normalizeText(el.getAttribute('aria-label') || '', 80);
+        if (ariaLabel)
+            return ariaLabel;
+        const ariaLabelledBy = normalizeText(el.getAttribute('aria-labelledby') || '', 80);
+        if (ariaLabelledBy) {
+            const parts = [];
+            for (const id of ariaLabelledBy.split(/\s+/)) {
+                if (!id)
+                    continue;
+                const labelEl = document.getElementById(id);
+                if (!labelEl)
+                    continue;
+                const text = normalizeText(labelEl.innerText || labelEl.textContent || '', 80);
+                if (text)
+                    parts.push(text);
+            }
+            if (parts.length)
+                return normalizeText(parts.join(' '), 80);
+        }
+        if (labelTexts.length)
+            return labelTexts[0];
+        const placeholder = normalizeText(el.getAttribute('placeholder') || '', 80);
+        if (placeholder)
+            return placeholder;
+        const title = normalizeText(el.getAttribute('title') || '', 80);
+        if (title)
+            return title;
+        const name = getAccessibleName(el);
+        if (name)
+            return name;
+        if (role)
+            return normalizeText(role, 80);
+        return '';
+    }
+
+    function fieldNameFromNode(node) {
+        return normalizeText(
+            node.name ||
+            node.field_name ||
+            node.placeholder ||
+            node.title ||
+            node.text ||
+            node.role ||
+            '',
+            80
+        );
+    }
+
+    function fieldGroupKey(group) {
+        return [
+            group.container_id || '',
+            normalizeText(group.field_name || '', 80),
+        ].join('|');
+    }
+
+    function fieldGroupPriority(group) {
+        let score = 0;
+        if (group.field_node_id)
+            score += 8;
+        if (group.value_node_id)
+            score += 4;
+        if (group.extraction_kind === 'control_state')
+            score += 2;
+        if (group.locator && group.locator.method)
+            score += 1;
+        return score;
+    }
+
+    function fieldValueNodeCandidates(fieldName, containerId, controlNode) {
+        const normalizedFieldName = normalizeText(fieldName || '', 80);
+        const candidates = result.content_nodes.filter(node => node.container_id === containerId);
+        const matches = [];
+        for (const node of candidates) {
+            const nodeFieldName = normalizeText(node.field_name || '', 80);
+            if (!nodeFieldName || !normalizedFieldName)
+                continue;
+            if (nodeFieldName === normalizedFieldName || nodeFieldName.includes(normalizedFieldName) || normalizedFieldName.includes(nodeFieldName)) {
+                if (node.node_id !== controlNode.node_id)
+                    matches.push(node);
+            }
+        }
+        if (matches.length)
+            return matches[0];
+
+        let nearest = null;
+        let nearestScore = Infinity;
+        const controlRect = controlNode.bbox || {};
+        for (const node of candidates) {
+            if (node.node_id === controlNode.node_id)
+                continue;
+            if (!node.text)
+                continue;
+            const nodeText = normalizeText(node.text || '', 80);
+            if (!nodeText || nodeText === normalizedFieldName)
+                continue;
+            const rect = node.bbox || {};
+            const dx = Math.abs((rect.x || 0) - (controlRect.x || 0));
+            const dy = Math.abs((rect.y || 0) - (controlRect.y || 0));
+            const score = dy * 2 + dx;
+            if (dy <= 120 && dx <= 500 && score < nearestScore) {
+                nearest = node;
+                nearestScore = score;
+            }
+        }
+        return nearest;
+    }
+
+    function addFieldGroup(group) {
+        if (!group || !group.field_name)
+            return;
+        const key = fieldGroupKey(group);
+        if (!addFieldGroup.byKey)
+            addFieldGroup.byKey = new Map();
+        const existing = addFieldGroup.byKey.get(key);
+        let storedGroup = group;
+        if (existing) {
+            if (fieldGroupPriority(group) < fieldGroupPriority(existing))
+                return;
+            const field_group_id = existing.field_group_id;
+            Object.assign(existing, group);
+            existing.field_group_id = field_group_id;
+            addFieldGroup.byKey.set(key, existing);
+            storedGroup = existing;
+        } else {
+            group.field_group_id = 'field-group-' + fieldGroupIndex++;
+            result.field_groups.push(group);
+            addFieldGroup.byKey.set(key, group);
+        }
+        if (storedGroup.container_id) {
+            const container = Array.from(containerMap.values()).find(item => item.container_id === group.container_id);
+            if (container)
+                container.child_field_group_ids = Array.from(new Set([...(container.child_field_group_ids || []), storedGroup.field_group_id].filter(Boolean)));
+        }
     }
 
     const totalActionable = document.querySelectorAll(ACTIONABLE).length;
@@ -363,6 +520,60 @@ SNAPSHOT_V2_JS = r"""() => {
         }
         if (result.content_nodes.length >= CONTENT_CAP)
             break;
+    }
+
+    for (const node of result.content_nodes) {
+        if (!node.field_name)
+            continue;
+        addFieldGroup({
+            frame_path: [],
+            container_id: node.container_id,
+            container_kind: (Array.from(containerMap.values()).find(item => item.container_id === node.container_id) || {}).container_kind || '',
+            field_name: node.field_name,
+            field_node_id: null,
+            value_node_id: node.node_id,
+            label_node_id: null,
+            bbox: node.bbox,
+            locator: node.locator,
+            value_locator: node.locator,
+            locator_candidates: [{ kind: 'text', selected: true, locator: node.locator }],
+            selected_locator_kind: 'content_nodes',
+            extraction_kind: 'text',
+            allow_empty_fallback: true,
+            fallback_locator: node.locator,
+            fallback_frame_path: [],
+        });
+    }
+
+    for (const node of result.actionable_nodes) {
+        const tag = (node.tag || '').toLowerCase();
+        if (!(tag === 'input' || tag === 'textarea' || tag === 'select' || node.role === 'textbox' || node.role === 'combobox' || node.role === 'checkbox' || node.role === 'radio' || node.type === 'contenteditable'))
+            continue;
+        const fieldName = fieldNameFromNode(node);
+        if (!fieldName)
+            continue;
+        const valueNode = fieldValueNodeCandidates(fieldName, node.container_id, node);
+        const container = Array.from(containerMap.values()).find(item => item.container_id === node.container_id) || {};
+        const controlExtractionKind = node.role === 'checkbox' || node.role === 'radio' ? 'control_state' : 'control_value';
+        addFieldGroup({
+            frame_path: [],
+            container_id: node.container_id,
+            container_kind: container.container_kind || '',
+            field_name: fieldName,
+            field_control_kind: node.role || node.type || tag,
+            field_node_id: node.node_id,
+            value_node_id: valueNode ? valueNode.node_id : null,
+            label_node_id: null,
+            bbox: valueNode ? valueNode.bbox : node.bbox,
+            locator: valueNode ? valueNode.locator : node.locator,
+            value_locator: node.locator,
+            locator_candidates: valueNode ? (valueNode.locator_candidates || []) : (node.locator_candidates || []),
+            selected_locator_kind: valueNode ? 'content_nodes' : 'actionable_nodes',
+            extraction_kind: controlExtractionKind,
+            allow_empty_fallback: false,
+            fallback_locator: valueNode ? valueNode.locator : node.locator,
+            fallback_frame_path: [],
+        });
     }
 
     return JSON.stringify(result);

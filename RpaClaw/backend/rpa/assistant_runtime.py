@@ -167,6 +167,7 @@ async def _extract_frame_snapshot_v2(frame) -> Dict[str, Any]:
             "actionable_nodes": list(data.get("actionable_nodes") or []),
             "content_nodes": list(data.get("content_nodes") or []),
             "containers": list(data.get("containers") or []),
+            "field_groups": list(data.get("field_groups") or []),
         }
 
     elements = await _extract_frame_elements(frame)
@@ -174,6 +175,7 @@ async def _extract_frame_snapshot_v2(frame) -> Dict[str, Any]:
         "actionable_nodes": [],
         "content_nodes": [],
         "containers": [],
+        "field_groups": [],
         "elements": elements,
     }
 
@@ -244,6 +246,7 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
     actionable_nodes: List[Dict[str, Any]] = []
     content_nodes: List[Dict[str, Any]] = []
     containers: List[Dict[str, Any]] = []
+    field_groups: List[Dict[str, Any]] = []
 
     async def walk(frame) -> None:
         try:
@@ -277,6 +280,13 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
             }
             for container in list(snapshot_v2.get("containers") or [])
         ]
+        frame_field_groups = [
+            {
+                **field_group,
+                "frame_path": list(field_group.get("frame_path") or frame_path),
+            }
+            for field_group in list(snapshot_v2.get("field_groups") or [])
+        ]
         collections = _detect_collections(elements, frame_path)
         frames.append(
             {
@@ -285,11 +295,13 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
                 "frame_hint": "main document" if not frame_path else " -> ".join(frame_path),
                 "elements": elements or frame_actionable_nodes,
                 "collections": collections,
+                "field_groups": frame_field_groups,
             }
         )
         actionable_nodes.extend(frame_actionable_nodes)
         content_nodes.extend(frame_content_nodes)
         containers.extend(frame_containers)
+        field_groups.extend(frame_field_groups)
         for child in getattr(frame, "child_frames", []):
             await walk(child)
 
@@ -301,6 +313,7 @@ async def build_page_snapshot(page, frame_path_builder: Callable[[Any], Any]) ->
         "actionable_nodes": actionable_nodes,
         "content_nodes": content_nodes,
         "containers": containers,
+        "field_groups": field_groups,
     }
 
 
@@ -713,6 +726,169 @@ def _content_node_score(node: Dict[str, Any], intent: Dict[str, Any]) -> int:
     return score
 
 
+def _field_group_score(field_group: Dict[str, Any], intent: Dict[str, Any]) -> int:
+    target_hint = intent.get("target_hint", {}) or {}
+    expected_name = _normalize_hint(target_hint.get("name") or target_hint.get("text") or target_hint.get("value"))
+    field_name = _normalize_hint(field_group.get("field_name"))
+    score = 0
+    if expected_name and field_name:
+        if expected_name == field_name:
+            score += 10
+        elif expected_name in field_name or field_name in expected_name:
+            score += 8
+    if field_group.get("locator"):
+        score += 2
+    if field_group.get("fallback_locator"):
+        score += 1
+    if field_group.get("bbox"):
+        score += 1
+    if field_group.get("field_node_id"):
+        score += 6
+    if field_group.get("extraction_kind") in {"control_value", "control_state"}:
+        score += 2
+    return score
+
+
+def _field_group_row_signature(field_group: Dict[str, Any]) -> str:
+    row_index = field_group.get("row_index")
+    if row_index is not None:
+        return f"row_index:{row_index}"
+
+    bbox = field_group.get("bbox") or {}
+    if bbox:
+        top = bbox.get("y")
+        height = bbox.get("height")
+        if top is not None or height is not None:
+            return f"bbox_row:{round(float(top or 0), 2)}:{round(float(height or 0), 2)}"
+
+    return ""
+
+
+def _field_group_anchor_signature(field_group: Dict[str, Any]) -> str:
+    parts = [
+        str(field_group.get("field_node_id") or "").strip(),
+        str(field_group.get("value_node_id") or "").strip(),
+    ]
+    if any(parts):
+        return "|".join(part for part in parts if part)
+
+    locator = field_group.get("locator") or {}
+    fallback_locator = field_group.get("fallback_locator") or {}
+    locator_parts: List[str] = []
+    if locator:
+        locator_parts.append(json.dumps(locator, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    if fallback_locator:
+        locator_parts.append(json.dumps(fallback_locator, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    return "|".join(locator_parts)
+
+
+def _field_group_dedupe_key(field_group: Dict[str, Any]) -> tuple[str, str, str, str, str]:
+    frame_key = json.dumps(list(field_group.get("frame_path") or []), ensure_ascii=False, separators=(",", ":"))
+    field_name = _normalize_hint(field_group.get("field_name"))
+    container_id = str(field_group.get("container_id") or "").strip()
+    if container_id:
+        container_key = container_id
+    else:
+        fallback_parts = [
+            str(field_group.get("field_node_id") or "").strip(),
+            str(field_group.get("value_node_id") or "").strip(),
+        ]
+        bbox = field_group.get("bbox") or {}
+        if bbox:
+            fallback_parts.append(json.dumps(bbox, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+        locator = field_group.get("locator") or {}
+        if locator:
+            fallback_parts.append(json.dumps(locator, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+        fallback_locator = field_group.get("fallback_locator") or {}
+        if fallback_locator:
+            fallback_parts.append(json.dumps(fallback_locator, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+        container_key = "|".join(part for part in fallback_parts if part)
+        if not container_key:
+            container_key = json.dumps(field_group, sort_keys=True, ensure_ascii=False, default=str)
+
+    row_signature = _field_group_row_signature(field_group)
+    anchor_signature = _field_group_anchor_signature(field_group)
+    return (frame_key, container_key, field_name, row_signature, anchor_signature)
+
+
+def _dedupe_field_groups(field_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    best_by_key: Dict[tuple[str, str, str, str, str], Dict[str, Any]] = {}
+    for field_group in field_groups:
+        field_name = _normalize_hint(field_group.get("field_name"))
+        if not field_name:
+            continue
+        key = _field_group_dedupe_key(field_group)
+        existing = best_by_key.get(key)
+        if not existing:
+            best_by_key[key] = field_group
+            continue
+        existing_rank = int(bool(existing.get("field_node_id"))) * 10 + int(bool(existing.get("value_node_id"))) * 4 + int(bool(existing.get("locator"))) * 2 + int(existing.get("bbox") is not None)
+        new_rank = int(bool(field_group.get("field_node_id"))) * 10 + int(bool(field_group.get("value_node_id"))) * 4 + int(bool(field_group.get("locator"))) * 2 + int(field_group.get("bbox") is not None)
+        if new_rank >= existing_rank:
+            best_by_key[key] = field_group
+    return list(best_by_key.values())
+
+
+def _resolve_field_group(snapshot: Dict[str, Any], intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    target_hint = intent.get("target_hint", {}) or {}
+    expected_name = _normalize_hint(target_hint.get("name") or target_hint.get("text") or target_hint.get("value"))
+    field_groups = _dedupe_field_groups(list(snapshot.get("field_groups") or []))
+    if not field_groups:
+        for node in snapshot.get("content_nodes", []):
+            field_name = node.get("field_name")
+            if not field_name:
+                continue
+            field_groups.append(
+                {
+                    "field_name": field_name,
+                    "frame_path": list(node.get("frame_path") or []),
+                    "locator": node.get("locator"),
+                    "fallback_locator": node.get("locator"),
+                    "content_node": node,
+                    "locator_candidates": list(node.get("locator_candidates") or []),
+                    "selected_locator_kind": "content_nodes",
+                    "bbox": node.get("bbox"),
+                    "extraction_kind": "text",
+                    "allow_empty_fallback": True,
+                }
+            )
+
+    scored: List[Dict[str, Any]] = []
+    for field_group in field_groups:
+        field_name = _normalize_hint(field_group.get("field_name"))
+        if not field_name:
+            continue
+        if expected_name and expected_name not in field_name and field_name not in expected_name:
+            continue
+        scored.append({"field_group": field_group, "score": _field_group_score(field_group, intent)})
+
+    if not scored:
+        return None
+
+    scored.sort(
+        key=lambda item: (
+            -item["score"],
+            -int(bool(item["field_group"].get("field_node_id"))),
+            -int(bool(item["field_group"].get("value_node_id"))),
+        )
+        + _node_sort_key(item["field_group"])
+    )
+    return scored[0]["field_group"]
+
+
+def _frame_path_for_fallback(
+    field_group: Dict[str, Any],
+    content_node: Optional[Dict[str, Any]],
+    fallback_source: str,
+) -> List[str]:
+    fallback_frame_path = field_group.get("fallback_frame_path")
+    if fallback_frame_path is not None:
+        return list(fallback_frame_path or [])
+    if fallback_source == "content_node" and content_node:
+        return list(content_node.get("frame_path") or [])
+    return list(field_group.get("frame_path") or [])
+
+
 def _collection_score(collection: Dict[str, Any], intent: Dict[str, Any]) -> int:
     score = 0
     collection_hint = intent.get("collection_hint", {}) or {}
@@ -782,8 +958,56 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
         except ValueError:
             pass
 
-    if action == "extract_text":
+    if action in {"extract_text", "answer"}:
+        field_group = _resolve_field_group(snapshot, intent)
         content_node = _resolve_content_node(snapshot, intent)
+        fallback_locator = None
+        fallback_source = ""
+        fallback_frame_path: List[str] = []
+        if content_node:
+            fallback_locator = content_node.get("locator") or {"method": "text", "value": content_node.get("text", "")}
+        if field_group and field_group.get("locator") and field_group.get("field_name"):
+            control_kind = _normalize_hint(
+                field_group.get("field_control_kind")
+                or field_group.get("control_kind")
+                or field_group.get("locator", {}).get("role")
+                or field_group.get("locator", {}).get("method")
+            )
+            extraction_kind = str(
+                field_group.get("extraction_kind")
+                or (
+                    "control_state"
+                    if field_group.get("field_node_id") and control_kind in {"checkbox", "radio"}
+                    else "control_value"
+                    if field_group.get("field_node_id")
+                    else "text"
+                )
+            )
+            allow_empty_fallback = bool(field_group.get("allow_empty_fallback", extraction_kind == "text"))
+            if field_group.get("fallback_locator"):
+                fallback_locator = field_group.get("fallback_locator")
+                fallback_source = "field_group"
+            elif fallback_locator:
+                fallback_source = "content_node"
+            fallback_frame_path = _frame_path_for_fallback(field_group, content_node, fallback_source)
+            return {
+                **intent,
+                "resolved": {
+                    "frame_path": list(field_group.get("frame_path") or []),
+                    "locator": field_group.get("locator"),
+                    "value_locator": field_group.get("value_locator") or field_group.get("locator"),
+                    "locator_candidates": list(field_group.get("locator_candidates") or []),
+                    "collection_hint": {},
+                    "item_hint": {},
+                    "ordinal": None,
+                    "selected_locator_kind": str(field_group.get("selected_locator_kind") or (field_group.get("locator_candidates") or [{}])[0].get("kind") or field_group.get("locator", {}).get("method", "")),
+                    "field_group": field_group,
+                    "extraction_kind": extraction_kind,
+                    "allow_empty_fallback": allow_empty_fallback,
+                    "fallback_locator": fallback_locator,
+                    "fallback_frame_path": fallback_frame_path,
+                },
+            }
         if content_node:
             locator = content_node.get("locator") or {"method": "text", "value": content_node.get("text", "")}
             return {
@@ -791,12 +1015,17 @@ def resolve_structured_intent(snapshot: Dict[str, Any], intent: Dict[str, Any]) 
                 "resolved": {
                     "frame_path": list(content_node.get("frame_path") or []),
                     "locator": locator,
+                    "value_locator": locator,
                     "locator_candidates": list(content_node.get("locator_candidates") or []),
                     "collection_hint": {},
                     "item_hint": {},
                     "ordinal": None,
                     "selected_locator_kind": str((content_node.get("locator_candidates") or [{}])[0].get("kind") or locator.get("method", "")),
                     "content_node": content_node,
+                    "extraction_kind": "text",
+                    "allow_empty_fallback": True,
+                    "fallback_locator": None,
+                    "fallback_frame_path": [],
                 },
             }
 
@@ -878,6 +1107,49 @@ def _locator_from_payload(scope, payload):
     return scope.locator(payload.get("value", ""))
 
 
+def _locator_first(locator):
+    return getattr(locator, "first", locator)
+
+
+async def _extract_text_from_locator(locator, extraction_kind: str) -> tuple[str, bool]:
+    target = _locator_first(locator)
+    if extraction_kind == "control_state":
+        for method_name in ("is_checked", "is_selected"):
+            method = getattr(target, method_name, None)
+            if not method:
+                continue
+            try:
+                return ("checked" if await method() else "unchecked"), False
+            except Exception:
+                continue
+    if extraction_kind == "control_value":
+        method = getattr(target, "input_value", None)
+        if method:
+            try:
+                return str(await method()), False
+            except Exception:
+                pass
+    try:
+        return str(await target.inner_text()), False
+    except Exception:
+        pass
+    text_content = getattr(target, "text_content", None)
+    if text_content:
+        try:
+            value = await text_content()
+            return ("" if value is None else str(value)), False
+        except Exception:
+            pass
+    return "", True
+
+
+def _scope_for_frame_path(page, frame_path: List[str]):
+    scope = page
+    for frame_selector in frame_path:
+        scope = scope.frame_locator(frame_selector)
+    return scope
+
+
 def _build_collection_item_payload(collection_hint: Dict[str, Any], item_hint: Dict[str, Any], ordinal: Optional[str]) -> Optional[Dict[str, Any]]:
     if not ordinal:
         return None
@@ -925,20 +1197,24 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         return {"success": True, "step": step, "output": output}
 
     frame_path = resolved.get("frame_path", [])
-    scope = page
-    for frame_selector in frame_path:
-        scope = scope.frame_locator(frame_selector)
+    scope = _scope_for_frame_path(page, frame_path)
 
-    locator_payload = resolved["locator"]
+    locator_payload = resolved.get("value_locator") or resolved["locator"]
     locator = _locator_from_payload(scope, locator_payload)
     if action == "click":
-        await locator.first.click()
-    elif action == "extract_text":
-        output = await locator.first.inner_text()
+        await _locator_first(locator).click()
+    elif action in {"extract_text", "answer"}:
+        fallback_used = ""
+        output, extraction_failed = await _extract_text_from_locator(locator, str(resolved.get("extraction_kind") or "text"))
+        if (extraction_failed or (resolved.get("allow_empty_fallback", True) and not str(output or "").strip())) and resolved.get("fallback_locator"):
+            fallback_scope = _scope_for_frame_path(page, resolved.get("fallback_frame_path") or frame_path)
+            fallback_locator = _locator_from_payload(fallback_scope, resolved["fallback_locator"])
+            output, _ = await _extract_text_from_locator(fallback_locator, "text")
+            fallback_used = "content_nodes"
     elif action == "fill":
-        await locator.first.fill(intent.get("value", ""))
+        await _locator_first(locator).fill(intent.get("value", ""))
     elif action == "press":
-        await locator.first.press(intent.get("value", "Enter"))
+        await _locator_first(locator).press(intent.get("value", "Enter"))
     else:
         raise ValueError(f"Unsupported action: {action}")
 
@@ -963,6 +1239,7 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
             "resolved_frame_path": frame_path,
             "selected_locator_kind": resolved.get("selected_locator_kind", ""),
             "collection_kind": resolved.get("collection_hint", {}).get("kind", ""),
+            **({"fallback_used": fallback_used} if action == "extract_text" and fallback_used else {}),
         },
         "result_key": intent.get("result_key"),
         "description": intent.get("description", action),
@@ -970,4 +1247,3 @@ async def execute_structured_intent(page, intent: Dict[str, Any]) -> Dict[str, A
         "value": intent.get("value"),
     }
     return {"success": True, "step": step, "output": output}
-

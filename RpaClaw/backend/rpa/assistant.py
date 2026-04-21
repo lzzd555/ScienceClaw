@@ -72,7 +72,7 @@ Prefer returning a structured JSON action instead of raw Playwright code.
 
 For common atomic actions, respond with JSON in this shape:
 {
-  "action": "navigate|click|fill|extract_text|press",
+  "action": "navigate|click|fill|extract_text|answer|press",
   "description": "short action summary",
   "prompt": "original user instruction",
   "result_key": "short_ascii_snake_case_key_for_extracted_value",
@@ -94,7 +94,7 @@ Rules:
 4. The backend resolves frame context automatically, so do not invent iframe selectors unless the user explicitly names a frame.
 5. Only output Python code for genuinely complex custom logic that cannot be expressed as one atomic structured action.
 6. If you output Python, define async def run(page): and use Playwright async API.
-7. For extract_text actions, include result_key as a short ASCII snake_case key such as latest_issue_title. Do not use Chinese, spaces, or hyphens.
+7. For extract_text and answer actions, include result_key as a short ASCII snake_case key such as latest_issue_title. Do not use Chinese, spaces, or hyphens.
 8. When the user asks to extract multiple values (e.g. "提取购买人、使用部门和供应商"), output a JSON array of actions. Each action should have its own `result_key` and `target_hint`. Example:
 [
   {"action": "extract_text", "description": "Extract requestor", "prompt": "提取购买人、使用部门和供应商", "result_key": "requestor", "target_hint": {"name": "购买人"}},
@@ -355,6 +355,7 @@ class RPAAssistant:
             if len(intents) > 1:
                 # ── Multi-action: execute each intent with per-intent retry ──
                 multi_results = []
+                multi_context_writes: List[str] = []
                 for i, intent_json in enumerate(intents):
                     # --- First attempt ---
                     try:
@@ -364,6 +365,11 @@ class RPAAssistant:
                         )
                         multi_results.append(intent_result)
                         context_reads.extend(intent_reads)
+                        step_data = intent_result.get("step")
+                        if step_data:
+                            for key in step_data.get("context_writes", []) or []:
+                                if key not in multi_context_writes:
+                                    multi_context_writes.append(key)
                     except Exception as exc:
                         intent_result = {"success": False, "error": str(exc), "output": ""}
                         multi_results.append(intent_result)
@@ -402,6 +408,11 @@ class RPAAssistant:
                                 # Replace the failed result with retry result
                                 multi_results[-1] = retry_result
                                 context_reads.extend(retry_reads)
+                                step_data = retry_result.get("step")
+                                if step_data:
+                                    for key in step_data.get("context_writes", []) or []:
+                                        if key not in multi_context_writes:
+                                            multi_context_writes.append(key)
                             except Exception as exc2:
                                 multi_results[-1] = {"success": False, "error": str(exc2), "output": ""}
                         else:
@@ -418,10 +429,10 @@ class RPAAssistant:
                                 "error": multi_results[-1].get("error"),
                                 "intent_index": i,
                             },
-                        }
+                                }
 
                 # Aggregate results
-                result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
+                result = self._select_primary_multi_result(multi_results)
                 code = None
                 resolution = None
 
@@ -443,7 +454,7 @@ class RPAAssistant:
                         "step": None,
                         "output": result.get("output"),
                         "context_reads": context_reads,
-                        "context_writes": [],
+                        "context_writes": multi_context_writes,
                         "retried": any("retry" in str(r.get("error", "")) for r in multi_results if not r.get("success")),
                         "original_error": None,
                         "multi_action_count": len(intents),
@@ -495,6 +506,7 @@ class RPAAssistant:
                 if len(retry_intents) > 1:
                     # ── Retry multi-action with per-intent retry ──
                     multi_results = []
+                    multi_context_writes: List[str] = []
                     for i, intent_json in enumerate(retry_intents):
                         try:
                             intent_result, intent_reads = await self._execute_intent_with_ledger(
@@ -503,6 +515,11 @@ class RPAAssistant:
                             )
                             multi_results.append(intent_result)
                             context_reads.extend(intent_reads)
+                            step_data = intent_result.get("step")
+                            if step_data:
+                                for key in step_data.get("context_writes", []) or []:
+                                    if key not in multi_context_writes:
+                                        multi_context_writes.append(key)
                         except Exception as exc:
                             intent_result = {"success": False, "error": str(exc), "output": ""}
                             multi_results.append(intent_result)
@@ -538,6 +555,11 @@ class RPAAssistant:
                                     )
                                     multi_results[-1] = retry_result
                                     context_reads.extend(retry_reads)
+                                    step_data = retry_result.get("step")
+                                    if step_data:
+                                        for key in step_data.get("context_writes", []) or []:
+                                            if key not in multi_context_writes:
+                                                multi_context_writes.append(key)
                                 except Exception as exc2:
                                     multi_results[-1] = {"success": False, "error": str(exc2), "output": ""}
 
@@ -550,7 +572,7 @@ class RPAAssistant:
                                 },
                             }
 
-                    result = multi_results[-1] if multi_results else {"success": False, "error": "No actions executed", "output": ""}
+                    result = self._select_primary_multi_result(multi_results)
                     code = None
                     resolution = None
                     all_success = all(r.get("success") for r in multi_results)
@@ -579,7 +601,7 @@ class RPAAssistant:
                             "step": None,
                             "output": result.get("output"),
                             "context_reads": context_reads,
-                            "context_writes": [],
+                            "context_writes": multi_context_writes,
                             "retried": True,
                             "original_error": original_error,
                             "multi_action_count": len(retry_intents),
@@ -708,6 +730,15 @@ class RPAAssistant:
         return []
 
     @staticmethod
+    def _select_primary_multi_result(multi_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Prefer the latest successful answer output in a mixed multi-action response."""
+        for candidate in reversed(multi_results):
+            internal_step = candidate.get("internal_step") or {}
+            if candidate.get("success") and str(internal_step.get("action", "")).lower() == "answer":
+                return dict(candidate)
+        return dict(multi_results[-1]) if multi_results else {"success": False, "error": "No actions executed", "output": ""}
+
+    @staticmethod
     def _promote_to_ledger(
         rpa_manager: Any,
         session_id: str,
@@ -768,7 +799,7 @@ class RPAAssistant:
         )
         if result.get("success") and resolution:
             step_data = result.get("step")
-            if step_data:
+            if step_data and step_data.get("action") != "answer":
                 context_writes = self._compute_context_writes(
                     message=message, step_data=step_data, resolution=resolution,
                 )
@@ -799,6 +830,11 @@ class RPAAssistant:
             context_reads = self._resolve_context_in_intent(structured_intent, context_ledger)
             resolved_intent = resolve_structured_intent(snapshot, structured_intent)
             result = await execute_structured_intent(current_page, resolved_intent)
+            if str(resolved_intent.get("action", "")).lower() == "answer" and "step" in result:
+                # Keep answer output available to the caller, but do not let it
+                # flow through the persistable recorded-step contract.
+                result = {**result, "internal_step": result.get("step")}
+                result.pop("step", None)
             return result, None, resolved_intent, context_reads, []
 
         code = self._extract_code(full_response)
@@ -1051,6 +1087,3 @@ class RPAAssistant:
 
     async def _execute_on_page(self, page: Page, code: str, context: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         return await _execute_on_page(page, code, context)
-
-
-
