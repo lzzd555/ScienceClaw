@@ -13,7 +13,7 @@ from backend.rpa.assistant_runtime import (
     resolve_structured_intent,
     resolve_collection_target,
 )
-from backend.rpa.context_ledger import ContextValue
+from backend.rpa.session_context_service import SessionContextService
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +332,24 @@ class RPAAssistant:
 
         snapshot = await build_page_snapshot(current_page, build_frame_path_from_frame)
         history = self._get_history(session_id)
-        messages = self._build_messages(message, steps, snapshot, history)
+        context_service = None
+        get_context_service = getattr(rpa_manager, "get_session_context_service", None)
+        if callable(get_context_service):
+            try:
+                context_service = get_context_service(session_id)
+            except ValueError:
+                context_service = None
+        elif session_id in getattr(rpa_manager, "sessions", {}):
+            fallback_session = rpa_manager.sessions.get(session_id)
+            fallback_ledger = getattr(fallback_session, "context_ledger", None)
+            context_service = self._get_context_service(context_ledger=fallback_ledger)
+        messages = self._build_messages(
+            message,
+            steps,
+            snapshot,
+            history,
+            context_service=context_service,
+        )
 
         full_response = ""
         async for chunk_text in self._stream_llm(messages, model_config):
@@ -826,6 +843,20 @@ class RPAAssistant:
         """
         structured_intent = self._extract_structured_intent(full_response)
         if structured_intent:
+            context_service = self._get_context_service(context_ledger=context_ledger)
+            context_answer = self._answer_from_context_service(
+                structured_intent,
+                context_service=context_service,
+            )
+            if context_answer is not None:
+                return (
+                    {"success": True, "output": context_answer["text"]},
+                    None,
+                    structured_intent,
+                    list(context_answer["values"].keys()),
+                    [],
+                )
+
             # Resolve ${key} references in the intent using context ledger
             context_reads = self._resolve_context_in_intent(structured_intent, context_ledger)
             resolved_intent = resolve_structured_intent(snapshot, structured_intent)
@@ -849,13 +880,13 @@ class RPAAssistant:
         post_context = result.get("context", {})
         ai_context_writes = [k for k in post_context if k not in pre_context]
 
-        # Sync new values back to context_ledger
-        if ai_context_writes and context_ledger is not None:
-            for key in ai_context_writes:
-                val = post_context[key]
-                context_ledger.observed_values[key] = ContextValue(
-                    key=key, value=val, source_kind="ai_script"
-                )
+        context_service = self._get_context_service(context_ledger=context_ledger)
+        if ai_context_writes and context_service is not None:
+            context_service.record_updates(
+                {key: post_context[key] for key in ai_context_writes},
+                category="observed",
+                source_kind="ai_script",
+            )
 
         result["context_writes_from_ai"] = ai_context_writes
         return result, code, None, [], ai_context_writes
@@ -866,6 +897,8 @@ class RPAAssistant:
         steps: List[Dict[str, Any]],
         snapshot: Dict[str, Any],
         history: List[Dict[str, str]],
+        context_ledger: Optional[Any] = None,
+        context_service: Optional[SessionContextService] = None,
     ) -> List[Dict[str, str]]:
         steps_text = ""
         if steps:
@@ -877,9 +910,17 @@ class RPAAssistant:
             steps_text = "\n".join(lines)
 
         frame_lines = _snapshot_frame_lines(snapshot)
+        resolved_context_service = self._get_context_service(
+            context_ledger=context_ledger,
+            context_service=context_service,
+        )
+        current_context_lines = self._build_current_context_lines(resolved_context_service)
 
         context = f"""## History Steps
 {steps_text or "(none)"}
+
+## Current Context
+{chr(10).join(current_context_lines) if current_context_lines else "(none)"}
 
 ## Current Page Snapshot
 {chr(10).join(frame_lines) or "(no observable elements)"}
@@ -1005,16 +1046,14 @@ class RPAAssistant:
     @staticmethod
     def _build_context_from_ledger(context_ledger: Any) -> Dict[str, str]:
         """Build a flat context dict from the session's context ledger."""
-        if context_ledger is None:
+        service = RPAAssistant._get_context_service(context_ledger=context_ledger)
+        if service is None:
             return {}
-        ctx: Dict[str, str] = {}
-        for key, entry in context_ledger.observed_values.items():
-            if entry.value is not None:
-                ctx[key] = str(entry.value)
-        for key, entry in context_ledger.derived_values.items():
-            if entry.value is not None:
-                ctx[key] = str(entry.value)
-        return ctx
+        return {
+            key: str(value)
+            for key, value in service.build_current_context().items()
+            if value is not None
+        }
 
     @staticmethod
     def _resolve_context_in_intent(
@@ -1025,19 +1064,21 @@ class RPAAssistant:
 
         Returns the list of context keys that were read.
         """
-        if context_ledger is None:
+        service = RPAAssistant._get_context_service(context_ledger=context_ledger)
+        if service is None:
             return []
 
         import re as _re
         context_reads: List[str] = []
+        current_context = service.build_current_context()
 
         def _replace_ref(match: Any) -> str:
             key = match.group(1)
-            cv = context_ledger.observed_values.get(key) or context_ledger.derived_values.get(key)
-            if cv is not None and cv.value is not None:
+            value = current_context.get(key)
+            if value is not None:
                 if key not in context_reads:
                     context_reads.append(key)
-                return str(cv.value)
+                return str(value)
             return match.group(0)  # leave unresolved references as-is
 
         for field in ("value",):
@@ -1046,6 +1087,60 @@ class RPAAssistant:
                 intent[field] = _re.sub(r"\$\{(\w+)\}", _replace_ref, val)
 
         return context_reads
+
+    @staticmethod
+    def _get_context_service(
+        *,
+        context_ledger: Optional[Any] = None,
+        context_service: Optional[SessionContextService] = None,
+    ) -> Optional[SessionContextService]:
+        if context_service is not None:
+            return context_service
+        if context_ledger is None:
+            return None
+        return SessionContextService(context_ledger)
+
+    @staticmethod
+    def _build_current_context_lines(
+        context_service: Optional[SessionContextService],
+    ) -> List[str]:
+        if context_service is None:
+            return []
+        return [
+            f"{key}: {value}"
+            for key, value in context_service.build_current_context().items()
+        ]
+
+    @staticmethod
+    def _extract_context_query_text(intent: Dict[str, Any]) -> str:
+        for field in ("prompt", "description", "value"):
+            value = intent.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @classmethod
+    def _answer_from_context_service(
+        cls,
+        intent: Dict[str, Any],
+        *,
+        context_service: Optional[SessionContextService],
+    ) -> Optional[Dict[str, Any]]:
+        if context_service is None:
+            return None
+        if str(intent.get("action", "")).lower() != "answer":
+            return None
+
+        query = cls._extract_context_query_text(intent)
+        if not query:
+            return None
+
+        current_context = context_service.build_current_context()
+        declared_reads = context_service.collect_declared_reads(legacy_text=query)
+        if "上下文" not in query and not declared_reads and query not in current_context:
+            return None
+
+        return context_service.answer_context_query(query)
 
     @staticmethod
     def _extract_code(text: str) -> Optional[str]:

@@ -25,7 +25,48 @@ class SessionContextService:
         self.ledger = ledger
 
     def build_current_context(self) -> dict[str, Any]:
-        return self.ledger.build_value_map()
+        build_value_map = getattr(self.ledger, "build_value_map", None)
+        if callable(build_value_map):
+            return build_value_map()
+
+        value_map: dict[str, Any] = {}
+        for collection_name in ("observed_values", "derived_values"):
+            collection = getattr(self.ledger, collection_name, {}) or {}
+            for key, entry in collection.items():
+                value = getattr(entry, "value", entry)
+                value_map[key] = value
+        return value_map
+
+    def record_updates(
+        self,
+        updates: dict[str, Any],
+        *,
+        category: str = "observed",
+        user_explicit: bool = False,
+        runtime_required: bool = False,
+        source_step_id: str | None = None,
+        source_kind: str = "observation",
+    ) -> list[str]:
+        written_keys: list[str] = []
+        record_value = getattr(self.ledger, "record_value", None)
+        for key, value in updates.items():
+            if callable(record_value):
+                record_value(
+                    category=category,
+                    key=key,
+                    value=value,
+                    user_explicit=user_explicit,
+                    runtime_required=runtime_required,
+                    source_step_id=source_step_id,
+                    source_kind=source_kind,
+                )
+            else:
+                collection_name = "observed_values" if category == "observed" else "derived_values"
+                collection = getattr(self.ledger, collection_name, None)
+                if isinstance(collection, dict):
+                    collection[key] = value
+            written_keys.append(key)
+        return written_keys
 
     def answer_context_query(self, query: str) -> dict[str, Any]:
         context = self.build_current_context()

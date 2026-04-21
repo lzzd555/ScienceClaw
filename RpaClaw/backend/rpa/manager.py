@@ -15,6 +15,7 @@ from .cdp_connector import get_cdp_connector
 from .context_ledger import TaskContextLedger
 from .frame_selectors import build_frame_path
 from .playwright_security import get_context_kwargs
+from .session_context_service import SessionContextService
 
 logger = logging.getLogger(__name__)
 
@@ -991,6 +992,13 @@ class RPASessionManager:
             raise ValueError(f"Session {session_id} not found")
         session.context_ledger.record_rebuild_action(**kwargs)
 
+    def get_session_context_service(self, session_id: str) -> SessionContextService:
+        """Return the context service for *session_id*."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        return SessionContextService(session.context_ledger)
+
     async def _handle_event(self, session_id: str, evt: dict):
         if session_id not in self.sessions:
             return
@@ -1263,4 +1271,3 @@ class RPASessionManager:
 
 # ── Global instance ──────────────────────────────────────────────────
 rpa_manager = RPASessionManager()
-

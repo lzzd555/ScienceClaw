@@ -2,11 +2,12 @@ import importlib
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 ASSISTANT_MODULE = importlib.import_module("backend.rpa.assistant")
 ASSISTANT_RUNTIME_MODULE = importlib.import_module("backend.rpa.assistant_runtime")
+CONTEXT_LEDGER_MODULE = importlib.import_module("backend.rpa.context_ledger")
 
 
 class _FakeModel:
@@ -202,6 +203,54 @@ class RPAAssistantFrameAwareSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["content_nodes"][0]["semantic_kind"], "cell")
         self.assertEqual(snapshot["containers"][0]["container_kind"], "table")
 
+    async def test_build_page_snapshot_preserves_field_groups_from_snapshot_v2(self):
+        main = _FakeSnapshotFrame(
+            name="main",
+            url="https://example.com",
+            frame_path=[],
+            elements=[{"index": 1, "tag": "input", "role": "textbox", "name": "Report Title"}],
+        )
+        page = _FakeSnapshotPage(main)
+
+        with patch.object(
+            ASSISTANT_RUNTIME_MODULE,
+            "_extract_frame_snapshot_v2",
+            new=AsyncMock(
+                return_value={
+                    "actionable_nodes": [],
+                    "content_nodes": [],
+                    "containers": [],
+                    "field_groups": [
+                        {
+                            "field_name": "Report Title",
+                            "frame_path": [],
+                            "container_id": "form-1",
+                            "bbox": {"x": 10, "y": 20, "width": 240, "height": 40},
+                            "locator": {"method": "role", "role": "textbox", "name": "Report Title"},
+                            "fallback_locator": {"method": "text", "value": "Quarterly Report"},
+                            "locator_candidates": [
+                                {
+                                    "kind": "role",
+                                    "selected": True,
+                                    "locator": {"method": "role", "role": "textbox", "name": "Report Title"},
+                                }
+                            ],
+                            "field_node_id": "actionable-1",
+                            "value_node_id": "content-1",
+                        }
+                    ],
+                }
+            ),
+        ):
+            snapshot = await ASSISTANT_MODULE.build_page_snapshot(
+                page,
+                frame_path_builder=lambda frame: frame._frame_path,
+            )
+
+        self.assertIn("field_groups", snapshot)
+        self.assertEqual(snapshot["field_groups"][0]["field_name"], "Report Title")
+        self.assertEqual(snapshot["frames"][0]["field_groups"][0]["field_name"], "Report Title")
+
     async def test_build_page_snapshot_includes_iframe_elements_and_collections(self):
         iframe = _FakeSnapshotFrame(
             name="editor",
@@ -340,6 +389,9 @@ class RPAAssistantFrameAwareSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_system_prompt_includes_answer_action(self):
+        self.assertIn("answer", ASSISTANT_MODULE.SYSTEM_PROMPT)
+
     async def test_resolve_structured_intent_uses_bbox_order_for_first_match_in_single_pass(self):
         snapshot = {
             "frames": [],
@@ -502,6 +554,40 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved["resolved"]["locator"]["method"], "text")
         self.assertEqual(resolved["resolved"]["content_node"]["semantic_kind"], "heading")
 
+    async def test_resolve_structured_intent_answer_prefers_content_nodes(self):
+        snapshot = {
+            "frames": [],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "container_id": "card-1",
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "text": "Quarterly Report",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "Quarterly Report"},
+                    "element_snapshot": {"tag": "h2", "text": "Quarterly Report"},
+                }
+            ],
+            "containers": [],
+        }
+
+        resolved = ASSISTANT_MODULE.resolve_structured_intent(
+            snapshot,
+            {
+                "action": "answer",
+                "description": "回答报表标题",
+                "prompt": "回答报表标题",
+                "target_hint": {"name": "report title"},
+                "result_key": "report_title",
+            },
+        )
+
+        self.assertEqual(resolved["resolved"]["locator"]["method"], "text")
+        self.assertEqual(resolved["resolved"]["content_node"]["semantic_kind"], "heading")
+
     async def test_execute_structured_click_does_not_mark_local_expansion_in_single_pass_mode(self):
         page = _FakeActionPage()
         intent = {
@@ -561,6 +647,151 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
             result["step"]["target"],
             '{"method": "role", "role": "button", "name": "Send"}',
         )
+
+    async def test_execute_single_response_answer_returns_output_without_step(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        snapshot = {
+            "frames": [],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "container_id": "card-1",
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "text": "Quarterly Report",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "Quarterly Report"},
+                    "element_snapshot": {"tag": "h2", "text": "Quarterly Report"},
+                }
+            ],
+            "containers": [],
+        }
+        response = json.dumps(
+            {
+                "action": "answer",
+                "description": "回答报表标题",
+                "prompt": "回答报表标题",
+                "result_key": "report_title",
+                "target_hint": {"name": "report title"},
+            }
+        )
+
+        result, code, resolution, reads, writes = await assistant._execute_single_response(
+            page,
+            snapshot,
+            response,
+            context_ledger=None,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "Resolved text")
+        self.assertNotIn("step", result)
+        self.assertEqual(code, None)
+        self.assertEqual(reads, [])
+        self.assertEqual(writes, [])
+        self.assertIsNotNone(resolution)
+        self.assertEqual(resolution["action"], "answer")
+
+    async def test_execute_single_response_answers_context_query_without_page_lookup(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_value("observed", "buyer", "Ada Lovelace")
+        response = json.dumps(
+            {
+                "action": "answer",
+                "description": "回答当前上下文",
+                "prompt": "现在上下文中的所有内容有哪些",
+                "result_key": "current_context",
+            }
+        )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "resolve_structured_intent",
+            new=MagicMock(side_effect=AssertionError("should not resolve page intent")),
+        ), patch.object(
+            ASSISTANT_MODULE,
+            "execute_structured_intent",
+            new=AsyncMock(side_effect=AssertionError("should not execute page intent")),
+        ):
+            result, code, resolution, reads, writes = await assistant._execute_single_response(
+                page,
+                {"frames": [], "actionable_nodes": [], "content_nodes": [], "containers": []},
+                response,
+                context_ledger=ledger,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "buyer: Ada Lovelace")
+        self.assertNotIn("step", result)
+        self.assertEqual(code, None)
+        self.assertEqual(reads, ["buyer"])
+        self.assertEqual(writes, [])
+        self.assertIsNotNone(resolution)
+        self.assertEqual(resolution["action"], "answer")
+
+    async def test_execute_intent_with_ledger_skips_persistence_for_answer(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        snapshot = {
+            "frames": [],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "container_id": "card-1",
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "text": "Quarterly Report",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "Quarterly Report"},
+                    "element_snapshot": {"tag": "h2", "text": "Quarterly Report"},
+                }
+            ],
+            "containers": [],
+        }
+        intent_json = {
+            "action": "answer",
+            "description": "回答报表标题",
+            "prompt": "回答报表标题",
+            "result_key": "report_title",
+            "target_hint": {"name": "report title"},
+        }
+        rpa_manager = SimpleNamespace(add_step=AsyncMock(), record_context_value=AsyncMock())
+
+        result, reads = await assistant._execute_intent_with_ledger(
+            intent_json,
+            page,
+            snapshot,
+            context_ledger=None,
+            message="回答报表标题",
+            rpa_manager=rpa_manager,
+            session_id="session-1",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "Resolved text")
+        self.assertEqual(reads, [])
+        rpa_manager.add_step.assert_not_awaited()
+
+    def test_compute_context_writes_ignores_answer_actions(self):
+        writes = ASSISTANT_MODULE.RPAAssistant._compute_context_writes(
+            message="提取报表标题",
+            step_data={
+                "action": "answer",
+                "result_key": "report_title",
+                "description": "回答报表标题",
+                "prompt": "提取报表标题",
+            },
+            resolution=None,
+        )
+
+        self.assertEqual(writes, [])
 
     async def test_execute_structured_click_persists_adaptive_collection_target_for_first_collection_item(self):
         page = _FakeActionPage()
@@ -1151,6 +1382,316 @@ class RPAAssistantContextPromotionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context_writes, [],
                           "context_writes should be empty for a simple continuation command")
 
+    async def test_assistant_returns_answer_output_while_persisting_only_extract_step_in_mixed_flow(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        llm_response = json.dumps(
+            [
+                {
+                    "action": "answer",
+                    "description": "回答报表标题",
+                    "prompt": "请回答报表标题并提取发票编号",
+                    "result_key": "report_title",
+                    "target_hint": {"name": "Quarterly Report"},
+                },
+                {
+                    "action": "extract_text",
+                    "description": "提取发票编号",
+                    "prompt": "请回答报表标题并提取发票编号",
+                    "result_key": "invoice_number",
+                    "target_hint": {"name": "Invoice Number"},
+                },
+            ]
+        )
+
+        snapshot = {
+            "url": "https://example.com/report",
+            "title": "Report",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [
+                        {"index": 1, "tag": "h1", "role": "heading", "name": "Quarterly Report"},
+                        {"index": 2, "tag": "span", "role": "cell", "name": "INV-2026-001"},
+                    ],
+                    "collections": [],
+                },
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "field_name": "Quarterly Report",
+                    "text": "Quarterly Report",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "Quarterly Report"},
+                },
+                {
+                    "node_id": "invoice-1",
+                    "frame_path": [],
+                    "semantic_kind": "cell",
+                    "role": "cell",
+                    "field_name": "Invoice Number",
+                    "text": "INV-2026-001",
+                    "bbox": {"x": 20, "y": 60, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "INV-2026-001"},
+                },
+            ],
+            "containers": [],
+        }
+
+        class _MixedFlowScope:
+            def __init__(self):
+                self.calls = []
+                self.locators = {
+                    ("text", "Quarterly Report"): _FakeLocator("Quarterly Report"),
+                    ("text", "INV-2026-001"): _FakeLocator("INV-2026-001"),
+                }
+
+            def locator(self, selector):
+                self.calls.append(("locator", selector))
+                return self.locators.get(("text", selector), _FakeLocator())
+
+            def frame_locator(self, selector):
+                self.calls.append(("frame", selector))
+                return self
+
+            def get_by_role(self, role, **kwargs):
+                name = kwargs.get("name", "")
+                self.calls.append(("role", role, name))
+                return self.locators.get((role, name), _FakeLocator())
+
+            def get_by_text(self, value):
+                self.calls.append(("text", value))
+                return self.locators.get(("text", value), _FakeLocator())
+
+        class _MixedFlowPage:
+            url = "https://example.com/report"
+
+            def __init__(self):
+                self.scope = _MixedFlowScope()
+
+            async def title(self):
+                return "Report"
+
+            def frame_locator(self, selector):
+                return self.scope.frame_locator(selector)
+
+            def locator(self, selector):
+                return self.scope.locator(selector)
+
+            def get_by_role(self, role, **kwargs):
+                return self.scope.get_by_role(role, **kwargs)
+
+            def get_by_text(self, value):
+                return self.scope.get_by_text(value)
+
+        async def fake_stream(_messages, _model_config=None):
+            yield llm_response
+
+        assistant._stream_llm = fake_stream
+        page = _MixedFlowPage()
+
+        context_ledger = SimpleNamespace(
+            observed_values={},
+            derived_values={},
+            should_promote_value=lambda **_kwargs: True,
+        )
+        rpa_manager = SimpleNamespace(
+            sessions={"mixed-flow": SimpleNamespace(context_ledger=context_ledger)},
+            ensure_task_context=lambda _session_id: None,
+            add_step=AsyncMock(),
+            record_context_value=MagicMock(),
+        )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch("backend.rpa.manager.rpa_manager", new=rpa_manager):
+            events = []
+            async for event in assistant.chat(
+                session_id="mixed-flow",
+                page=page,
+                message="请回答报表标题并提取发票编号",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_events = [event for event in events if event["event"] == "result"]
+        self.assertTrue(result_events, "Expected a result event")
+
+        result_data = result_events[-1]["data"]
+        self.assertEqual(result_data["output"], "Quarterly Report")
+        self.assertEqual(result_data["multi_action_count"], 2)
+        self.assertIsNone(result_data["step"])
+        rpa_manager.add_step.assert_awaited_once()
+        recorded_step = rpa_manager.add_step.await_args.args[1]
+        self.assertEqual(recorded_step["action"], "extract_text")
+        self.assertEqual(recorded_step["result_key"], "invoice_number")
+        rpa_manager.record_context_value.assert_called_once()
+        self.assertEqual(rpa_manager.record_context_value.call_args.kwargs["key"], "invoice_number")
+        self.assertEqual(rpa_manager.record_context_value.call_args.kwargs["value"], "INV-2026-001")
+
+    async def test_assistant_retry_mixed_flow_returns_answer_output_and_persists_only_extract_step(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        initial_response = "not valid json"
+        retry_response = json.dumps(
+            [
+                {
+                    "action": "answer",
+                    "description": "回答报表标题",
+                    "prompt": "请回答报表标题并提取发票编号",
+                    "result_key": "report_title",
+                    "target_hint": {"name": "Quarterly Report"},
+                },
+                {
+                    "action": "extract_text",
+                    "description": "提取发票编号",
+                    "prompt": "请回答报表标题并提取发票编号",
+                    "result_key": "invoice_number",
+                    "target_hint": {"name": "Invoice Number"},
+                },
+            ]
+        )
+
+        snapshot = {
+            "url": "https://example.com/report",
+            "title": "Report",
+            "frames": [
+                {
+                    "frame_path": [],
+                    "frame_hint": "main document",
+                    "elements": [
+                        {"index": 1, "tag": "h1", "role": "heading", "name": "Quarterly Report"},
+                        {"index": 2, "tag": "span", "role": "cell", "name": "INV-2026-001"},
+                    ],
+                    "collections": [],
+                },
+            ],
+            "actionable_nodes": [],
+            "content_nodes": [
+                {
+                    "node_id": "title-1",
+                    "frame_path": [],
+                    "semantic_kind": "heading",
+                    "role": "heading",
+                    "field_name": "Quarterly Report",
+                    "text": "Quarterly Report",
+                    "bbox": {"x": 20, "y": 20, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "Quarterly Report"},
+                },
+                {
+                    "node_id": "invoice-1",
+                    "frame_path": [],
+                    "semantic_kind": "cell",
+                    "role": "cell",
+                    "field_name": "Invoice Number",
+                    "text": "INV-2026-001",
+                    "bbox": {"x": 20, "y": 60, "width": 200, "height": 24},
+                    "locator": {"method": "text", "value": "INV-2026-001"},
+                },
+            ],
+            "containers": [],
+        }
+
+        stream_calls = {"count": 0}
+
+        async def fake_stream(_messages, _model_config=None):
+            stream_calls["count"] += 1
+            yield initial_response if stream_calls["count"] == 1 else retry_response
+
+        async def fake_execute_single_response(_page, _snapshot, full_response, _context_ledger=None):
+            if full_response == initial_response:
+                return {"success": False, "error": "boom", "output": ""}, None, None, [], []
+
+            intent = json.loads(full_response)
+            if intent["action"] == "answer":
+                return (
+                    {
+                        "success": True,
+                        "output": "Quarterly Report",
+                        "internal_step": {
+                            "action": "answer",
+                            "description": intent["description"],
+                            "prompt": intent["prompt"],
+                            "result_key": intent["result_key"],
+                            "source": "ai",
+                        },
+                    },
+                    None,
+                    intent,
+                    [],
+                    [],
+                )
+            if intent["action"] == "extract_text":
+                return (
+                    {
+                        "success": True,
+                        "output": "INV-2026-001",
+                        "step": {
+                            "action": "extract_text",
+                            "description": intent["description"],
+                            "prompt": intent["prompt"],
+                            "result_key": intent["result_key"],
+                            "source": "ai",
+                        },
+                    },
+                    None,
+                    intent,
+                    [],
+                    [],
+                )
+            raise AssertionError(f"Unexpected intent: {intent}")
+
+        assistant._stream_llm = fake_stream
+        assistant._execute_single_response = fake_execute_single_response
+
+        context_ledger = SimpleNamespace(
+            observed_values={},
+            derived_values={},
+            should_promote_value=lambda **_kwargs: True,
+        )
+        rpa_manager = SimpleNamespace(
+            sessions={"retry-mixed-flow": SimpleNamespace(context_ledger=context_ledger)},
+            ensure_task_context=lambda _session_id: None,
+            add_step=AsyncMock(),
+            record_context_value=MagicMock(),
+        )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "build_page_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ), patch("backend.rpa.manager.rpa_manager", new=rpa_manager):
+            events = []
+            async for event in assistant.chat(
+                session_id="retry-mixed-flow",
+                page=_FakeActionPage(),
+                message="请回答报表标题并提取发票编号",
+                steps=[],
+            ):
+                events.append(event)
+
+        result_events = [event for event in events if event["event"] == "result"]
+        self.assertTrue(result_events, "Expected a result event")
+
+        result_data = result_events[-1]["data"]
+        self.assertEqual(result_data["output"], "Quarterly Report")
+        self.assertEqual(result_data["multi_action_count"], 2)
+        self.assertTrue(result_data["retried"])
+        self.assertEqual(result_data["original_error"], "boom")
+        rpa_manager.add_step.assert_awaited_once()
+        recorded_step = rpa_manager.add_step.await_args.args[1]
+        self.assertEqual(recorded_step["action"], "extract_text")
+        self.assertEqual(recorded_step["result_key"], "invoice_number")
+        rpa_manager.record_context_value.assert_called_once()
+        self.assertEqual(rpa_manager.record_context_value.call_args.kwargs["key"], "invoice_number")
+        self.assertEqual(rpa_manager.record_context_value.call_args.kwargs["value"], "INV-2026-001")
+
 
 class RPAAssistantPromptFormattingTests(unittest.TestCase):
     def test_build_messages_lists_frames_and_collections(self):
@@ -1178,6 +1719,25 @@ class RPAAssistantPromptFormattingTests(unittest.TestCase):
         self.assertIn("Frame: main document", content)
         self.assertIn("Frame: iframe title=results", content)
         self.assertIn("Collection: search_results (2 items)", content)
+
+    def test_build_messages_includes_current_context_summary_when_ledger_provided(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_value("observed", "buyer", "Ada Lovelace")
+        ledger.record_value("derived", "purchase_order", "PO-2048")
+
+        messages = assistant._build_messages(
+            "继续填写表单",
+            [],
+            {"frames": []},
+            [],
+            context_ledger=ledger,
+        )
+        content = messages[-1]["content"]
+
+        self.assertIn("## Current Context", content)
+        self.assertIn("buyer: Ada Lovelace", content)
+        self.assertIn("purchase_order: PO-2048", content)
 
 
 if __name__ == "__main__":
