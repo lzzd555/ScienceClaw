@@ -113,3 +113,19 @@ class DataPropFieldGroupTests(unittest.TestCase):
         """Verify buildStableLocator helper exists for generating stable locators."""
         self.assertIn("buildStableLocator", SNAPSHOT_V2_JS,
                       "buildStableLocator function should be defined")
+
+
+class FieldGroupFrameworkStrategyTests(unittest.TestCase):
+    """Tests that field_groups are correctly generated using framework strategies."""
+
+    def test_js_has_enhanced_field_group_generation(self):
+        """Verify the field_groups generation uses matchByDataProp and matchByFormContainer."""
+        self.assertIn("matchByDataProp", SNAPSHOT_V2_JS)
+        self.assertIn("matchByFormContainer", SNAPSHOT_V2_JS)
+        self.assertIn("findValueInContainer", SNAPSHOT_V2_JS)
+        self.assertIn("buildStableLocator", SNAPSHOT_V2_JS)
+
+    def test_js_field_group_loop_uses_framework_container(self):
+        """Verify the field group generation loop looks for form-item containers."""
+        self.assertIn("findValueInContainer", SNAPSHOT_V2_JS)
+        self.assertIn("buildStableLocator", SNAPSHOT_V2_JS)

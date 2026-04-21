@@ -647,21 +647,49 @@ SNAPSHOT_V2_JS = r"""() => {
         const fieldName = fieldNameFromNode(node);
         if (!fieldName)
             continue;
-        const valueNode = fieldValueNodeCandidates(fieldName, node.container_id, node);
-        const container = Array.from(containerMap.values()).find(item => item.container_id === node.container_id) || {};
+        // Try to find a value node using existing name-based matching
+        let valueNode = fieldValueNodeCandidates(fieldName, node.container_id, node);
+        let stableLocator = null;
+        // Look up the DOM element for the container (key in containerMap is the DOM element)
+        const containerEntry = Array.from(containerMap.entries())
+            .find(([domEl, cObj]) => cObj.container_id === node.container_id);
+        const containerDomEl = containerEntry ? containerEntry[0] : null;
+        // If no value node found by name, try container-based value search
+        if (!valueNode && containerDomEl) {
+            try {
+                const found = findValueInContainer(containerDomEl, null);
+                if (found) {
+                    valueNode = {
+                        node_id: 'content-derived-' + fieldGroupIndex,
+                        text: found.text,
+                        bbox: found.element.getBoundingClientRect ? bbox(found.element.getBoundingClientRect()) : node.bbox,
+                        locator: buildStableLocator(containerDomEl, found.element) || { method: 'text', value: found.text },
+                        locator_candidates: [],
+                        container_id: node.container_id,
+                    };
+                }
+            } catch (e) {}
+        }
+        // Build stable value_locator from container
+        if (containerDomEl) {
+            try {
+                stableLocator = buildStableLocator(containerDomEl, null);
+            } catch (e) {}
+        }
+        const containerObj = containerEntry ? containerEntry[1] : {};
         const controlExtractionKind = node.role === 'checkbox' || node.role === 'radio' ? 'control_state' : 'control_value';
         addFieldGroup({
             frame_path: [],
             container_id: node.container_id,
-            container_kind: container.container_kind || '',
+            container_kind: containerObj.container_kind || '',
             field_name: fieldName,
             field_control_kind: node.role || node.type || tag,
             field_node_id: node.node_id,
             value_node_id: valueNode ? valueNode.node_id : null,
             label_node_id: null,
             bbox: valueNode ? valueNode.bbox : node.bbox,
-            locator: valueNode ? valueNode.locator : node.locator,
-            value_locator: node.locator,
+            locator: valueNode ? valueNode.locator : (stableLocator || node.locator),
+            value_locator: stableLocator || node.locator,
             locator_candidates: valueNode ? (valueNode.locator_candidates || []) : (node.locator_candidates || []),
             selected_locator_kind: valueNode ? 'content_nodes' : 'actionable_nodes',
             extraction_kind: controlExtractionKind,
