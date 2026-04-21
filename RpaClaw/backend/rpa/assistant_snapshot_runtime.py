@@ -112,6 +112,16 @@ SNAPSHOT_V2_JS = r"""() => {
             return 'form_section';
         if (tag === 'article')
             return 'card_group';
+        if (el.classList && el.classList.contains('aui-form-item'))
+            return 'form_section';
+        if (el.classList && el.classList.contains('ant-form-item'))
+            return 'form_section';
+        if (el.classList && el.classList.contains('el-form-item'))
+            return 'form_section';
+        if (el.getAttribute('data-prop'))
+            return 'form_section';
+        if (el.classList && el.classList.contains('field-panel'))
+            return 'form_section';
         return '';
     }
 
@@ -129,7 +139,7 @@ SNAPSHOT_V2_JS = r"""() => {
     }
 
     function ensureContainer(el) {
-        const containerEl = el.closest('table,[role=table],[role=grid],ul,ol,[role=list],form,[role=toolbar],section,article');
+        const containerEl = el.closest('table,[role=table],[role=grid],ul,ol,[role=list],form,[role=toolbar],section,article,.aui-form-item,.ant-form-item,.el-form-item,[data-prop],.field-panel,.field-item,.aui-collapse-item__content');
         if (!containerEl)
             return '';
         if (containerMap.has(containerEl))
