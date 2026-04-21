@@ -1076,6 +1076,85 @@ class ContextRebuildTests(unittest.TestCase):
         )
         self.assertNotIn("context:buyer", script)
 
+    def test_generate_script_normal_path_eliminates_legacy_context_placeholders_from_contract_flow(self):
+        generator = PlaywrightGenerator()
+        steps = [
+            {
+                "id": "search-step",
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/search",
+                "description": "Open search page",
+            },
+            {
+                "id": "extract-step",
+                "action": "extract_text",
+                "target": json.dumps({"method": "role", "role": "cell", "name": "Buyer"}),
+                "description": "Extract buyer name from results",
+                "result_key": "buyer",
+                "url": "https://site.com/search",
+                "context_writes": ["buyer"],
+            },
+            {
+                "id": "form-step",
+                "action": "navigate",
+                "target": "",
+                "url": "https://site.com/form",
+                "description": "Open form page",
+            },
+            {
+                "id": "fill-buyer-step",
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Buyer"}),
+                "value": "context:buyer",
+                "description": "Fill buyer using context:buyer",
+                "url": "https://site.com/form",
+            },
+            {
+                "id": "fill-note-step",
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Note"}),
+                "value": "Buyer is context:buyer",
+                "description": "Keep the legacy placeholder text out of the generated code path",
+                "url": "https://site.com/form",
+                "context_reads": ["buyer"],
+            },
+        ]
+
+        ledger = types.SimpleNamespace(
+            rebuild_actions=[
+                types.SimpleNamespace(
+                    action="navigate",
+                    description="https://site.com/search",
+                    step_ref="search-step",
+                    writes=[],
+                ),
+                types.SimpleNamespace(
+                    action="extract_text",
+                    description="Extract buyer name from results",
+                    step_ref="extract-step",
+                    writes=["buyer"],
+                ),
+            ],
+            observed_values={},
+            derived_values={},
+        )
+
+        script = generator.generate_script(steps, is_local=True, context_ledger=ledger)
+
+        self.assertIn(
+            'await current_page.get_by_role("textbox", name="Buyer", exact=True).fill(context.get("buyer", kwargs.get("buyer", "")))',
+            script,
+        )
+        self.assertIn(
+            'await current_page.get_by_role("textbox", name="Note", exact=True).fill(context.get("buyer", kwargs.get("buyer", "")))',
+            script,
+        )
+        self.assertNotIn('.fill("context:buyer")', script)
+        self.assertNotIn(".fill('context:buyer')", script)
+        self.assertNotIn('"Buyer is context:buyer"', script)
+        self.assertNotIn("'Buyer is context:buyer'", script)
+
     def test_ai_script_step_still_reads_runtime_context(self):
         """Steps with context_reads should generate code that reads from context."""
         generator = PlaywrightGenerator()

@@ -734,6 +734,67 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(resolution)
         self.assertEqual(resolution["action"], "answer")
 
+    async def test_execute_single_response_answers_specific_context_key_without_page_lookup(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_value("observed", "buyer", "Ada Lovelace")
+        response = json.dumps(
+            {
+                "action": "answer",
+                "description": "回答 buyer",
+                "prompt": "当前记录的 buyer 是什么？",
+                "result_key": "buyer_value",
+                "target_hint": {"role": "cell", "name": "Buyer"},
+            }
+        )
+
+        with patch.object(
+            ASSISTANT_MODULE,
+            "resolve_structured_intent",
+            new=MagicMock(side_effect=AssertionError("should not resolve page intent")),
+        ), patch.object(
+            ASSISTANT_MODULE,
+            "execute_structured_intent",
+            new=AsyncMock(side_effect=AssertionError("should not execute page intent")),
+        ):
+            result, code, resolution, reads, writes = await assistant._execute_single_response(
+                page,
+                {
+                    "frames": [],
+                    "actionable_nodes": [
+                        {
+                            "node_id": "buyer-cell",
+                            "frame_path": [],
+                            "role": "cell",
+                            "name": "Buyer",
+                            "locator": {"method": "role", "role": "cell", "name": "Buyer"},
+                        }
+                    ],
+                    "content_nodes": [
+                        {
+                            "node_id": "buyer-value",
+                            "frame_path": [],
+                            "semantic_kind": "cell",
+                            "text": "Wrong page value",
+                            "locator": {"method": "text", "value": "Wrong page value"},
+                        }
+                    ],
+                    "containers": [],
+                },
+                response,
+                context_ledger=ledger,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "buyer: Ada Lovelace")
+        self.assertNotIn("step", result)
+        self.assertEqual(code, None)
+        self.assertEqual(reads, ["buyer"])
+        self.assertEqual(writes, [])
+        self.assertIsNotNone(resolution)
+        self.assertEqual(resolution["action"], "answer")
+
     async def test_execute_single_response_records_ai_script_writes_through_service(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()

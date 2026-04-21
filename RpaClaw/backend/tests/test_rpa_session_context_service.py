@@ -150,6 +150,73 @@ class SessionContextServiceTests(unittest.TestCase):
 
         self.assertEqual(reads, ["buyer"])
 
+    def test_export_generator_contract_normalizes_legacy_placeholder_reads_into_context_contract(self):
+        self.ledger.record_value(
+            "observed",
+            "buyer",
+            "Ada Lovelace",
+            user_explicit=True,
+            source_step_id="seed-buyer",
+        )
+        self.ledger.record_value(
+            "derived",
+            "purchase_order",
+            "PO-2048",
+            runtime_required=True,
+            source_step_id="derive-po",
+        )
+
+        exported = self.service.export_generator_contract(
+            [
+                {
+                    "id": "fill-step",
+                    "action": "fill",
+                    "target": "css=[name='buyer']",
+                    "value": "context:buyer",
+                    "description": "Use context:buyer in the form",
+                },
+                {
+                    "id": "extract-step",
+                    "action": "extract_text",
+                    "target": "css=.po-value",
+                    "result_key": "purchase_order",
+                    "context_writes": ["purchase_order"],
+                },
+            ]
+        )
+
+        self.assertEqual(exported["steps"][0]["context_reads"], ["buyer"])
+        self.assertEqual(
+            exported["steps"][0]["context_contract"],
+            {
+                "reads": ["buyer"],
+                "writes": [],
+            },
+        )
+        self.assertEqual(exported["steps"][1]["context_writes"], ["purchase_order"])
+        self.assertEqual(exported["required_context_outputs"], ["purchase_order"])
+        self.assertEqual(exported["context_rebuild_plan"], [1])
+        self.assertIn(
+            {
+                "action": "observe",
+                "description": "Observed value: buyer",
+                "writes": ["buyer"],
+                "source_step_id": "seed-buyer",
+                "value": "Ada Lovelace",
+            },
+            exported["rebuild_sequence"],
+        )
+        self.assertIn(
+            {
+                "action": "derive",
+                "description": "Derived value: purchase_order",
+                "writes": ["purchase_order"],
+                "source_step_id": "derive-po",
+                "value": "PO-2048",
+            },
+            exported["rebuild_sequence"],
+        )
+
 
 class StepContextContractTests(unittest.TestCase):
     def test_step_context_contract_exposes_forward_fields(self):
