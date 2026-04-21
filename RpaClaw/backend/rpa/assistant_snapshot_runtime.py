@@ -279,6 +279,51 @@ SNAPSHOT_V2_JS = r"""() => {
         return text;
     }
 
+    function findValueInContainer(container, controlNode) {
+        // Priority 1: display-only content (AUI pattern)
+        const displayOnly = container.querySelector('.aui-input-display-only__content');
+        if (displayOnly) {
+            const text = normalizeText(displayOnly.innerText || displayOnly.textContent || '', 160);
+            if (text) return { element: displayOnly, text: text };
+        }
+        // Priority 2: data-field attribute
+        const dataField = container.querySelector('[data-field]');
+        if (dataField) {
+            const text = normalizeText(dataField.innerText || dataField.textContent || '', 160);
+            if (text) return { element: dataField, text: text };
+        }
+        // Priority 3: Ant Design display text
+        const antText = container.querySelector('.ant-form-text');
+        if (antText) {
+            const text = normalizeText(antText.innerText || antText.textContent || '', 160);
+            if (text) return { element: antText, text: text };
+        }
+        // Priority 4: disabled input value
+        const disabledInput = container.querySelector('input[disabled],textarea[disabled]');
+        if (disabledInput && disabledInput !== controlNode) {
+            const val = normalizeText(disabledInput.value || disabledInput.getAttribute('title') || '', 160);
+            if (val) return { element: disabledInput, text: val };
+        }
+        return null;
+    }
+
+    function buildStableLocator(container, valueElement) {
+        // Priority 1: data-prop on the container (most stable for AUI)
+        const dataProp = container.getAttribute('data-prop');
+        if (dataProp) {
+            return { method: 'css', value: '[data-prop="' + dataProp + '"]' };
+        }
+        // Priority 2: data-field on the value element
+        if (valueElement) {
+            const dataField = valueElement.getAttribute('data-field');
+            if (dataField) {
+                return { method: 'css', value: '[data-field="' + dataField + '"]' };
+            }
+        }
+        // Priority 3: use the element's existing locator (will be built by buildFallbackLocator)
+        return null;
+    }
+
     function fieldNameFromElement(el, role) {
         // Priority 1: el.labels (standard <label for="id">)
         const labelTexts = [];

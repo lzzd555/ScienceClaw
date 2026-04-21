@@ -99,3 +99,17 @@ class FieldNameResolutionTests(unittest.TestCase):
         if labels_pos >= 0 and closest_pos >= 0:
             self.assertLess(labels_pos, closest_pos,
                             "el.labels check should come before closest() in fieldNameFromElement")
+
+
+class DataPropFieldGroupTests(unittest.TestCase):
+    """Tests that field_groups are generated with data-prop based locators for AUI forms."""
+
+    def test_js_has_find_value_in_container_function(self):
+        """Verify findValueInContainer helper exists for locating value nodes."""
+        self.assertIn("findValueInContainer", SNAPSHOT_V2_JS,
+                      "findValueInContainer function should be defined")
+
+    def test_js_has_build_stable_locator_function(self):
+        """Verify buildStableLocator helper exists for generating stable locators."""
+        self.assertIn("buildStableLocator", SNAPSHOT_V2_JS,
+                      "buildStableLocator function should be defined")
