@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 SNAPSHOT_MODULE = importlib.import_module("backend.rpa.assistant_snapshot_runtime")
 SNAPSHOT_V2_JS = SNAPSHOT_MODULE.SNAPSHOT_V2_JS
 
+ASSISTANT_MODULE = importlib.import_module("backend.rpa.assistant_runtime")
+
 
 def _extract_js_function_body(js_source: str, function_name: str) -> str:
     """Extract a function body from the JS source string."""
@@ -129,3 +131,108 @@ class FieldGroupFrameworkStrategyTests(unittest.TestCase):
         """Verify the field group generation loop looks for form-item containers."""
         self.assertIn("findValueInContainer", SNAPSHOT_V2_JS)
         self.assertIn("buildStableLocator", SNAPSHOT_V2_JS)
+
+
+class AUIFieldGroupResolutionTests(unittest.TestCase):
+    """Test Python resolution of field_groups from AUI-style forms."""
+
+    def _make_aui_field_group(self, field_name, data_prop, extraction_kind="control_value"):
+        return {
+            "field_name": field_name,
+            "frame_path": [],
+            "container_id": "container-1",
+            "container_kind": "form_section",
+            "field_control_kind": "textbox",
+            "field_node_id": "actionable-1",
+            "value_node_id": None,
+            "label_node_id": None,
+            "bbox": {"x": 10, "y": 100, "width": 200, "height": 24},
+            "locator": {"method": "css", "value": '[data-prop="' + data_prop + '"]'},
+            "value_locator": {"method": "css", "value": '[data-prop="' + data_prop + '"]'},
+            "locator_candidates": [
+                {
+                    "kind": "css",
+                    "selected": True,
+                    "locator": {"method": "css", "value": '[data-prop="' + data_prop + '"]'},
+                }
+            ],
+            "selected_locator_kind": "actionable_nodes",
+            "extraction_kind": extraction_kind,
+            "allow_empty_fallback": False,
+            "fallback_locator": {"method": "css", "value": '[data-prop="' + data_prop + '"]'},
+            "fallback_frame_path": [],
+        }
+
+    def test_resolve_aui_field_group_by_data_prop(self):
+        """field_group with data-prop locator resolves correctly."""
+        snapshot = {
+            "frames": [],
+            "field_groups": [
+                self._make_aui_field_group("期望完成时间 (UTC+08:00)", "expectedCompletionDate"),
+            ],
+            "content_nodes": [],
+            "containers": [],
+        }
+        resolved = ASSISTANT_MODULE.resolve_structured_intent(
+            snapshot,
+            {
+                "action": "extract_text",
+                "description": "提取期望完成时间",
+                "prompt": "提取期望完成时间",
+                "target_hint": {"name": "期望完成时间"},
+            },
+        )
+        self.assertIn("resolved", resolved)
+        self.assertEqual(
+            resolved["resolved"]["locator"],
+            {"method": "css", "value": "[data-prop=\"expectedCompletionDate\"]"},
+        )
+        self.assertEqual(resolved["resolved"]["extraction_kind"], "control_value")
+
+    def test_resolve_aui_field_group_matches_partial_name(self):
+        """field_group matches when target hint partially matches field_name."""
+        snapshot = {
+            "frames": [],
+            "field_groups": [
+                self._make_aui_field_group("期望完成时间 (UTC+08:00)", "expectedCompletionDate"),
+            ],
+            "content_nodes": [],
+            "containers": [],
+        }
+        resolved = ASSISTANT_MODULE.resolve_structured_intent(
+            snapshot,
+            {
+                "action": "extract_text",
+                "description": "提取完成时间",
+                "prompt": "提取完成时间",
+                "target_hint": {"name": "完成时间"},
+            },
+        )
+        self.assertIn("resolved", resolved)
+        self.assertIsNotNone(resolved["resolved"].get("field_group"))
+
+    def test_resolve_multiple_aui_field_groups(self):
+        """Multiple AUI field_groups resolve to the correct one by name."""
+        snapshot = {
+            "frames": [],
+            "field_groups": [
+                self._make_aui_field_group("需求标题", "reqName"),
+                self._make_aui_field_group("期望完成时间 (UTC+08:00)", "expectedCompletionDate"),
+            ],
+            "content_nodes": [],
+            "containers": [],
+        }
+        resolved = ASSISTANT_MODULE.resolve_structured_intent(
+            snapshot,
+            {
+                "action": "extract_text",
+                "description": "提取期望完成时间",
+                "prompt": "提取期望完成时间",
+                "target_hint": {"name": "期望完成时间"},
+            },
+        )
+        self.assertIn("resolved", resolved)
+        self.assertEqual(
+            resolved["resolved"]["field_group"]["field_name"],
+            "期望完成时间 (UTC+08:00)",
+        )
