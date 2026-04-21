@@ -674,24 +674,26 @@ class RPAAssistant:
         context_writes: List[str] = []
 
         if result["success"] and step_data:
-            context_writes = self._compute_context_writes(
+            promoted_context_writes = self._compute_context_writes(
                 message=message,
                 step_data=step_data,
                 resolution=resolution,
             )
-            # Merge AI script writes (context["key"] = value in code)
-            for kw in ai_context_writes:
-                if kw not in context_writes:
-                    context_writes.append(kw)
 
-            # Persist promoted values into the session ledger
-            self._promote_to_ledger(
-                rpa_manager=rpa_manager,
-                session_id=session_id,
-                context_writes=context_writes,
-                step_data=step_data,
-                output=result.get("output"),
-            )
+            if promoted_context_writes:
+                # Only extraction-style promotions flow through the generic ledger promotion path.
+                self._promote_to_ledger(
+                    rpa_manager=rpa_manager,
+                    session_id=session_id,
+                    context_writes=promoted_context_writes,
+                    step_data=step_data,
+                    output=result.get("output"),
+                )
+
+            context_writes = list(promoted_context_writes)
+            for key in ai_context_writes:
+                if key not in context_writes:
+                    context_writes.append(key)
 
         # Attach context lists to the step payload for downstream use
         if step_data is not None:
@@ -843,10 +845,9 @@ class RPAAssistant:
         """
         structured_intent = self._extract_structured_intent(full_response)
         if structured_intent:
-            context_service = self._get_context_service(context_ledger=context_ledger)
             context_answer = self._answer_from_context_service(
                 structured_intent,
-                context_service=context_service,
+                context_ledger=context_ledger,
             )
             if context_answer is not None:
                 return (
@@ -1124,8 +1125,9 @@ class RPAAssistant:
         cls,
         intent: Dict[str, Any],
         *,
-        context_service: Optional[SessionContextService],
+        context_ledger: Optional[Any],
     ) -> Optional[Dict[str, Any]]:
+        context_service = cls._get_context_service(context_ledger=context_ledger)
         if context_service is None:
             return None
         if str(intent.get("action", "")).lower() != "answer":
@@ -1135,12 +1137,7 @@ class RPAAssistant:
         if not query:
             return None
 
-        current_context = context_service.build_current_context()
-        declared_reads = context_service.collect_declared_reads(legacy_text=query)
-        if "上下文" not in query and not declared_reads and query not in current_context:
-            return None
-
-        return context_service.answer_context_query(query)
+        return context_service.maybe_answer_context_query(query)
 
     @staticmethod
     def _extract_code(text: str) -> Optional[str]:

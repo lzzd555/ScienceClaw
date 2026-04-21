@@ -68,6 +68,14 @@ class SessionContextServiceTests(unittest.TestCase):
         self.assertIn("buyer: Ada Lovelace", answer["text"])
         self.assertIn("purchase_order: PO-2048", answer["text"])
 
+    def test_maybe_answer_context_query_matches_context_key_question_without_legacy_placeholder(self):
+        answer = self.service.maybe_answer_context_query("当前记录的 purchase_order 是什么？")
+
+        self.assertIsNotNone(answer)
+        self.assertEqual(answer["mode"], "key")
+        self.assertEqual(answer["values"], {"purchase_order": "PO-2048"})
+        self.assertEqual(answer["text"], "purchase_order: PO-2048")
+
     def test_collect_declared_reads_accepts_explicit_reads_and_legacy_placeholder(self):
         reads = self.service.collect_declared_reads(
             ["buyer", "supplier"],

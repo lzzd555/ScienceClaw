@@ -734,6 +734,33 @@ class RPAAssistantStructuredExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(resolution)
         self.assertEqual(resolution["action"], "answer")
 
+    async def test_execute_single_response_records_ai_script_writes_through_service(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        response = """```python
+async def run(page):
+    context["buyer"] = "Ada Lovelace"
+    return "stored"
+```"""
+
+        result, code, resolution, reads, writes = await assistant._execute_single_response(
+            page,
+            {"frames": [], "actionable_nodes": [], "content_nodes": [], "containers": []},
+            response,
+            context_ledger=ledger,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "stored")
+        self.assertIsNotNone(code)
+        self.assertIsNone(resolution)
+        self.assertEqual(reads, [])
+        self.assertEqual(writes, ["buyer"])
+        self.assertIn("buyer", ledger.observed_values)
+        self.assertEqual(ledger.observed_values["buyer"].value, "Ada Lovelace")
+        self.assertEqual(ledger.observed_values["buyer"].source_kind, "ai_script")
+
     async def test_execute_intent_with_ledger_skips_persistence_for_answer(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()

@@ -9,6 +9,7 @@ from backend.rpa.context_ledger import TaskContextLedger
 
 _LEGACY_CONTEXT_READ_RE = re.compile(r"context:([A-Za-z_][A-Za-z0-9_]*)")
 _ALL_CONTEXT_QUERY_HINTS = ("所有内容", "全部", "有哪些")
+_CONTEXT_QUERY_HINTS = ("上下文", "context", "记录", "保存", "当前", "现在")
 
 
 @dataclass(slots=True)
@@ -73,7 +74,7 @@ class SessionContextService:
         if self._is_all_context_query(query):
             return self._build_answer_payload("all", context, query)
 
-        declared_reads = self.collect_declared_reads(legacy_text=query)
+        declared_reads = self.collect_context_query_reads(query)
         values = {read: context[read] for read in declared_reads if read in context}
         if values:
             return self._build_answer_payload("keys" if len(values) > 1 else "key", values, query)
@@ -82,6 +83,24 @@ class SessionContextService:
             return self._build_answer_payload("key", {query: context[query]}, query)
 
         return self._build_answer_payload("missing", {}, query)
+
+    def maybe_answer_context_query(self, query: str) -> dict[str, Any] | None:
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            return None
+
+        context = self.build_current_context()
+        if normalized_query in context:
+            return self.answer_context_query(normalized_query)
+
+        reads = self.collect_context_query_reads(normalized_query)
+        if reads:
+            return self.answer_context_query(normalized_query)
+
+        if self._is_all_context_query(normalized_query):
+            return self.answer_context_query(normalized_query)
+
+        return None
 
     def collect_declared_reads(
         self,
@@ -101,8 +120,29 @@ class SessionContextService:
                 deduped.append(read)
         return deduped
 
+    def collect_context_query_reads(self, query: str) -> list[str]:
+        normalized_query = (query or "").strip()
+        if not normalized_query:
+            return []
+
+        reads = self.collect_declared_reads(legacy_text=normalized_query)
+        context = self.build_current_context()
+        for key in context:
+            if self._query_mentions_key(normalized_query, key):
+                reads.append(key)
+        return self.collect_declared_reads(reads)
+
     def _is_all_context_query(self, query: str) -> bool:
-        return "上下文" in query and any(hint in query for hint in _ALL_CONTEXT_QUERY_HINTS)
+        return any(hint in query for hint in _ALL_CONTEXT_QUERY_HINTS) and any(
+            marker in query for marker in _CONTEXT_QUERY_HINTS
+        )
+
+    def _query_mentions_key(self, query: str, key: str) -> bool:
+        if key == query:
+            return True
+        if key not in query:
+            return False
+        return any(marker in query for marker in _CONTEXT_QUERY_HINTS) or "?" in query or "？" in query or "是什么" in query
 
     def _build_answer_payload(self, mode: str, values: dict[str, Any], query: str) -> dict[str, Any]:
         return {
