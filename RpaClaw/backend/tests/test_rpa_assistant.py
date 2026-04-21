@@ -761,6 +761,33 @@ async def run(page):
         self.assertEqual(ledger.observed_values["buyer"].value, "Ada Lovelace")
         self.assertEqual(ledger.observed_values["buyer"].source_kind, "ai_script")
 
+    async def test_execute_single_response_updates_existing_ai_script_context_key_through_service(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        ledger.record_value("observed", "buyer", "Old Buyer", source_kind="seed")
+        response = """```python
+async def run(page):
+    context["buyer"] = "New Buyer"
+    return "updated"
+```"""
+
+        result, code, resolution, reads, writes = await assistant._execute_single_response(
+            page,
+            {"frames": [], "actionable_nodes": [], "content_nodes": [], "containers": []},
+            response,
+            context_ledger=ledger,
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["output"], "updated")
+        self.assertIsNotNone(code)
+        self.assertIsNone(resolution)
+        self.assertEqual(reads, [])
+        self.assertEqual(writes, ["buyer"])
+        self.assertEqual(ledger.observed_values["buyer"].value, "New Buyer")
+        self.assertEqual(ledger.observed_values["buyer"].source_kind, "ai_script")
+
     async def test_execute_intent_with_ledger_normalizes_legacy_context_reads_before_persisting_step(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()

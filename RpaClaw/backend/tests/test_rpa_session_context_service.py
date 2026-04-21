@@ -109,6 +109,35 @@ class SessionContextServiceTests(unittest.TestCase):
             },
         )
 
+    def test_apply_contract_writes_uses_declared_write_keys(self):
+        contract = SESSION_CONTEXT_SERVICE_MODULE.StepContextContract(
+            reads=["buyer"],
+            writes=["buyer"],
+            updates={
+                "buyer": "Grace Hopper",
+                "purchase_order": "PO-4096",
+            },
+        )
+
+        written = self.service.apply_contract_writes(contract, category="observed", source_kind="ai_script")
+
+        self.assertEqual(written, ["buyer"])
+        self.assertEqual(self.ledger.observed_values["buyer"].value, "Grace Hopper")
+        self.assertNotIn("purchase_order", self.ledger.observed_values)
+
+    def test_collect_step_contract_reads_uses_service_owned_legacy_scan_policy(self):
+        reads = self.service.collect_step_contract_reads(
+            declared_reads=["context:buyer"],
+            step_data={
+                "value": "context:buyer",
+                "prompt": "Fill buyer into the form",
+                "description": "Use the saved buyer",
+                "target": "css=[name='buyer']",
+            },
+        )
+
+        self.assertEqual(reads, ["buyer"])
+
 
 class StepContextContractTests(unittest.TestCase):
     def test_step_context_contract_exposes_forward_fields(self):
@@ -121,6 +150,17 @@ class StepContextContractTests(unittest.TestCase):
         self.assertEqual(contract.reads, ["buyer"])
         self.assertEqual(contract.writes, ["purchase_order"])
         self.assertEqual(contract.updates, {"buyer": "Ada Lovelace"})
+
+    def test_step_context_contract_derives_writes_from_update_payload_when_omitted(self):
+        contract = SESSION_CONTEXT_SERVICE_MODULE.StepContextContract(
+            reads=["buyer"],
+            updates={
+                "buyer": "Ada Lovelace",
+                "purchase_order": "PO-2048",
+            },
+        )
+
+        self.assertEqual(contract.writes, ["buyer", "purchase_order"])
 
 
 class RpaPackageImportTests(unittest.TestCase):

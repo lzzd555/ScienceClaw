@@ -1099,16 +1099,9 @@ class RPAAssistant:
                     deduped.append(normalized)
             return deduped
 
-        legacy_parts: List[str] = []
-        for field in ("value", "prompt", "description", "target"):
-            value = (step_data or {}).get(field)
-            if isinstance(value, str) and value.strip():
-                legacy_parts.append(value)
-
-        legacy_text = "\n".join(legacy_parts) if legacy_parts else None
-        return context_service.collect_declared_reads(
-            context_reads or [],
-            legacy_text=legacy_text,
+        return context_service.collect_step_contract_reads(
+            declared_reads=context_reads or [],
+            step_data=step_data,
         )
 
     @staticmethod

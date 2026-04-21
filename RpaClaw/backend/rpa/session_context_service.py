@@ -11,6 +11,7 @@ _LEGACY_CONTEXT_READ_RE = re.compile(r"context:([A-Za-z_][A-Za-z0-9_]*)")
 _LEGACY_CONTEXT_READ_EXACT_RE = re.compile(r"^context:([A-Za-z_][A-Za-z0-9_]*)$")
 _ALL_CONTEXT_QUERY_HINTS = ("所有内容", "全部", "有哪些")
 _CONTEXT_QUERY_HINTS = ("上下文", "context", "记录", "保存", "当前", "现在")
+_STEP_CONTRACT_LEGACY_FIELDS = ("value", "prompt", "description", "target")
 
 
 @dataclass(slots=True)
@@ -20,6 +21,21 @@ class StepContextContract:
     reads: list[str] = field(default_factory=list)
     writes: list[str] = field(default_factory=list)
     updates: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.reads = self._dedupe(self.reads)
+        self.writes = self._dedupe(self.writes or self.updates.keys())
+
+    @staticmethod
+    def _dedupe(values: Iterable[Any]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = str(value).strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(normalized)
+        return deduped
 
 
 class SessionContextService:
@@ -87,7 +103,6 @@ class SessionContextService:
         }
         return StepContextContract(
             reads=self.collect_declared_reads(declared_reads, legacy_text=legacy_text),
-            writes=list(updates.keys()),
             updates=updates,
         )
 
@@ -101,15 +116,34 @@ class SessionContextService:
         source_step_id: str | None = None,
         source_kind: str = "observation",
     ) -> list[str]:
-        if not contract.updates:
+        payload = self._build_write_payload(contract)
+        if not payload:
             return []
         return self.record_updates(
-            contract.updates,
+            payload,
             category=category,
             user_explicit=user_explicit,
             runtime_required=runtime_required,
             source_step_id=source_step_id,
             source_kind=source_kind,
+        )
+
+    def collect_step_contract_reads(
+        self,
+        *,
+        declared_reads: Iterable[str] | None = None,
+        step_data: dict[str, Any] | None = None,
+    ) -> list[str]:
+        legacy_parts: list[str] = []
+        for field in _STEP_CONTRACT_LEGACY_FIELDS:
+            value = (step_data or {}).get(field)
+            if isinstance(value, str) and value.strip():
+                legacy_parts.append(value)
+
+        legacy_text = "\n".join(legacy_parts) if legacy_parts else None
+        return self.collect_declared_reads(
+            declared_reads,
+            legacy_text=legacy_text,
         )
 
     def answer_context_query(self, query: str) -> dict[str, Any]:
@@ -193,6 +227,17 @@ class SessionContextService:
         if match:
             return match.group(1)
         return normalized
+
+    def _build_write_payload(self, contract: StepContextContract) -> dict[str, Any]:
+        if not contract.writes:
+            return {}
+
+        payload: dict[str, Any] = {}
+        for key in contract.writes:
+            if key not in contract.updates:
+                raise ValueError(f"Missing update payload for declared write: {key}")
+            payload[key] = contract.updates[key]
+        return payload
 
     def _build_answer_payload(self, mode: str, values: dict[str, Any], query: str) -> dict[str, Any]:
         return {
