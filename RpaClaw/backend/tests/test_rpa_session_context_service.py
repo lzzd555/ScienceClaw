@@ -84,6 +84,31 @@ class SessionContextServiceTests(unittest.TestCase):
 
         self.assertEqual(reads, ["buyer", "supplier"])
 
+    def test_collect_declared_reads_normalizes_legacy_placeholder_entries(self):
+        reads = self.service.collect_declared_reads(
+            ["context:buyer", "supplier", "context:buyer"],
+            legacy_text="Please also use context:purchase_order before submitting.",
+        )
+
+        self.assertEqual(reads, ["buyer", "supplier", "purchase_order"])
+
+    def test_capture_runtime_contract_records_explicit_writes_from_context_diff(self):
+        contract = self.service.capture_runtime_contract(
+            before_context={"buyer": "Ada Lovelace", "status": "draft"},
+            after_context={"buyer": "Ada Lovelace", "status": "submitted", "purchase_order": "PO-2048"},
+            declared_reads=["context:buyer"],
+        )
+
+        self.assertEqual(contract.reads, ["buyer"])
+        self.assertEqual(contract.writes, ["status", "purchase_order"])
+        self.assertEqual(
+            contract.updates,
+            {
+                "status": "submitted",
+                "purchase_order": "PO-2048",
+            },
+        )
+
 
 class StepContextContractTests(unittest.TestCase):
     def test_step_context_contract_exposes_forward_fields(self):

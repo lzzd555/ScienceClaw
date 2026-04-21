@@ -8,6 +8,7 @@ from backend.rpa.context_ledger import TaskContextLedger
 
 
 _LEGACY_CONTEXT_READ_RE = re.compile(r"context:([A-Za-z_][A-Za-z0-9_]*)")
+_LEGACY_CONTEXT_READ_EXACT_RE = re.compile(r"^context:([A-Za-z_][A-Za-z0-9_]*)$")
 _ALL_CONTEXT_QUERY_HINTS = ("所有内容", "全部", "有哪些")
 _CONTEXT_QUERY_HINTS = ("上下文", "context", "记录", "保存", "当前", "现在")
 
@@ -69,6 +70,48 @@ class SessionContextService:
             written_keys.append(key)
         return written_keys
 
+    def capture_runtime_contract(
+        self,
+        *,
+        before_context: dict[str, Any] | None = None,
+        after_context: dict[str, Any] | None = None,
+        declared_reads: Iterable[str] | None = None,
+        legacy_text: str | None = None,
+    ) -> StepContextContract:
+        before = before_context or {}
+        after = after_context or {}
+        updates = {
+            key: value
+            for key, value in after.items()
+            if key not in before or before.get(key) != value
+        }
+        return StepContextContract(
+            reads=self.collect_declared_reads(declared_reads, legacy_text=legacy_text),
+            writes=list(updates.keys()),
+            updates=updates,
+        )
+
+    def apply_contract_writes(
+        self,
+        contract: StepContextContract,
+        *,
+        category: str = "observed",
+        user_explicit: bool = False,
+        runtime_required: bool = False,
+        source_step_id: str | None = None,
+        source_kind: str = "observation",
+    ) -> list[str]:
+        if not contract.updates:
+            return []
+        return self.record_updates(
+            contract.updates,
+            category=category,
+            user_explicit=user_explicit,
+            runtime_required=runtime_required,
+            source_step_id=source_step_id,
+            source_kind=source_kind,
+        )
+
     def answer_context_query(self, query: str) -> dict[str, Any]:
         context = self.build_current_context()
         if self._is_all_context_query(query):
@@ -108,7 +151,7 @@ class SessionContextService:
         *,
         legacy_text: str | None = None,
     ) -> list[str]:
-        reads = [str(item) for item in declared_reads or []]
+        reads = [self._normalize_declared_read(item) for item in declared_reads or []]
         if legacy_text:
             reads.extend(_LEGACY_CONTEXT_READ_RE.findall(legacy_text))
 
@@ -143,6 +186,13 @@ class SessionContextService:
         if key not in query:
             return False
         return any(marker in query for marker in _CONTEXT_QUERY_HINTS) or "?" in query or "？" in query or "是什么" in query
+
+    def _normalize_declared_read(self, read: Any) -> str:
+        normalized = str(read).strip()
+        match = _LEGACY_CONTEXT_READ_EXACT_RE.match(normalized)
+        if match:
+            return match.group(1)
+        return normalized
 
     def _build_answer_payload(self, mode: str, values: dict[str, Any], query: str) -> dict[str, Any]:
         return {

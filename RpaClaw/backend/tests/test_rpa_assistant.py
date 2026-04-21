@@ -761,6 +761,52 @@ async def run(page):
         self.assertEqual(ledger.observed_values["buyer"].value, "Ada Lovelace")
         self.assertEqual(ledger.observed_values["buyer"].source_kind, "ai_script")
 
+    async def test_execute_intent_with_ledger_normalizes_legacy_context_reads_before_persisting_step(self):
+        assistant = ASSISTANT_MODULE.RPAAssistant()
+        page = _FakeActionPage()
+        ledger = CONTEXT_LEDGER_MODULE.TaskContextLedger()
+        rpa_manager = SimpleNamespace(
+            add_step=AsyncMock(),
+            record_context_value=MagicMock(),
+        )
+
+        assistant._execute_single_response = AsyncMock(
+            return_value=(
+                {
+                    "success": True,
+                    "output": "ok",
+                    "step": {
+                        "action": "fill",
+                        "description": "Use the saved buyer",
+                        "prompt": "Fill buyer into the form",
+                        "value": "context:buyer",
+                        "source": "ai",
+                    },
+                },
+                None,
+                {"action": "fill"},
+                ["context:buyer"],
+                [],
+            )
+        )
+
+        result, reads = await assistant._execute_intent_with_ledger(
+            {"action": "fill", "value": "context:buyer"},
+            page,
+            {"frames": [], "actionable_nodes": [], "content_nodes": [], "containers": []},
+            context_ledger=ledger,
+            message="Fill buyer into the form",
+            rpa_manager=rpa_manager,
+            session_id="session-1",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(reads, ["buyer"])
+        rpa_manager.add_step.assert_awaited_once()
+        persisted_step = rpa_manager.add_step.await_args.args[1]
+        self.assertEqual(persisted_step["context_reads"], ["buyer"])
+        self.assertEqual(persisted_step["context_writes"], [])
+
     async def test_execute_intent_with_ledger_skips_persistence_for_answer(self):
         assistant = ASSISTANT_MODULE.RPAAssistant()
         page = _FakeActionPage()

@@ -672,6 +672,15 @@ class RPAAssistant:
 
         # ── Compute context reads / writes ─────────────────────────
         context_writes: List[str] = []
+        resolved_context_service = self._get_context_service(
+            context_ledger=context_ledger,
+            context_service=context_service,
+        )
+        normalized_context_reads = self._normalize_step_context_reads(
+            context_service=resolved_context_service,
+            context_reads=context_reads,
+            step_data=step_data,
+        )
 
         if result["success"] and step_data:
             promoted_context_writes = self._compute_context_writes(
@@ -697,7 +706,7 @@ class RPAAssistant:
 
         # Attach context lists to the step payload for downstream use
         if step_data is not None:
-            step_data["context_reads"] = context_reads
+            step_data["context_reads"] = normalized_context_reads
             step_data["context_writes"] = context_writes
 
         yield {
@@ -707,7 +716,7 @@ class RPAAssistant:
                 "error": result.get("error"),
                 "step": step_data,
                 "output": result.get("output"),
-                "context_reads": context_reads,
+                "context_reads": normalized_context_reads,
                 "context_writes": context_writes,
                 "retried": retried,
                 "original_error": original_error if retried else None,
@@ -816,9 +825,15 @@ class RPAAssistant:
         result, _, resolution, intent_reads, _ai_writes = await self._execute_single_response(
             current_page, snapshot, intent_response, context_ledger
         )
+        context_service = self._get_context_service(context_ledger=context_ledger)
         if result.get("success") and resolution:
             step_data = result.get("step")
             if step_data and step_data.get("action") != "answer":
+                normalized_reads = self._normalize_step_context_reads(
+                    context_service=context_service,
+                    context_reads=intent_reads,
+                    step_data=step_data,
+                )
                 context_writes = self._compute_context_writes(
                     message=message, step_data=step_data, resolution=resolution,
                 )
@@ -827,10 +842,16 @@ class RPAAssistant:
                     context_writes=context_writes, step_data=step_data,
                     output=result.get("output"),
                 )
-                step_data["context_reads"] = intent_reads
+                step_data["context_reads"] = normalized_reads
                 step_data["context_writes"] = context_writes
                 await rpa_manager.add_step(session_id, step_data)
-        return result, intent_reads
+                return result, normalized_reads
+        normalized_reads = self._normalize_step_context_reads(
+            context_service=context_service,
+            context_reads=intent_reads,
+            step_data=result.get("step"),
+        )
+        return result, normalized_reads
 
     async def _execute_single_response(
         self,
@@ -877,17 +898,22 @@ class RPAAssistant:
         pre_context = self._build_context_from_ledger(context_ledger)
         result = await self._execute_on_page(current_page, code, pre_context)
 
-        # Detect new keys written by the AI script
-        post_context = result.get("context", {})
-        ai_context_writes = [k for k in post_context if k not in pre_context]
-
         context_service = self._get_context_service(context_ledger=context_ledger)
-        if ai_context_writes and context_service is not None:
-            context_service.record_updates(
-                {key: post_context[key] for key in ai_context_writes},
-                category="observed",
-                source_kind="ai_script",
+        post_context = result.get("context", {})
+        if context_service is not None:
+            runtime_contract = context_service.capture_runtime_contract(
+                before_context=pre_context,
+                after_context=post_context,
             )
+            ai_context_writes = list(runtime_contract.writes)
+            if runtime_contract.updates:
+                context_service.apply_contract_writes(
+                    runtime_contract,
+                    category="observed",
+                    source_kind="ai_script",
+                )
+        else:
+            ai_context_writes = [k for k in post_context if k not in pre_context]
 
         result["context_writes_from_ai"] = ai_context_writes
         return result, code, None, [], ai_context_writes
@@ -1055,6 +1081,35 @@ class RPAAssistant:
             for key, value in service.build_current_context().items()
             if value is not None
         }
+
+    @staticmethod
+    def _normalize_step_context_reads(
+        *,
+        context_service: Optional[SessionContextService],
+        context_reads: List[str] | None,
+        step_data: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        if context_service is None:
+            deduped: List[str] = []
+            seen: set[str] = set()
+            for read in context_reads or []:
+                normalized = str(read).strip()
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    deduped.append(normalized)
+            return deduped
+
+        legacy_parts: List[str] = []
+        for field in ("value", "prompt", "description", "target"):
+            value = (step_data or {}).get(field)
+            if isinstance(value, str) and value.strip():
+                legacy_parts.append(value)
+
+        legacy_text = "\n".join(legacy_parts) if legacy_parts else None
+        return context_service.collect_declared_reads(
+            context_reads or [],
+            legacy_text=legacy_text,
+        )
 
     @staticmethod
     def _resolve_context_in_intent(
