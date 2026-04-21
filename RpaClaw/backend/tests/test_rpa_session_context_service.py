@@ -1,6 +1,7 @@
 import importlib
 import sys
 import unittest
+import subprocess
 from pathlib import Path
 
 
@@ -53,6 +54,20 @@ class SessionContextServiceTests(unittest.TestCase):
         self.assertEqual(answer["values"], {"buyer": "Ada Lovelace"})
         self.assertEqual(answer["text"], "buyer: Ada Lovelace")
 
+    def test_answer_context_query_returns_all_matching_values_for_multi_key_query(self):
+        answer = self.service.answer_context_query("context:buyer and context:purchase_order")
+
+        self.assertEqual(answer["mode"], "keys")
+        self.assertEqual(
+            answer["values"],
+            {
+                "buyer": "Ada Lovelace",
+                "purchase_order": "PO-2048",
+            },
+        )
+        self.assertIn("buyer: Ada Lovelace", answer["text"])
+        self.assertIn("purchase_order: PO-2048", answer["text"])
+
     def test_collect_declared_reads_accepts_explicit_reads_and_legacy_placeholder(self):
         reads = self.service.collect_declared_reads(
             ["buyer", "supplier"],
@@ -73,6 +88,24 @@ class StepContextContractTests(unittest.TestCase):
         self.assertEqual(contract.reads, ["buyer"])
         self.assertEqual(contract.writes, ["purchase_order"])
         self.assertEqual(contract.updates, {"buyer": "Ada Lovelace"})
+
+
+class RpaPackageImportTests(unittest.TestCase):
+    def test_importing_session_context_service_does_not_load_runtime_stack(self):
+        script = (
+            "import importlib, sys; "
+            f"sys.path.insert(0, {repr(str(BACKEND_ROOT))}); "
+            "importlib.import_module('backend.rpa.session_context_service'); "
+            "print('backend.rpa.manager' in sys.modules, 'backend.rpa.cdp_connector' in sys.modules)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.stdout.strip(), "False False")
 
 
 if __name__ == "__main__":

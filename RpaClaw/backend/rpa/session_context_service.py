@@ -33,9 +33,9 @@ class SessionContextService:
             return self._build_answer_payload("all", context, query)
 
         declared_reads = self.collect_declared_reads(legacy_text=query)
-        for read in declared_reads:
-            if read in context:
-                return self._build_answer_payload("key", {read: context[read]}, query)
+        values = {read: context[read] for read in declared_reads if read in context}
+        if values:
+            return self._build_answer_payload("keys" if len(values) > 1 else "key", values, query)
 
         if query in context:
             return self._build_answer_payload("key", {query: context[query]}, query)
