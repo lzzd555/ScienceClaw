@@ -30,17 +30,49 @@ class SessionContextServiceTests(unittest.TestCase):
             },
         )
 
-    def test_answer_context_query_returns_context_values_without_page_lookup(self):
+    def test_answer_context_query_returns_structured_payload_for_all_context(self):
+        answer = self.service.answer_context_query("现在上下文中的所有内容有哪些")
+
+        self.assertEqual(answer["mode"], "all")
+        self.assertEqual(
+            answer["values"],
+            {
+                "buyer": "Ada Lovelace",
+                "purchase_order": "PO-2048",
+            },
+        )
+        self.assertIn("buyer: Ada Lovelace", answer["text"])
+        self.assertIn("purchase_order: PO-2048", answer["text"])
+
+    def test_answer_context_query_returns_structured_payload_for_legacy_placeholder(self):
         self.ledger.page_context["buyer"] = "Wrong value"
 
-        answer = self.service.answer_context_query("buyer")
+        answer = self.service.answer_context_query("context:buyer")
 
-        self.assertEqual(answer, "Ada Lovelace")
+        self.assertEqual(answer["mode"], "key")
+        self.assertEqual(answer["values"], {"buyer": "Ada Lovelace"})
+        self.assertEqual(answer["text"], "buyer: Ada Lovelace")
 
-    def test_collect_declared_reads_extracts_legacy_context_placeholder(self):
-        reads = self.service.collect_declared_reads("Please use context:buyer before submitting.")
+    def test_collect_declared_reads_accepts_explicit_reads_and_legacy_placeholder(self):
+        reads = self.service.collect_declared_reads(
+            ["buyer", "supplier"],
+            legacy_text="Please use context:buyer before submitting.",
+        )
 
-        self.assertEqual(reads, ["buyer"])
+        self.assertEqual(reads, ["buyer", "supplier"])
+
+
+class StepContextContractTests(unittest.TestCase):
+    def test_step_context_contract_exposes_forward_fields(self):
+        contract = SESSION_CONTEXT_SERVICE_MODULE.StepContextContract(
+            reads=["buyer"],
+            writes=["purchase_order"],
+            updates={"buyer": "Ada Lovelace"},
+        )
+
+        self.assertEqual(contract.reads, ["buyer"])
+        self.assertEqual(contract.writes, ["purchase_order"])
+        self.assertEqual(contract.updates, {"buyer": "Ada Lovelace"})
 
 
 if __name__ == "__main__":
