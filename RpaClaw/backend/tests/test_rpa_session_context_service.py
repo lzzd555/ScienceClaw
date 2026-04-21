@@ -138,6 +138,18 @@ class SessionContextServiceTests(unittest.TestCase):
 
         self.assertEqual(reads, ["buyer"])
 
+    def test_collect_step_contract_reads_does_not_append_legacy_reads_when_explicit_reads_exist(self):
+        reads = self.service.collect_step_contract_reads(
+            declared_reads=["buyer"],
+            step_data={
+                "value": "context:purchase_order",
+                "description": "Use the saved buyer",
+                "target": "css=[name='buyer']",
+            },
+        )
+
+        self.assertEqual(reads, ["buyer"])
+
 
 class StepContextContractTests(unittest.TestCase):
     def test_step_context_contract_exposes_forward_fields(self):

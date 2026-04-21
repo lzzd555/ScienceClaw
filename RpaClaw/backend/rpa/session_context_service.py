@@ -167,6 +167,10 @@ class SessionContextService:
         declared_reads: Iterable[str] | None = None,
         step_data: dict[str, Any] | None = None,
     ) -> list[str]:
+        explicit_reads = self.collect_declared_reads(declared_reads)
+        if explicit_reads:
+            return explicit_reads
+
         legacy_parts: list[str] = []
         for field in _STEP_CONTRACT_LEGACY_FIELDS:
             value = (step_data or {}).get(field)

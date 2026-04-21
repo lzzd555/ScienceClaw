@@ -395,7 +395,12 @@ async def generate_script(
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), context_ledger=None)
+    script = generator.generate_script(
+        steps,
+        request.params,
+        is_local=(settings.storage_backend == "local"),
+        context_ledger=getattr(session, "context_ledger", None),
+    )
     return {"status": "success", "script": script}
 
 
@@ -410,7 +415,13 @@ async def test_script(
         raise HTTPException(status_code=404, detail="Session not found")
 
     steps = [step.model_dump() for step in session.steps]
-    script = generator.generate_script(steps, request.params, is_local=(settings.storage_backend == "local"), test_mode=True, context_ledger=None)
+    script = generator.generate_script(
+        steps,
+        request.params,
+        is_local=(settings.storage_backend == "local"),
+        test_mode=True,
+        context_ledger=getattr(session, "context_ledger", None),
+    )
 
     logs = []
     browser = await get_cdp_connector().get_browser(
