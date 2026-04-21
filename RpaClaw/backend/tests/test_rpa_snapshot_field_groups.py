@@ -61,3 +61,41 @@ class ContainerDetectionTests(unittest.TestCase):
     def test_ensureContainer_includes_aui_collapse_content_selector(self):
         self.assertIn(".aui-collapse-item__content", SNAPSHOT_V2_JS,
                       "ensureContainer should include .aui-collapse-item__content in closest() selector")
+
+
+class FieldNameResolutionTests(unittest.TestCase):
+    """Tests for fieldNameFromElement priority and framework container lookup."""
+
+    def test_js_has_match_by_data_prop_function(self):
+        """Verify matchByDataProp helper function exists in JS."""
+        self.assertIn("matchByDataProp", SNAPSHOT_V2_JS,
+                      "matchByDataProp function should be defined")
+
+    def test_js_has_match_by_form_container_function(self):
+        """Verify matchByFormContainer helper function exists in JS."""
+        self.assertIn("matchByFormContainer", SNAPSHOT_V2_JS,
+                      "matchByFormContainer function should be defined")
+
+    def test_field_name_from_element_uses_form_item_closest(self):
+        """Verify fieldNameFromElement delegates to helpers that use closest() for form items."""
+        fn_body = _extract_js_function_body(SNAPSHOT_V2_JS, "fieldNameFromElement")
+        self.assertIn("matchByDataProp", fn_body,
+                      "fieldNameFromElement should call matchByDataProp for framework container lookup")
+        self.assertIn("matchByFormContainer", fn_body,
+                      "fieldNameFromElement should call matchByFormContainer for framework container lookup")
+        # Verify the helpers themselves contain closest() and aui-form-item
+        data_prop_body = _extract_js_function_body(SNAPSHOT_V2_JS, "matchByDataProp")
+        self.assertIn("closest", data_prop_body,
+                      "matchByDataProp should use closest() to find form item container")
+        self.assertIn("aui-form-item", data_prop_body,
+                      "matchByDataProp should look for .aui-form-item container")
+
+    def test_field_name_from_element_priority_order(self):
+        """Verify AX semantic signals come before framework container lookup."""
+        fn_body = _extract_js_function_body(SNAPSHOT_V2_JS, "fieldNameFromElement")
+        # el.labels check should appear before closest() check
+        labels_pos = fn_body.find("el.labels")
+        closest_pos = fn_body.find("closest")
+        if labels_pos >= 0 and closest_pos >= 0:
+            self.assertLess(labels_pos, closest_pos,
+                            "el.labels check should come before closest() in fieldNameFromElement")

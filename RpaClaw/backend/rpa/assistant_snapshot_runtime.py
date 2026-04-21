@@ -257,7 +257,30 @@ SNAPSHOT_V2_JS = r"""() => {
         return role === 'textbox' || role === 'combobox' || role === 'checkbox' || role === 'radio';
     }
 
+    function matchByDataProp(el) {
+        const formItem = el.closest('.aui-form-item,[data-prop]');
+        if (!formItem) return '';
+        const dataProp = formItem.getAttribute('data-prop');
+        if (!dataProp) return '';
+        const label = formItem.querySelector('label[for="' + dataProp + '"]');
+        if (label) return normalizeText(label.innerText || label.textContent || '', 80);
+        const labelEl = formItem.querySelector('.aui-form-item__label,.ant-form-item-label,.el-form-item__label');
+        if (labelEl) return normalizeText(labelEl.innerText || labelEl.textContent || '', 80);
+        return '';
+    }
+
+    function matchByFormContainer(el) {
+        const formItem = el.closest('.aui-form-item,.ant-form-item,.el-form-item,.field-panel,.field-item');
+        if (!formItem) return '';
+        const labelEl = formItem.querySelector('.aui-form-item__label,.ant-form-item-label,.el-form-item__label,label');
+        if (!labelEl) return '';
+        const text = normalizeText(labelEl.innerText || labelEl.textContent || '', 80);
+        if (!text) return '';
+        return text;
+    }
+
     function fieldNameFromElement(el, role) {
+        // Priority 1: el.labels (standard <label for="id">)
         const labelTexts = [];
         try {
             if (el.labels) {
@@ -268,9 +291,11 @@ SNAPSHOT_V2_JS = r"""() => {
                 }
             }
         } catch (e) {}
+        // Priority 2: aria-label
         const ariaLabel = normalizeText(el.getAttribute('aria-label') || '', 80);
         if (ariaLabel)
             return ariaLabel;
+        // Priority 3: aria-labelledby
         const ariaLabelledBy = normalizeText(el.getAttribute('aria-labelledby') || '', 80);
         if (ariaLabelledBy) {
             const parts = [];
@@ -289,15 +314,26 @@ SNAPSHOT_V2_JS = r"""() => {
         }
         if (labelTexts.length)
             return labelTexts[0];
+        // Priority 4: Framework container lookup
+        const dataPropMatch = matchByDataProp(el);
+        if (dataPropMatch)
+            return dataPropMatch;
+        const formContainerMatch = matchByFormContainer(el);
+        if (formContainerMatch)
+            return formContainerMatch;
+        // Priority 5: placeholder
         const placeholder = normalizeText(el.getAttribute('placeholder') || '', 80);
         if (placeholder)
             return placeholder;
+        // Priority 6: title
         const title = normalizeText(el.getAttribute('title') || '', 80);
         if (title)
             return title;
+        // Priority 7: getAccessibleName
         const name = getAccessibleName(el);
         if (name)
             return name;
+        // Priority 8: role fallback
         if (role)
             return normalizeText(role, 80);
         return '';
