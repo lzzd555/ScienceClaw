@@ -1,0 +1,95 @@
+"""Data models for the API Monitor feature."""
+
+import uuid
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+def _gen_id() -> str:
+    return str(uuid.uuid4())
+
+
+# ── Captured request/response ────────────────────────────────────────
+
+
+class CapturedRequest(BaseModel):
+    request_id: str
+    url: str
+    method: str
+    headers: Dict[str, str]
+    body: Optional[str] = None
+    content_type: Optional[str] = None
+    timestamp: datetime
+    resource_type: str  # "xhr" or "fetch"
+
+
+class CapturedResponse(BaseModel):
+    status: int
+    status_text: str
+    headers: Dict[str, str]
+    body: Optional[str] = None
+    content_type: Optional[str] = None
+    timestamp: datetime
+
+
+class CapturedApiCall(BaseModel):
+    id: str = Field(default_factory=_gen_id)
+    request: CapturedRequest
+    response: Optional[CapturedResponse] = None
+    trigger_element: Optional[Dict] = None
+    url_pattern: Optional[str] = None
+    duration_ms: Optional[float] = None
+
+
+# ── Tool definition ──────────────────────────────────────────────────
+
+
+class ApiToolDefinition(BaseModel):
+    id: str = Field(default_factory=_gen_id)
+    session_id: str
+    name: str
+    description: str
+    method: str
+    url_pattern: str
+    headers_schema: Optional[Dict] = None
+    request_body_schema: Optional[Dict] = None
+    response_body_schema: Optional[Dict] = None
+    trigger_locator: Optional[Dict] = None
+    yaml_definition: str
+    source_calls: List[str] = Field(default_factory=list)
+    source: str = "auto"  # "auto" or "manual"
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Session ──────────────────────────────────────────────────────────
+
+
+class ApiMonitorSession(BaseModel):
+    id: str = Field(default_factory=_gen_id)
+    user_id: str
+    sandbox_session_id: str
+    status: str = "idle"  # idle, analyzing, recording, stopped
+    target_url: Optional[str] = None
+    captured_calls: List[CapturedApiCall] = Field(default_factory=list)
+    tool_definitions: List[ApiToolDefinition] = Field(default_factory=list)
+    active_tab_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Request schemas for API endpoints ────────────────────────────────
+
+
+class StartSessionRequest(BaseModel):
+    url: str
+
+
+class NavigateRequest(BaseModel):
+    url: str
+
+
+class UpdateToolRequest(BaseModel):
+    yaml_definition: str
