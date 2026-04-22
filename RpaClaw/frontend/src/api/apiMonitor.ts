@@ -1,0 +1,197 @@
+import { apiClient, createSSEConnection } from '@/api/client'
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface CapturedRequest {
+  request_id: string
+  url: string
+  method: string
+  headers: Record<string, string>
+  body?: string
+  content_type?: string
+  timestamp: string
+  resource_type: string
+}
+
+export interface CapturedResponse {
+  status: number
+  status_text: string
+  headers: Record<string, string>
+  body?: string
+  content_type?: string
+  timestamp: string
+}
+
+export interface CapturedApiCall {
+  id: string
+  request: CapturedRequest
+  response?: CapturedResponse
+  trigger_element?: string
+  url_pattern?: string
+  duration_ms?: number
+}
+
+export interface ApiToolDefinition {
+  id: string
+  session_id: string
+  name: string
+  description: string
+  method: string
+  url_pattern: string
+  yaml_definition: string
+  source_calls: string[]
+  source: 'auto' | 'manual'
+  created_at: string
+  updated_at: string
+}
+
+export interface ApiMonitorSession {
+  id: string
+  user_id: string
+  sandbox_session_id: string
+  status: 'idle' | 'analyzing' | 'recording' | 'stopped'
+  target_url?: string
+  captured_calls: CapturedApiCall[]
+  tool_definitions: ApiToolDefinition[]
+  created_at: string
+  updated_at: string
+}
+
+export interface TabInfo {
+  id: string
+  url: string
+  title: string
+}
+
+export interface AnalyzeEvent {
+  event: string
+  data: unknown
+}
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Start a new API monitor session.
+ */
+export async function startSession(url: string): Promise<ApiMonitorSession> {
+  const response = await apiClient.post('/api-monitor/session/start', { url })
+  return response.data.data
+}
+
+/**
+ * Get an existing API monitor session by ID.
+ */
+export async function getSession(sessionId: string): Promise<ApiMonitorSession> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}`)
+  return response.data.data
+}
+
+/**
+ * Stop an API monitor session.
+ */
+export async function stopSession(sessionId: string): Promise<void> {
+  await apiClient.post(`/api-monitor/session/${sessionId}/stop`)
+}
+
+/**
+ * Navigate the monitored browser to a new URL.
+ */
+export async function navigateSession(sessionId: string, url: string): Promise<void> {
+  await apiClient.post(`/api-monitor/session/${sessionId}/navigate`, { url })
+}
+
+/**
+ * List open browser tabs for the session.
+ */
+export async function listTabs(sessionId: string): Promise<TabInfo[]> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/tabs`)
+  return response.data.data
+}
+
+/**
+ * Start SSE-based analysis of captured API calls.
+ * Returns a cleanup function to abort the connection.
+ */
+export function analyzeSession(
+  sessionId: string,
+  onMessage: (evt: AnalyzeEvent) => void,
+): () => void {
+  // createSSEConnection is async but returns the cleanup fn via promise;
+  // we store it so the caller can still get a synchronous cleanup handle.
+  let cleanup: (() => void) | null = null
+
+  createSSEConnection<unknown>(
+    `/api-monitor/session/${sessionId}/analyze`,
+    { method: 'POST' },
+    {
+      onMessage({ event, data }) {
+        onMessage({ event, data })
+      },
+    },
+  ).then((fn) => {
+    cleanup = fn
+  })
+
+  return () => {
+    cleanup?.()
+  }
+}
+
+/**
+ * Start recording API calls in the session.
+ */
+export async function startRecording(sessionId: string): Promise<void> {
+  await apiClient.post(`/api-monitor/session/${sessionId}/record/start`)
+}
+
+/**
+ * Stop recording and return the generated tool definitions.
+ */
+export async function stopRecording(sessionId: string): Promise<ApiToolDefinition[]> {
+  const response = await apiClient.post(`/api-monitor/session/${sessionId}/record/stop`)
+  return response.data.data
+}
+
+/**
+ * List all tool definitions for a session.
+ */
+export async function listTools(sessionId: string): Promise<ApiToolDefinition[]> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/tools`)
+  return response.data.data
+}
+
+/**
+ * Update a tool definition's YAML.
+ */
+export async function updateTool(
+  sessionId: string,
+  toolId: string,
+  yamlDefinition: string,
+): Promise<ApiToolDefinition> {
+  const response = await apiClient.put(
+    `/api-monitor/session/${sessionId}/tools/${toolId}`,
+    { yaml_definition: yamlDefinition },
+  )
+  return response.data.data
+}
+
+/**
+ * Delete a tool definition.
+ */
+export async function deleteTool(sessionId: string, toolId: string): Promise<void> {
+  await apiClient.delete(`/api-monitor/session/${sessionId}/tools/${toolId}`)
+}
+
+/**
+ * Export all tool definitions as a YAML file bundle.
+ */
+export async function exportTools(
+  sessionId: string,
+): Promise<{ content: string; filename: string }> {
+  const response = await apiClient.post(`/api-monitor/session/${sessionId}/export`)
+  return response.data.data
+}
