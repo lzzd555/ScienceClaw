@@ -1,3 +1,17 @@
-# api_monitor package — manager import added in Task 4
+from .manager import api_monitor_manager
+from .models import (
+    ApiMonitorSession,
+    ApiToolDefinition,
+    CapturedApiCall,
+    CapturedRequest,
+    CapturedResponse,
+)
 
-__all__ = []
+__all__ = [
+    "api_monitor_manager",
+    "ApiMonitorSession",
+    "ApiToolDefinition",
+    "CapturedApiCall",
+    "CapturedRequest",
+    "CapturedResponse",
+]
