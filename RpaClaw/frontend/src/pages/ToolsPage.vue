@@ -180,6 +180,13 @@
                     <span class="mt-0.5 block text-xs leading-5 text-[var(--text-tertiary)]">{{ t('Record browser automation and publish it as an MCP tool.') }}</span>
                   </span>
                 </button>
+                <button class="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-white/[0.06]" @click="openApiMonitor">
+                  <span class="mt-0.5 material-symbols-outlined text-[18px] text-teal-500 dark:text-teal-300">fiber_manual_record</span>
+                  <span>
+                    <span class="block font-bold text-[var(--text-primary)]">{{ t('API Monitor') }}</span>
+                    <span class="mt-0.5 block text-xs leading-5 text-[var(--text-tertiary)]">{{ t('Capture API requests from a website and auto-generate MCP tool definitions.') }}</span>
+                  </span>
+                </button>
               </div>
             </div>
           </div>
@@ -929,6 +936,11 @@ const startCreateServer = () => {
 const startCreateRpaMcpTool = () => {
   createChoiceOpen.value = false;
   router.push('/chat/tools/mcp/new');
+};
+
+const openApiMonitor = () => {
+  createChoiceOpen.value = false;
+  router.push('/rpa/api-monitor');
 };
 
 const openEditDialog = (server: McpServerItem) => {
