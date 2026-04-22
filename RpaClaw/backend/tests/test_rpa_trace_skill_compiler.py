@@ -127,6 +127,106 @@ def test_compiler_uses_source_ref_for_dataflow_fill():
     assert "Alice Zhang" not in _execute_body(script)
 
 
+def test_manual_fill_uses_sensitive_credential_param():
+    trace = RPAAcceptedTrace(
+        trace_id="password-fill",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="fill",
+        value="{{credential}}",
+        locator_candidates=[
+            {"locator": {"method": "role", "role": "textbox", "name": "Password"}, "selected": True},
+        ],
+    )
+
+    script = TraceSkillCompiler().generate_script(
+        [trace],
+        params={
+            "password": {
+                "original_value": "{{credential}}",
+                "sensitive": True,
+                "credential_id": "cred_123",
+            }
+        },
+        is_local=True,
+    )
+    body = _execute_body(script)
+
+    assert "get_by_role('textbox', name='Password').fill(kwargs['password'])" in body
+    assert "fill('{{credential}}')" not in body
+
+
+def test_manual_fill_uses_plain_param_default_when_configured():
+    trace = RPAAcceptedTrace(
+        trace_id="username-fill",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="fill",
+        value="admi",
+        locator_candidates=[
+            {"locator": {"method": "role", "role": "textbox", "name": "Username"}, "selected": True},
+        ],
+    )
+
+    script = TraceSkillCompiler().generate_script(
+        [trace],
+        params={
+            "username": {
+                "original_value": "admi",
+                "sensitive": False,
+                "credential_id": "",
+            }
+        },
+        is_local=True,
+    )
+    body = _execute_body(script)
+
+    assert "get_by_role('textbox', name='Username').fill(kwargs.get('username', 'admi'))" in body
+    assert "fill('admi')" not in body
+
+
+def test_duplicate_sensitive_fill_values_consume_params_in_order():
+    traces = [
+        RPAAcceptedTrace(
+            trace_id="portal-password",
+            trace_type=RPATraceType.MANUAL_ACTION,
+            action="fill",
+            value="{{credential}}",
+            locator_candidates=[
+                {"locator": {"method": "role", "role": "textbox", "name": "Portal Password"}, "selected": True},
+            ],
+        ),
+        RPAAcceptedTrace(
+            trace_id="erp-password",
+            trace_type=RPATraceType.MANUAL_ACTION,
+            action="fill",
+            value="{{credential}}",
+            locator_candidates=[
+                {"locator": {"method": "role", "role": "textbox", "name": "ERP Password"}, "selected": True},
+            ],
+        ),
+    ]
+
+    script = TraceSkillCompiler().generate_script(
+        traces,
+        params={
+            "password": {
+                "original_value": "{{credential}}",
+                "sensitive": True,
+                "credential_id": "cred_portal",
+            },
+            "password_2": {
+                "original_value": "{{credential}}",
+                "sensitive": True,
+                "credential_id": "cred_erp",
+            },
+        },
+        is_local=True,
+    )
+    body = _execute_body(script)
+
+    assert "get_by_role('textbox', name='Portal Password').fill(kwargs['password'])" in body
+    assert "get_by_role('textbox', name='ERP Password').fill(kwargs['password_2'])" in body
+
+
 def test_navigation_after_selected_project_uses_dynamic_result_url():
     traces = [
         RPAAcceptedTrace(

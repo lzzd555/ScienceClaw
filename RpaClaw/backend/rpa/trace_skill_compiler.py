@@ -19,6 +19,8 @@ class TraceSkillCompiler:
         test_mode: bool = False,
     ) -> str:
         self._compiled_output_keys: Dict[int, str] = {}
+        self._param_lookup = self._build_param_lookup(params or {})
+        self._param_cursors: Dict[str, int] = {}
         trace_list = list(traces)
         execute_skill_func = "\n".join(self._render_execute_skill(trace_list))
         return _runner_template(is_local).format(
@@ -177,7 +179,8 @@ class TraceSkillCompiler:
             lines.append(f"    await {expr}.click()")
             lines.append("    await current_page.wait_for_timeout(500)")
         elif action == "fill":
-            lines.append(f"    await {expr}.fill({str(trace.value or '')!r})")
+            fill_value = self._maybe_parameterize_value(str(trace.value or ""))
+            lines.append(f"    await {expr}.fill({fill_value})")
         elif action == "press":
             lines.append(f"    await {expr}.press({str(trace.value or '')!r})")
         elif action == "check":
@@ -361,6 +364,34 @@ class TraceSkillCompiler:
         if not allow_empty:
             lines.append(f"    _validate_non_empty_records({key!r}, _result)")
         return lines
+
+    @staticmethod
+    def _build_param_lookup(params: Dict[str, Any]) -> Dict[str, List[tuple[str, Dict[str, Any]]]]:
+        lookup: Dict[str, List[tuple[str, Dict[str, Any]]]] = {}
+        for param_name, param_info in params.items():
+            if not isinstance(param_info, dict):
+                continue
+            original = param_info.get("original_value")
+            if original is None:
+                continue
+            lookup.setdefault(str(original), []).append((str(param_name), param_info))
+        return lookup
+
+    def _maybe_parameterize_value(self, value: str) -> str:
+        candidates = self._param_lookup.get(value) or []
+        if not candidates:
+            return repr(value)
+
+        if len(candidates) == 1:
+            param_name, param_info = candidates[0]
+        else:
+            cursor = self._param_cursors.get(value, 0)
+            param_name, param_info = candidates[min(cursor, len(candidates) - 1)]
+            self._param_cursors[value] = cursor + 1
+
+        if param_info.get("sensitive"):
+            return f"kwargs[{param_name!r}]"
+        return f"kwargs.get({param_name!r}, {value!r})"
 
     def _render_embedded_ai_code_trace(
         self,
