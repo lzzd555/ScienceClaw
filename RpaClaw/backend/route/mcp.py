@@ -12,9 +12,10 @@ from backend.config import settings
 from backend.deepagent.mcp_config_loader import load_system_mcp_servers
 from backend.deepagent.mcp_credentials import McpCredentialResolutionError
 from backend.deepagent.mcp_registry import apply_mcp_credentials
-from backend.deepagent.mcp_runtime import McpSdkRuntimeFactory, coerce_mcp_tool_definition
+from backend.deepagent.mcp_runtime import ApiMonitorMcpRuntime, McpSdkRuntimeFactory, coerce_mcp_tool_definition
 from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_science_session
 from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
+from backend.rpa.api_monitor_mcp_contract import parse_api_monitor_tool_yaml
 from backend.storage import get_repository
 from backend.user.dependencies import User, require_user
 
@@ -45,6 +46,23 @@ class McpServerListItem(BaseModel):
     tool_policy: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ApiMonitorMcpConfigUpdate(BaseModel):
+    name: str
+    description: str = ""
+    enabled: bool = True
+    default_enabled: bool = True
+    endpoint_config: Dict[str, Any] = Field(default_factory=dict)
+    credential_binding: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ApiMonitorToolUpdate(BaseModel):
+    yaml_definition: str
+
+
+class ApiMonitorToolTestRequest(BaseModel):
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -57,11 +75,7 @@ async def _list_user_mcp_servers(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def _load_api_monitor_tools(server_id: str, user_id: str) -> list[dict[str, Any]]:
-    repo = get_repository("api_monitor_mcp_tools")
-    docs = await repo.find_many(
-        {"mcp_server_id": server_id, "user_id": user_id},
-        sort=[("updated_at", -1)],
-    )
+    docs = await _load_api_monitor_tool_documents(server_id, user_id)
     tools: list[dict[str, Any]] = []
     for doc in docs:
         if _api_monitor_tool_is_invalid(doc):
@@ -75,6 +89,20 @@ async def _load_api_monitor_tools(server_id: str, user_id: str) -> list[dict[str
             }
         )
     return tools
+
+
+async def _load_api_monitor_tool_documents(server_id: str, user_id: str) -> list[dict[str, Any]]:
+    repo = get_repository("api_monitor_mcp_tools")
+    docs = await repo.find_many(
+        {"mcp_server_id": server_id, "user_id": user_id},
+        sort=[("order", 1)],
+    )
+    return sorted(docs, key=_api_monitor_tool_order)
+
+
+def _api_monitor_tool_order(doc: dict[str, Any]) -> int:
+    order = doc.get("order", 0)
+    return order if isinstance(order, int) else 0
 
 
 def _api_monitor_tool_is_invalid(doc: dict[str, Any]) -> bool:
@@ -240,6 +268,44 @@ def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
     ).model_dump()
 
 
+def _serialize_api_monitor_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return McpServerListItem(
+        id=str(doc["_id"]),
+        server_key=f"user:{doc['_id']}",
+        scope="user",
+        name=doc["name"],
+        description=doc.get("description", ""),
+        transport="api_monitor",
+        source_type=doc.get("source_type", "api_monitor"),
+        enabled=doc.get("enabled", True),
+        default_enabled=doc.get("default_enabled", False),
+        readonly=False,
+        endpoint_config=doc.get("endpoint_config") or {},
+        credential_binding=doc.get("credential_binding") or {},
+        tool_policy=doc.get("tool_policy") or {},
+    ).model_dump()
+
+
+def _serialize_api_monitor_tool_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(doc["_id"]),
+        "name": doc.get("name", ""),
+        "description": doc.get("description", ""),
+        "yaml_definition": doc.get("yaml_definition", ""),
+        "method": doc.get("method", ""),
+        "url": doc.get("url", ""),
+        "input_schema": _api_monitor_tool_input_schema(doc),
+        "path_mapping": doc.get("path_mapping") or {},
+        "query_mapping": doc.get("query_mapping") or {},
+        "body_mapping": doc.get("body_mapping") or {},
+        "header_mapping": doc.get("header_mapping") or {},
+        "response_schema": doc.get("response_schema") or {},
+        "validation_status": doc.get("validation_status", "valid"),
+        "validation_errors": doc.get("validation_errors") or [],
+        "order": doc.get("order", 0),
+    }
+
+
 def _apply_session_mode(server: Dict[str, Any], session_mode: str) -> Dict[str, Any]:
     effective_enabled = (
         server.get("enabled", True)
@@ -281,6 +347,25 @@ async def _get_owned_user_server_doc(server_id: str, user_id: str) -> Dict[str, 
     doc = await repo.find_one({"_id": server_id, "user_id": user_id})
     if not doc:
         raise HTTPException(status_code=404, detail="MCP server not found")
+    return doc
+
+
+async def _get_owned_api_monitor_server_doc(server_key: str, user_id: str) -> Dict[str, Any]:
+    scope, separator, server_id = server_key.partition(":")
+    if scope != "user" or not separator or not server_id:
+        raise HTTPException(status_code=404, detail="API Monitor MCP server not found")
+
+    doc = await _get_owned_user_server_doc(server_id, user_id)
+    if doc.get("source_type") != "api_monitor" and doc.get("transport") != "api_monitor":
+        raise HTTPException(status_code=400, detail="MCP server is not an API Monitor MCP")
+    return doc
+
+
+async def _get_owned_api_monitor_tool_doc(server_id: str, tool_id: str, user_id: str) -> Dict[str, Any]:
+    repo = get_repository("api_monitor_mcp_tools")
+    doc = await repo.find_one({"_id": tool_id, "mcp_server_id": server_id, "user_id": user_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="API Monitor tool not found")
     return doc
 
 
@@ -391,6 +476,90 @@ async def get_mcp_server(
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
     return ApiResponse(data=server)
+
+
+@router.get("/mcp/servers/{server_key}/api-monitor-detail", response_model=ApiResponse)
+async def get_api_monitor_mcp_detail(
+    server_key: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    tool_docs = await _load_api_monitor_tool_documents(str(server_doc["_id"]), user_id)
+    return ApiResponse(
+        data={
+            "server": _serialize_api_monitor_user_server(server_doc),
+            "tools": [_serialize_api_monitor_tool_detail(doc) for doc in tool_docs],
+        }
+    )
+
+
+@router.put("/mcp/servers/{server_key}/api-monitor-config", response_model=ApiResponse)
+async def update_api_monitor_mcp_config(
+    server_key: str,
+    body: ApiMonitorMcpConfigUpdate,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    repo = get_repository("user_mcp_servers")
+    update_doc = {
+        "name": body.name,
+        "description": body.description,
+        "enabled": body.enabled,
+        "default_enabled": body.default_enabled,
+        "endpoint_config": body.endpoint_config,
+        "credential_binding": body.credential_binding,
+        "updated_at": datetime.now(),
+    }
+    await repo.update_one({"_id": str(server_doc["_id"]), "user_id": user_id}, {"$set": update_doc})
+    updated_doc = {**server_doc, **update_doc}
+    return ApiResponse(data={"server": _serialize_api_monitor_user_server(updated_doc), "saved": True})
+
+
+@router.put("/mcp/servers/{server_key}/api-monitor-tools/{tool_id}", response_model=ApiResponse)
+async def update_api_monitor_tool(
+    server_key: str,
+    tool_id: str,
+    body: ApiMonitorToolUpdate,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    tool_doc = await _get_owned_api_monitor_tool_doc(str(server_doc["_id"]), tool_id, user_id)
+    contract = parse_api_monitor_tool_yaml(body.yaml_definition)
+    update_doc = {**contract.to_document(), "updated_at": datetime.now()}
+    repo = get_repository("api_monitor_mcp_tools")
+    await repo.update_one(
+        {"_id": tool_id, "mcp_server_id": str(server_doc["_id"]), "user_id": user_id},
+        {"$set": update_doc},
+    )
+    return ApiResponse(data=_serialize_api_monitor_tool_detail({**tool_doc, **update_doc}))
+
+
+@router.post("/mcp/servers/{server_key}/api-monitor-tools/{tool_id}/test", response_model=ApiResponse)
+async def test_api_monitor_tool(
+    server_key: str,
+    tool_id: str,
+    body: ApiMonitorToolTestRequest,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    tool_doc = await _get_owned_api_monitor_tool_doc(str(server_doc["_id"]), tool_id, user_id)
+    if _api_monitor_tool_is_invalid(tool_doc):
+        return ApiResponse(
+            data={
+                "success": False,
+                "validation_status": tool_doc.get("validation_status", "invalid"),
+                "validation_errors": tool_doc.get("validation_errors") or [],
+                "error": "API Monitor tool is invalid",
+            }
+        )
+
+    server = _to_server_definition(_serialize_api_monitor_user_server(server_doc))
+    result = await ApiMonitorMcpRuntime(server).call_tool(str(tool_doc.get("name", "")), body.arguments)
+    return ApiResponse(data=result)
 
 
 @router.put("/mcp/servers/{server_id}", response_model=ApiResponse)
