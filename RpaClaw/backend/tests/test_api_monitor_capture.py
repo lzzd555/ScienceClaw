@@ -65,3 +65,35 @@ class TestDedupKeyNormalization:
         call1 = _make_call("GET", "https://example.com/api/orders?name=")
         call2 = _make_call("GET", "https://example.com/api/orders")
         assert dedup_key(call1) == dedup_key(call2)
+
+
+from backend.rpa.api_monitor.network_capture import should_capture
+
+
+class TestShouldCaptureNoiseFilter:
+    def test_glb_model_filtered(self):
+        assert should_capture("https://example.com/models/car.glb", "fetch") is False
+
+    def test_gltf_model_filtered(self):
+        assert should_capture("https://example.com/models/scene.gltf", "fetch") is False
+
+    def test_wasm_filtered(self):
+        assert should_capture("https://example.com/app.wasm", "fetch") is False
+
+    def test_bin_data_filtered(self):
+        assert should_capture("https://example.com/data.bin", "fetch") is False
+
+    def test_pdf_download_not_filtered(self):
+        assert should_capture("https://example.com/api/report.pdf", "fetch") is True
+
+    def test_docx_download_not_filtered(self):
+        assert should_capture("https://example.com/api/document.docx", "fetch") is True
+
+    def test_zip_download_not_filtered(self):
+        assert should_capture("https://example.com/api/export.zip", "fetch") is True
+
+    def test_xlsx_download_not_filtered(self):
+        assert should_capture("https://example.com/api/data.xlsx", "fetch") is True
+
+    def test_normal_api_not_filtered(self):
+        assert should_capture("https://example.com/api/orders", "fetch") is True

@@ -18,9 +18,15 @@ logger = logging.getLogger(__name__)
 # ── Filtering ────────────────────────────────────────────────────────
 
 STATIC_EXTENSIONS: Set[str] = {
+    # Page rendering resources
     ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff",
     ".woff2", ".ttf", ".eot", ".ico", ".map", ".webp", ".avif",
     ".mp4", ".webm", ".mp3", ".ogg", ".wav", ".flac", ".otf",
+    # 3D models / WebAssembly / binary resources (noise)
+    ".glb", ".gltf", ".wasm", ".bin", ".proto", ".pb",
+    ".obj", ".fbx", ".usdz", ".hdr",
+    # NOTE: .pdf/.doc/.zip etc. are NOT included because download URLs
+    # are valid API endpoints (e.g., "download report" tool)
 }
 
 CAPTURE_RESOURCE_TYPES: Set[str] = {"xhr", "fetch"}
