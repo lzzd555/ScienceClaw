@@ -1,6 +1,6 @@
 import { apiClient, ApiResponse } from './client';
 
-export type McpTransport = 'stdio' | 'streamable_http' | 'sse';
+export type McpTransport = 'stdio' | 'streamable_http' | 'sse' | 'api_monitor';
 export type McpSessionMode = 'inherit' | 'enabled' | 'disabled';
 
 export interface McpCredentialRef {
@@ -38,6 +38,7 @@ export interface McpServerItem {
   name: string;
   description: string;
   transport: McpTransport;
+  source_type?: string;
   enabled: boolean;
   default_enabled: boolean;
   readonly: boolean;
@@ -55,6 +56,38 @@ export interface McpToolDiscoveryItem {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+}
+
+export interface ApiMonitorMcpToolDetail {
+  id: string;
+  name: string;
+  description: string;
+  yaml_definition: string;
+  method: string;
+  url: string;
+  input_schema: Record<string, unknown>;
+  path_mapping: Record<string, unknown>;
+  query_mapping: Record<string, unknown>;
+  body_mapping: Record<string, unknown>;
+  header_mapping: Record<string, unknown>;
+  response_schema: Record<string, unknown>;
+  validation_status: string;
+  validation_errors: string[];
+  order: number;
+}
+
+export interface ApiMonitorMcpDetail {
+  server: McpServerItem;
+  tools: ApiMonitorMcpToolDetail[];
+}
+
+export interface ApiMonitorMcpConfigPayload {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  default_enabled?: boolean;
+  endpoint_config?: Record<string, unknown>;
+  credential_binding?: Record<string, unknown>;
 }
 
 export interface McpServerPayload {
@@ -98,6 +131,48 @@ export async function deleteMcpServer(serverId: string): Promise<{ id: string; d
 export async function testMcpServer(serverKey: string): Promise<{ server_key: string; ok: boolean; tool_count: number }> {
   const response = await apiClient.post<ApiResponse<{ server_key: string; ok: boolean; tool_count: number }>>(
     `/mcp/servers/${encodeServerKey(serverKey)}/test`,
+  );
+  return response.data.data;
+}
+
+export async function getApiMonitorMcpDetail(serverKey: string): Promise<ApiMonitorMcpDetail> {
+  const response = await apiClient.get<ApiResponse<ApiMonitorMcpDetail>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-detail`,
+  );
+  return response.data.data;
+}
+
+export async function updateApiMonitorMcpConfig(
+  serverKey: string,
+  payload: ApiMonitorMcpConfigPayload,
+): Promise<{ server: McpServerItem; saved: boolean }> {
+  const response = await apiClient.put<ApiResponse<{ server: McpServerItem; saved: boolean }>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-config`,
+    payload,
+  );
+  return response.data.data;
+}
+
+export async function updateApiMonitorMcpTool(
+  serverKey: string,
+  toolId: string,
+  payload: { yaml_definition: string },
+): Promise<ApiMonitorMcpToolDetail> {
+  const response = await apiClient.put<ApiResponse<ApiMonitorMcpToolDetail>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-tools/${encodeURIComponent(toolId)}`,
+    payload,
+  );
+  return response.data.data;
+}
+
+export async function testApiMonitorMcpTool(
+  serverKey: string,
+  toolId: string,
+  payload: { arguments?: Record<string, unknown> },
+): Promise<Record<string, unknown>> {
+  const response = await apiClient.post<ApiResponse<Record<string, unknown>>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-tools/${encodeURIComponent(toolId)}/test`,
+    payload,
   );
   return response.data.data;
 }
