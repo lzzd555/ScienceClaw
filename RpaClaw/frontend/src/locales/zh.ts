@@ -627,6 +627,7 @@ export default {
   'Query mapping': 'Query 映射',
   'Body mapping': 'Body 映射',
   'Header mapping': '请求头映射',
+  'Response schema': '响应 Schema',
   'JSON field invalid': '{field} 必须是合法的 JSON 对象',
   'API Monitor tool saved': 'API Monitor 工具已保存',
   'Failed to save API Monitor tool': '保存 API Monitor 工具失败',

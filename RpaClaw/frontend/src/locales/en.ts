@@ -586,6 +586,7 @@ export default {
   'Query mapping': 'Query mapping',
   'Body mapping': 'Body mapping',
   'Header mapping': 'Header mapping',
+  'Response schema': 'Response schema',
   'JSON field invalid': '{field} must be a valid JSON object',
   'API Monitor tool saved': 'API Monitor tool saved',
   'Failed to save API Monitor tool': 'Failed to save API Monitor tool',
