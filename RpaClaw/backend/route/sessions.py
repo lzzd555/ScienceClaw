@@ -110,7 +110,7 @@ class GetSessionData(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(default="", description="User message content")
     timestamp: Optional[int] = Field(default=None, description="Message timestamp")
-    event_id: Optional[str] = Field(default=None, description="Event ID")
+    event_id: Optional[str] = Field(default=None, description="SSE reconnection cursor event ID")
     attachments: Optional[List[str]] = Field(default=None, description="Attachment path list")
     language: Optional[str] = Field(default=None, description="User interface language (e.g. 'zh', 'en')")
     model_config_id: Optional[str] = Field(default=None, description="Model config ID to use (overrides session default)")
@@ -194,6 +194,20 @@ def _append_session_event(session: Any, event: Dict[str, Any]) -> None:
         if isinstance(content, str) and content.strip():
             setattr(session, "latest_message", content)
             setattr(session, "latest_message_at", int(data.get("timestamp") or _now_ts()))
+
+
+def _create_user_message_event(
+    message: str,
+    attachments: List[str],
+    timestamp: Optional[int] = None,
+) -> Dict[str, Any]:
+    return _wrap_event("message", {
+        "event_id": _new_event_id(),
+        "timestamp": timestamp or _now_ts(),
+        "content": message,
+        "role": "user",
+        "attachments": attachments,
+    })
 
 
 def _count_user_messages(events: List[Dict[str, Any]]) -> int:
@@ -1657,7 +1671,6 @@ async def _agent_background_worker(
     session_id: str,
     message: str,
     attachments: List[str],
-    event_id: Optional[str] = None,
     timestamp: Optional[int] = None,
     language: Optional[str] = None,
 ) -> None:
@@ -1666,13 +1679,7 @@ async def _agent_background_worker(
     user_attachments = attachments or []
 
     if message.strip():
-        user_event = _wrap_event("message", {
-            "event_id": event_id or _new_event_id(),
-            "timestamp": timestamp or _now_ts(),
-            "content": message,
-            "role": "user",
-            "attachments": user_attachments,
-        })
+        user_event = _create_user_message_event(message, user_attachments, timestamp)
         _append_session_event(session, user_event)
         await session.save()
 
@@ -1919,7 +1926,7 @@ async def chat_with_session(
             _agent_background_worker(
                 session, session_id,
                 body.message or "", body.attachments or [],
-                event_id=body.event_id, timestamp=body.timestamp,
+                timestamp=body.timestamp,
                 language=body.language,
             )
         )

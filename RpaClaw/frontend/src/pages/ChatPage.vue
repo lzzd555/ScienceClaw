@@ -234,6 +234,7 @@ import ProcessMessage from '../components/ProcessMessage.vue';
 import ActivityPanel from '../components/ActivityPanel.vue';
 import type { ActivityItem } from '../components/ActivityPanel.vue';
 import McpSessionSelector from '../components/McpSessionSelector.vue';
+import { shouldProcessAgentEvent } from '../utils/eventDedupe';
 
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -767,10 +768,8 @@ const handlePlanEvent = (planData: PlanEventData) => {
 }
 
 // Main event handler function
-const handleEvent = (event: AgentSSEEvent) => {
-  const eid = event.data?.event_id;
-  if (eid && _processedEventIds.has(eid)) return;
-  if (eid) _processedEventIds.add(eid);
+const handleEvent = (event: AgentSSEEvent, options: { dedupe?: boolean } = {}) => {
+  if (!shouldProcessAgentEvent(event, _processedEventIds, options.dedupe ?? true)) return;
 
   if (event.event === 'message_chunk') {
     handleMessageChunkEvent(event.data);
@@ -1007,7 +1006,7 @@ const restoreSession = async () => {
   realTime.value = false;
   for (const event of session.events) {
     if (isStale()) return;
-    handleEvent(event);
+    handleEvent(event, { dedupe: false });
   }
   realTime.value = true;
 
