@@ -19,6 +19,11 @@
             <div class="text-[var(--text-primary)] text-sm font-medium mb-2">{{ t('Arguments') }}:</div>
             <pre class="bg-[var(--fill-tsp-gray-main)] rounded-lg p-3 text-xs text-[var(--text-secondary)] overflow-x-auto"><code>{{ JSON.stringify(toolContent.args, null, 2) }}</code></pre>
           </div>
+
+          <div v-if="requestPreviewText" class="mb-4">
+            <div class="text-[var(--text-primary)] text-sm font-medium mb-2">{{ t('API request preview') }}:</div>
+            <pre class="bg-[var(--fill-tsp-gray-main)] rounded-lg p-3 text-xs text-[var(--text-secondary)] whitespace-pre-wrap overflow-x-auto"><code>{{ requestPreviewText }}</code></pre>
+          </div>
           
           <div v-if="toolContent.content?.result" class="mb-4">
             <div class="text-[var(--text-primary)] text-sm font-medium mb-2">{{ t('Result') }}:</div>
@@ -40,7 +45,8 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ToolContent } from '@/types/message';
-import { formatMcpToolDisplayName } from '@/utils/mcpUi';
+import type { ApiMonitorRequestPreview } from '@/utils/mcpUi';
+import { formatApiMonitorRequestPreview, formatMcpToolDisplayName } from '@/utils/mcpUi';
 
 const { t } = useI18n()
 
@@ -55,4 +61,26 @@ const displayName = computed(() => formatMcpToolDisplayName({
   fallbackName: props.toolContent.name,
   meta: props.toolContent.tool_meta,
 }));
+
+const requestPreview = computed<ApiMonitorRequestPreview | null>(() => {
+  const content = props.toolContent.content;
+  if (!content || typeof content !== 'object') {
+    return null;
+  }
+
+  const preview = (content as { request_preview?: unknown }).request_preview;
+  if (!preview || typeof preview !== 'object' || Array.isArray(preview)) {
+    return null;
+  }
+
+  return preview as ApiMonitorRequestPreview;
+});
+
+const requestPreviewText = computed(() => {
+  if (!requestPreview.value) {
+    return '';
+  }
+
+  return formatApiMonitorRequestPreview(requestPreview.value);
+});
 </script> 

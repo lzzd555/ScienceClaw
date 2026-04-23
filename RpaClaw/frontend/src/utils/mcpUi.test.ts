@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeEffectiveMcpEnabled,
   buildUnifiedMcpItems,
+  formatApiMonitorRequestPreview,
   formatMcpServerDescription,
   groupMcpServers,
   hasCredentialTemplate,
@@ -142,6 +143,37 @@ X-Api-Key: abc:123
   it('stringifies headers back to editable text', () => {
     expect(stringifyHttpHeaders({ Authorization: 'Bearer token', Accept: 'application/json' })).toBe(
       'Authorization: Bearer token\nAccept: application/json',
+    );
+  });
+});
+
+describe('formatApiMonitorRequestPreview', () => {
+  it('formats a sanitized preview into readable request lines', () => {
+    expect(
+      formatApiMonitorRequestPreview({
+        method: 'GET',
+        url: 'https://example.test/api/users/42?access_token=***',
+        query: {
+          tenant: 'acme',
+          credential: '***',
+          expand: 'profile',
+          count: 3,
+          accessToken: '***',
+        },
+        headers: {
+          Accept: 'application/json',
+          'X-Api-Key': '***',
+          'X-Request-Id': 'req-1',
+          Authorization: '***',
+        },
+        body: null,
+      }),
+    ).toBe(
+      [
+        'GET https://example.test/api/users/42?access_token=***',
+        'query: {"tenant":"acme","credential":"***","expand":"profile","count":3,"accessToken":"***"}',
+        'headers: {"Accept":"application/json","X-Api-Key":"***","X-Request-Id":"req-1","Authorization":"***"}',
+      ].join('\n'),
     );
   });
 });

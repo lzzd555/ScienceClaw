@@ -846,6 +846,7 @@ export default {
   'MCP Editor Removed params': 'Removed params',
   'MCP Editor Warnings': 'Warnings',
   'MCP Editor None': 'None',
+  'API request preview': 'API request preview',
   'MCP Editor Start from an RPA recording': 'Start from an RPA recording',
   'MCP Editor Empty state hint': 'This editor publishes recorded browser automation as an MCP tool. Create or open an RPA recording first, then return here to continue.',
   'MCP Editor Open RPA Recorder': 'Open RPA Recorder',

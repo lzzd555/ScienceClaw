@@ -44,6 +44,14 @@ type McpToolDisplayInput = {
   meta?: McpToolMetaLike | null;
 };
 
+export type ApiMonitorRequestPreview = {
+  method?: string;
+  url?: string;
+  query?: Record<string, unknown> | null;
+  headers?: Record<string, unknown> | null;
+  body?: unknown;
+};
+
 export function groupMcpServers<T extends McpServerLike>(servers: T[]) {
   return {
     system: servers.filter((server) => server.scope === 'system'),
@@ -102,6 +110,56 @@ export function isMcpToolMeta(meta?: McpToolMetaLike | null): boolean {
     return false;
   }
   return meta.source === 'mcp' || meta.mcp?.source === 'mcp';
+}
+
+function stringifyPreviewValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return String(value);
+  }
+}
+
+export function formatApiMonitorRequestPreview(preview?: ApiMonitorRequestPreview | null): string {
+  if (!preview) {
+    return '';
+  }
+
+  const lines: string[] = [];
+  const method = typeof preview.method === 'string' ? preview.method.trim() : '';
+  const url = typeof preview.url === 'string' ? preview.url.trim() : '';
+
+  const firstLine = [method, url].filter(Boolean).join(' ');
+  if (firstLine) {
+    lines.push(firstLine);
+  }
+
+  const query = stringifyPreviewValue(preview.query);
+  if (query) {
+    lines.push(`query: ${query}`);
+  }
+
+  const headers = stringifyPreviewValue(preview.headers);
+  if (headers) {
+    lines.push(`headers: ${headers}`);
+  }
+
+  const body = stringifyPreviewValue(preview.body);
+  if (body) {
+    lines.push(`body: ${body}`);
+  }
+
+  return lines.join('\n');
 }
 
 export function parseHttpHeaderText(text: string): Record<string, string> {

@@ -888,6 +888,7 @@ export default {
   'MCP Editor Removed params': '已移除的参数',
   'MCP Editor Warnings': '警告',
   'MCP Editor None': '无',
+  'API request preview': 'API 请求预览',
   'MCP Editor Start from an RPA recording': '从 RPA 录制开始',
   'MCP Editor Empty state hint': '这个编辑器用来将录制的浏览器流程发布为 MCP 工具。请先开始或打开一个 RPA 录制，再回到这里继续配置。',
   'MCP Editor Open RPA Recorder': '打开 RPA 录制器',
