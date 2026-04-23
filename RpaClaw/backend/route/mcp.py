@@ -323,6 +323,33 @@ def _api_monitor_config_value(
     return server_doc.get(field_name, default)
 
 
+def _merge_api_monitor_config_dict(existing: Any, provided: Any) -> Dict[str, Any]:
+    if not isinstance(existing, dict):
+        existing = {}
+    if not isinstance(provided, dict):
+        return dict(existing)
+
+    merged = dict(existing)
+    for key, value in provided.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_api_monitor_config_dict(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _api_monitor_config_dict_value(
+    body: ApiMonitorMcpConfigUpdate,
+    server_doc: Dict[str, Any],
+    field_name: str,
+) -> Dict[str, Any]:
+    existing = server_doc.get(field_name, {})
+    if field_name not in body.model_fields_set:
+        return dict(existing) if isinstance(existing, dict) else {}
+    return _merge_api_monitor_config_dict(existing, getattr(body, field_name))
+
+
 def _apply_session_mode(server: Dict[str, Any], session_mode: str) -> Dict[str, Any]:
     effective_enabled = (
         server.get("enabled", True)
@@ -525,8 +552,8 @@ async def update_api_monitor_mcp_config(
         "description": _api_monitor_config_value(body, server_doc, "description", ""),
         "enabled": _api_monitor_config_value(body, server_doc, "enabled", True),
         "default_enabled": _api_monitor_config_value(body, server_doc, "default_enabled", True),
-        "endpoint_config": _api_monitor_config_value(body, server_doc, "endpoint_config", {}),
-        "credential_binding": _api_monitor_config_value(body, server_doc, "credential_binding", {}),
+        "endpoint_config": _api_monitor_config_dict_value(body, server_doc, "endpoint_config"),
+        "credential_binding": _api_monitor_config_dict_value(body, server_doc, "credential_binding"),
         "updated_at": datetime.now(),
     }
     await repo.update_one({"_id": str(server_doc["_id"]), "user_id": user_id}, {"$set": update_doc})

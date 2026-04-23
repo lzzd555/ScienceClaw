@@ -418,10 +418,19 @@ def test_update_api_monitor_mcp_config_partial_preserves_existing_shared_auth(mo
                 description="Keep me",
                 enabled=False,
                 default_enabled=True,
-                endpoint_config={"base_url": "https://api.example.test", "timeout_ms": 15000},
+                endpoint_config={
+                    "base_url": "https://api.example.test",
+                    "timeout_ms": 15000,
+                    "headers": {"X-Existing": "keep", "X-Override": "old"},
+                    "query": {"existing": "keep"},
+                },
                 credential_binding={
                     "credentials": [{"alias": "orders", "credential_id": "cred-orders"}],
-                    "headers": {"Authorization": "Bearer {{ orders.password }}"},
+                    "headers": {
+                        "Authorization": "Bearer {{ orders.password }}",
+                        "X-Cred-Override": "old",
+                    },
+                    "query": {"api_key": "{{ orders.password }}"},
                 },
             )
         ]
@@ -431,7 +440,15 @@ def test_update_api_monitor_mcp_config_partial_preserves_existing_shared_auth(mo
 
     response = client.put(
         "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
-        json={"name": "After"},
+        json={
+            "name": "After",
+            "endpoint_config": {
+                "headers": {"X-New": "1", "X-Override": "new"},
+            },
+            "credential_binding": {
+                "headers": {"X-Cred-New": "1", "X-Cred-Override": "new"},
+            },
+        },
     )
 
     assert response.status_code == 200
@@ -440,10 +457,20 @@ def test_update_api_monitor_mcp_config_partial_preserves_existing_shared_auth(mo
     assert updated["description"] == "Keep me"
     assert updated["enabled"] is False
     assert updated["default_enabled"] is True
-    assert updated["endpoint_config"] == {"base_url": "https://api.example.test", "timeout_ms": 15000}
+    assert updated["endpoint_config"] == {
+        "base_url": "https://api.example.test",
+        "timeout_ms": 15000,
+        "headers": {"X-Existing": "keep", "X-Override": "new", "X-New": "1"},
+        "query": {"existing": "keep"},
+    }
     assert updated["credential_binding"] == {
         "credentials": [{"alias": "orders", "credential_id": "cred-orders"}],
-        "headers": {"Authorization": "Bearer {{ orders.password }}"},
+        "headers": {
+            "Authorization": "Bearer {{ orders.password }}",
+            "X-Cred-Override": "new",
+            "X-Cred-New": "1",
+        },
+        "query": {"api_key": "{{ orders.password }}"},
     }
 
 
