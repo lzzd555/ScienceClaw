@@ -402,6 +402,7 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
                 "validation_status": "valid",
                 "method": "GET",
                 "url": "/api/users/{{ id }}",
+                "base_url": "https://captured.example",
                 "header_mapping": {
                     "X-Request-Id": "{{ request_id }}",
                     "Authorization": "Bearer {{ user_token }}",
@@ -470,6 +471,40 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
         },
         "body": None,
     }
+
+
+def test_api_monitor_runtime_falls_back_to_tool_base_url(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "create_order",
+                "validation_status": "valid",
+                "method": "POST",
+                "url": "/api/orders",
+                "base_url": "https://captured.example",
+            }
+        ]
+    )
+    client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
+    )
+
+    result = asyncio.run(runtime.call_tool("create_order", {}))
+
+    assert result["success"] is True
+    assert client.calls == [
+        (
+            "POST",
+            "https://captured.example/api/orders",
+            {"params": {}, "headers": {}},
+        )
+    ]
+    assert result["request_preview"]["url"] == "https://captured.example/api/orders"
 
 
 def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):

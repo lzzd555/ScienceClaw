@@ -232,7 +232,7 @@ class ApiMonitorMcpRuntime:
         method = str(doc.get("method") or "GET").upper()
         rendered_arguments = dict(arguments)
         url = _build_api_monitor_url(
-            _api_monitor_base_url(self._server),
+            _api_monitor_request_base_url(self._server, doc),
             _api_monitor_tool_url(doc),
             rendered_arguments,
         )
@@ -328,6 +328,13 @@ def _api_monitor_tool_url(doc: Mapping[str, Any]) -> str:
 def _api_monitor_base_url(server: McpServerDefinition) -> str:
     parts = urlsplit(server.url)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", parts.fragment))
+
+
+def _api_monitor_request_base_url(server: McpServerDefinition, doc: Mapping[str, Any]) -> str:
+    base_url = _api_monitor_base_url(server)
+    if base_url:
+        return base_url
+    return str(doc.get("base_url") or "")
 
 
 def _api_monitor_base_query(server: McpServerDefinition) -> dict[str, Any]:
