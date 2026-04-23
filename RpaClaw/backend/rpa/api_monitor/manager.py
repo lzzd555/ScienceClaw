@@ -94,6 +94,82 @@ _SCAN_INTERACTIVE_JS = """
 }
 """
 
+# ── DOM context scanner (for LLM parameter inference) ────────────────
+
+_SCAN_DOM_CONTEXT_JS = """
+() => {
+    const result = { forms: [], inputs: [], buttons: [] };
+
+    // Scan all forms
+    for (const form of document.querySelectorAll('form')) {
+        const inputs = [];
+        for (const input of form.querySelectorAll('input, select, textarea')) {
+            if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button') continue;
+            let label = form.querySelector('label[for="' + input.id + '"]');
+            if (!label) {
+                const container = input.closest('.search-item, .form-group, .field, .input-group, .mb-3, .mb-4');
+                if (container) label = container.querySelector('label');
+            }
+            if (!label && input.previousElementSibling && input.previousElementSibling.tagName === 'LABEL') {
+                label = input.previousElementSibling;
+            }
+            const entry = {
+                name: input.name || input.id || '',
+                type: input.type || input.tagName.toLowerCase(),
+                label: label ? label.textContent.trim() : '',
+                placeholder: input.placeholder || '',
+                required: input.required || false,
+            };
+            if (input.tagName === 'SELECT') {
+                entry.type = 'select';
+                entry.options = [...input.options].map(o => ({ value: o.value, text: o.textContent.trim() }));
+            }
+            inputs.push(entry);
+        }
+        result.forms.push({
+            action: form.action || '',
+            method: (form.method || 'GET').toUpperCase(),
+            inputs,
+            submitText: form.querySelector('button[type="submit"], input[type="submit"]')
+                ? (form.querySelector('button[type="submit"], input[type="submit"]').textContent || '').trim()
+                : '',
+        });
+    }
+
+    // Scan standalone inputs (not inside a form)
+    for (const input of document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])')) {
+        if (input.closest('form')) continue;
+        let label = null;
+        const container = input.closest('.search-item, .form-group, .field, .input-group');
+        if (container) label = container.querySelector('label');
+        if (!label && input.previousElementSibling && input.previousElementSibling.tagName === 'LABEL') {
+            label = input.previousElementSibling;
+        }
+        result.inputs.push({
+            id: input.id || '',
+            name: input.name || '',
+            type: input.type || 'text',
+            label: label ? label.textContent.trim() : '',
+            placeholder: input.placeholder || '',
+        });
+    }
+
+    // Scan standalone buttons (not inside a form)
+    for (const btn of document.querySelectorAll('button, [role="button"]')) {
+        if (btn.closest('form')) continue;
+        const text = (btn.textContent || '').trim();
+        if (text) {
+            result.buttons.push({
+                text,
+                onclick: btn.getAttribute('onclick') || '',
+            });
+        }
+    }
+
+    return result;
+}
+"""
+
 # ── Helper ───────────────────────────────────────────────────────────
 
 
@@ -161,12 +237,19 @@ class ApiMonitorSessionManager:
         self._captures[session_id] = capture
         self._install_listeners(session_id, page, capture)
 
-        # Navigate to target URL
+        # Navigate in background — don't block the HTTP response
         if target_url:
-            await page.goto(target_url, wait_until="domcontentloaded")
-            session.target_url = page.url
+            async def _navigate() -> None:
+                try:
+                    await page.goto(target_url, wait_until="domcontentloaded")
+                    session.target_url = page.url
+                    session.updated_at = datetime.now()
+                    logger.info("[ApiMonitor] Navigation complete for %s: %s", session_id, page.url)
+                except Exception as exc:
+                    logger.warning("[ApiMonitor] Navigation failed for %s: %s", session_id, exc)
+            asyncio.create_task(_navigate())
 
-        logger.info("[ApiMonitor] Session %s created, URL=%s", session_id, session.target_url)
+        logger.info("[ApiMonitor] Session %s created, target URL=%s", session_id, target_url)
         return session
 
     async def stop_session(self, session_id: str) -> None:
@@ -201,7 +284,7 @@ class ApiMonitorSessionManager:
 
     # ── Getters ──────────────────────────────────────────────────────
 
-    async def get_session(self, session_id: str) -> Optional[ApiMonitorSession]:
+    def get_session(self, session_id: str) -> Optional[ApiMonitorSession]:
         return self.sessions.get(session_id)
 
     def get_page(self, session_id: str) -> Optional[Page]:
@@ -418,6 +501,20 @@ class ApiMonitorSessionManager:
         if not session:
             return []
 
+        # Scan DOM context for parameter inference
+        dom_context = ""
+        page = self._pages.get(session_id)
+        if page:
+            try:
+                dom_data = await page.evaluate(_SCAN_DOM_CONTEXT_JS)
+                dom_context = json.dumps(dom_data, ensure_ascii=False, indent=2)
+                logger.debug("[ApiMonitor] DOM context scanned: %d forms, %d inputs, %d buttons",
+                             len(dom_data.get("forms", [])),
+                             len(dom_data.get("inputs", [])),
+                             len(dom_data.get("buttons", [])))
+            except Exception as exc:
+                logger.warning("[ApiMonitor] DOM context scan failed: %s", exc)
+
         # Group by dedup key
         groups: Dict[str, List[CapturedApiCall]] = defaultdict(list)
         for call in calls:
@@ -439,6 +536,7 @@ class ApiMonitorSessionManager:
                     url_pattern=url_pattern,
                     samples=samples,
                     page_context=session.target_url or "",
+                    dom_context=dom_context,
                     model_config=model_config,
                 )
 
