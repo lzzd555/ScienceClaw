@@ -80,7 +80,7 @@ def _build_session() -> ApiMonitorSession:
                 yaml_definition="""name: search_orders
 description: Search orders by keyword
 method: GET
-url: /api/orders/{tenant_id}
+url: /api/orders
 parameters:
   type: object
   properties:
@@ -302,7 +302,7 @@ async def test_publish_persists_parsed_contract_fields_and_defaults():
     assert tools[0]["name"] == "search_orders"
     assert tools[0]["description"] == "Search orders by keyword"
     assert tools[0]["method"] == "GET"
-    assert tools[0]["url"] == "/api/orders/{tenant_id}"
+    assert tools[0]["url"] == "/api/orders"
     assert tools[0]["input_schema"]["type"] == "object"
     assert tools[0]["path_mapping"]["tenant_id"] == "{{ tenant_id }}"
     assert tools[0]["query_mapping"]["keyword"] == "{{ keyword }}"
