@@ -288,6 +288,56 @@ def test_load_api_monitor_tools_filters_invalid_and_prefers_parsed_schema(monkey
     assert tools[1]["input_schema"]["properties"] == {"page": {"type": "integer"}}
 
 
+def test_discover_api_monitor_tools_uses_transport_without_source_type(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    tool_repo = _MemoryRepo(
+        [
+            _api_monitor_tool_doc(
+                input_schema={"type": "object", "properties": {"keyword": {"type": "string"}}},
+                request_body_schema={"type": "object", "properties": {"legacy": {"type": "string"}}},
+            ),
+            _api_monitor_tool_doc(
+                _id="tool_invalid",
+                name="broken_tool",
+                validation_status="invalid",
+                input_schema={"type": "object", "properties": {"broken": {"type": "string"}}},
+            ),
+        ]
+    )
+
+    async def fake_user_servers(user_id: str):
+        assert user_id == "user-1"
+        return [
+            _api_monitor_server_doc(
+                source_type="",
+                transport="api_monitor",
+            )
+        ]
+
+    class _RuntimeFactory:
+        def create_runtime(self, server):
+            raise AssertionError("transport=api_monitor discovery should use the internal API Monitor loader")
+
+    monkeypatch.setattr(mcp_route, "load_system_mcp_servers", lambda: [])
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", fake_user_servers)
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: tool_repo)
+    monkeypatch.setattr(mcp_route, "McpSdkRuntimeFactory", lambda: _RuntimeFactory())
+
+    response = client.post("/api/v1/mcp/servers/user:mcp_api_monitor/discover-tools")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["tool_count"] == 1
+    assert data["tools"] == [
+        {
+            "name": "search_orders",
+            "description": "Search orders by keyword",
+            "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+        }
+    ]
+
+
 def test_api_monitor_mcp_detail_returns_yaml_and_contract(monkeypatch):
     app = _build_app()
     client = TestClient(app)

@@ -74,6 +74,10 @@ async def _list_user_mcp_servers(user_id: str) -> List[Dict[str, Any]]:
     return await repo.find_many({"user_id": user_id}, sort=[("updated_at", -1)])
 
 
+def _is_api_monitor_mcp(server: Dict[str, Any]) -> bool:
+    return server.get("source_type") == "api_monitor" or server.get("transport") == "api_monitor"
+
+
 async def _load_api_monitor_tools(server_id: str, user_id: str) -> list[dict[str, Any]]:
     docs = await _load_api_monitor_tool_documents(server_id, user_id)
     tools: list[dict[str, Any]] = []
@@ -248,7 +252,7 @@ def _serialize_system_server(server: Any) -> Dict[str, Any]:
 def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
     transport = doc.get("transport", "streamable_http")
     endpoint_config = doc.get("endpoint_config") or {}
-    if doc.get("source_type") == "api_monitor":
+    if _is_api_monitor_mcp(doc):
         transport = "api_monitor"
         endpoint_config = {}
     return McpServerListItem(
@@ -276,7 +280,7 @@ def _serialize_api_monitor_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
         name=doc["name"],
         description=doc.get("description", ""),
         transport="api_monitor",
-        source_type=doc.get("source_type", "api_monitor"),
+        source_type="api_monitor" if _is_api_monitor_mcp(doc) else doc.get("source_type", ""),
         enabled=doc.get("enabled", True),
         default_enabled=doc.get("default_enabled", False),
         readonly=False,
@@ -356,7 +360,7 @@ async def _get_owned_api_monitor_server_doc(server_key: str, user_id: str) -> Di
         raise HTTPException(status_code=404, detail="API Monitor MCP server not found")
 
     doc = await _get_owned_user_server_doc(server_id, user_id)
-    if doc.get("source_type") != "api_monitor" and doc.get("transport") != "api_monitor":
+    if not _is_api_monitor_mcp(doc):
         raise HTTPException(status_code=400, detail="MCP server is not an API Monitor MCP")
     return doc
 
@@ -374,7 +378,7 @@ async def _discover_tools(server_key: str, user_id: str) -> Dict[str, Any]:
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
 
-    if server.get("source_type") == "api_monitor":
+    if _is_api_monitor_mcp(server):
         tools = await _load_api_monitor_tools(server["id"], user_id)
         return {
             "server_key": server_key,
