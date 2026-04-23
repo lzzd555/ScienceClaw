@@ -426,7 +426,7 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
                 "name": "get_user",
                 "validation_status": "valid",
                 "method": "GET",
-                "url": "/api/users/{{ id }}",
+                "url": "/api/users/{{ id }}?access_token={{ access_token }}",
                 "base_url": "https://captured.example",
                 "header_mapping": {
                     "X-Request-Id": "{{ request_id }}",
@@ -435,7 +435,7 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
                 "query_mapping": {
                     "expand": "{{ expand }}",
                     "count": "{{ count }}",
-                    "access_token": "{{ access_token }}",
+                    "accessToken": "{{ access_token }}",
                 },
             }
         ]
@@ -479,14 +479,14 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     assert client.calls == [
         (
             "GET",
-            "https://example.test/api/users/42",
+            "https://example.test/api/users/42?access_token=query-secret",
             {
                 "params": {
                     "tenant": "acme",
                     "credential": "secret",
                     "expand": "profile",
                     "count": 3,
-                    "access_token": "query-secret",
+                    "accessToken": "query-secret",
                 },
                 "headers": {
                     "Accept": "application/json",
@@ -500,13 +500,13 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     assert client.kwargs["timeout"] == 45.0
     assert result["request_preview"] == {
         "method": "GET",
-        "url": "https://example.test/api/users/42",
+        "url": "https://example.test/api/users/42?access_token=***",
         "query": {
             "tenant": "acme",
             "credential": "***",
             "expand": "profile",
             "count": 3,
-            "access_token": "***",
+            "accessToken": "***",
         },
         "headers": {
             "Accept": "application/json",
@@ -564,10 +564,10 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
                 "body_mapping": {
                     "count": "{{ count }}",
                     "credentials": {
-                        "api_key": "{{ api_key }}",
-                        "nested": [{"refresh_token": "{{ refresh_token }}"}],
+                        "apiKey": "{{ api_key }}",
+                        "nested": [{"refreshToken": "{{ refresh_token }}"}],
                     },
-                    "items": [{"name": "{{ name }}", "password": "{{ password }}"}],
+                    "items": [{"name": "{{ name }}", "clientSecret": "{{ client_secret }}"}],
                 },
             }
         ]
@@ -588,7 +588,7 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
                 "name": "cell",
                 "api_key": "body-secret",
                 "refresh_token": "refresh-secret",
-                "password": "pass-secret",
+                "client_secret": "client-secret",
             },
         )
     )
@@ -604,10 +604,10 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
                 "json": {
                     "count": 2,
                     "credentials": {
-                        "api_key": "body-secret",
-                        "nested": [{"refresh_token": "refresh-secret"}],
+                        "apiKey": "body-secret",
+                        "nested": [{"refreshToken": "refresh-secret"}],
                     },
-                    "items": [{"name": "cell", "password": "pass-secret"}],
+                    "items": [{"name": "cell", "clientSecret": "client-secret"}],
                 },
             },
         )
@@ -615,10 +615,76 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
     assert result["request_preview"]["body"] == {
         "count": 2,
         "credentials": {
-            "api_key": "***",
-            "nested": [{"refresh_token": "***"}],
+            "apiKey": "***",
+            "nested": [{"refreshToken": "***"}],
         },
-        "items": [{"name": "cell", "password": "***"}],
+        "items": [{"name": "cell", "clientSecret": "***"}],
+    }
+
+
+def test_api_monitor_runtime_redacts_camelcase_query_and_body_preview(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "update_profile",
+                "validation_status": "valid",
+                "method": "POST",
+                "url": "https://api.example.test/profile",
+                "query_mapping": {
+                    "accessToken": "{{ access_token }}",
+                },
+                "body_mapping": {
+                    "credentials": {
+                        "clientSecret": "{{ client_secret }}",
+                        "nested": [{"refreshToken": "{{ refresh_token }}"}],
+                    }
+                },
+            }
+        ]
+    )
+    client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
+    )
+
+    result = asyncio.run(
+        runtime.call_tool(
+            "update_profile",
+            {
+                "access_token": "query-secret",
+                "client_secret": "body-secret",
+                "refresh_token": "refresh-secret",
+            },
+        )
+    )
+
+    assert result["success"] is True
+    assert client.calls == [
+        (
+            "POST",
+            "https://api.example.test/profile",
+            {
+                "params": {"accessToken": "query-secret"},
+                "headers": {},
+                "json": {
+                    "credentials": {
+                        "clientSecret": "body-secret",
+                        "nested": [{"refreshToken": "refresh-secret"}],
+                    }
+                },
+            },
+        )
+    ]
+    assert result["request_preview"]["query"] == {"accessToken": "***"}
+    assert result["request_preview"]["body"] == {
+        "credentials": {
+            "clientSecret": "***",
+            "nested": [{"refreshToken": "***"}],
+        }
     }
 
 

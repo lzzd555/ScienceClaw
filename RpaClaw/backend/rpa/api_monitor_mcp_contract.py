@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import yaml
 
@@ -199,6 +200,26 @@ def sanitize_preview_mapping(value: dict[str, Any] | list[Any] | Any) -> dict[st
     return _sanitize_preview_value(value)
 
 
+def sanitize_preview_url(url: str) -> str:
+    if not url:
+        return ""
+
+    parsed = urlsplit(url)
+    if not parsed.query:
+        return url
+
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    sanitized_query = urlencode(
+        [
+            (key, "***" if _is_sensitive_preview_key_name(key) else value)
+            for key, value in query_pairs
+        ],
+        doseq=True,
+        safe="*",
+    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, sanitized_query, parsed.fragment))
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -238,7 +259,8 @@ def _is_sensitive_preview_key_name(name: str) -> bool:
         return False
     if normalized in SENSITIVE_PREVIEW_KEY_NAMES or normalized in SENSITIVE_HEADER_NAMES:
         return True
-    parts = re.split(r"[^a-z0-9]+", normalized)
+    camel_spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name).strip())
+    parts = re.split(r"[^a-z0-9]+", camel_spaced.lower())
     return any(part in SENSITIVE_PREVIEW_KEY_NAMES or part in SENSITIVE_HEADER_NAMES for part in parts if part)
 
 
