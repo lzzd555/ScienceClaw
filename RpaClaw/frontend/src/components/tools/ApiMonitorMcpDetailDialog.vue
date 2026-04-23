@@ -177,18 +177,28 @@
                     </button>
                     <button
                       class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-[#8930b0] to-[#004be2] px-4 py-2 text-sm font-bold text-white shadow-lg transition disabled:cursor-not-allowed disabled:opacity-60"
-                      :disabled="toolStates[tool.id]?.testing"
+                      :disabled="toolStates[tool.id]?.testing || toolStates[tool.id]?.isDirty"
                       @click="testTool(tool.id)"
                     >
                       <Loader2 v-if="toolStates[tool.id]?.testing" class="animate-spin" :size="15" />
-                      {{ toolStates[tool.id]?.testing ? t('Testing...') : t('Test tool') }}
+                      {{
+                        toolStates[tool.id]?.testing
+                          ? t('Testing...')
+                          : toolStates[tool.id]?.isDirty
+                            ? t('Save before testing')
+                            : t('Test tool')
+                      }}
                     </button>
                   </div>
+
+                  <p v-if="toolStates[tool.id]?.isDirty" class="mt-3 text-xs text-[var(--text-tertiary)]">
+                    {{ t('API Monitor draft save before test hint') }}
+                  </p>
 
                   <div class="mt-5 grid gap-4 xl:grid-cols-2">
                     <div class="preview-card">
                       <div class="preview-title">{{ t('Input schema') }}</div>
-                      <pre class="preview-code"><code>{{ prettyJson(tool.input_schema || {}) }}</code></pre>
+                      <pre class="preview-code"><code>{{ prettyJson(toolStates[tool.id]?.previewInputSchema ?? {}) }}</code></pre>
                     </div>
                     <div class="preview-card">
                       <div class="preview-title">{{ t('Sample arguments') }}</div>
@@ -255,10 +265,14 @@ type ToolState = {
   name: string;
   description: string;
   yamlDefinition: string;
+  savedYamlDefinition: string;
+  previewInputSchema: Record<string, unknown>;
+  savedInputSchema: Record<string, unknown>;
   sampleArguments: unknown;
   testResult: unknown;
   saving: boolean;
   testing: boolean;
+  isDirty: boolean;
 };
 
 const props = defineProps<{
@@ -278,6 +292,7 @@ const savingConfig = ref(false);
 const detail = ref<ApiMonitorMcpDetail | null>(null);
 const expandedToolIds = ref<Set<string>>(new Set());
 const toolStates = reactive<Record<string, ToolState>>({});
+const activeLoadToken = ref(0);
 const configForm = reactive({
   headersText: '{}',
   queryText: '{}',
@@ -297,10 +312,179 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
+function resetConfigForm() {
+  configForm.headersText = '{}';
+  configForm.queryText = '{}';
+  configForm.credentialHeadersText = '{}';
+  configForm.timeoutMs = 20000;
+}
+
 function resetToolStates() {
   Object.keys(toolStates).forEach((key) => {
     delete toolStates[key];
   });
+}
+
+function clearDetailState() {
+  detail.value = null;
+  expandedToolIds.value = new Set();
+  resetToolStates();
+  resetConfigForm();
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseYamlScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null' || trimmed === '~') return null;
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  return trimmed;
+}
+
+function parseYamlBlock(lines: string[], startIndex: number, indent: number): { value: unknown; nextIndex: number } {
+  let index = startIndex;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim() || line.trimStart().startsWith('#')) {
+      index += 1;
+      continue;
+    }
+    const currentIndent = line.match(/^ */)?.[0].length ?? 0;
+    if (currentIndent < indent) {
+      return { value: {}, nextIndex: index };
+    }
+    if (currentIndent > indent) {
+      throw new Error('Invalid indentation');
+    }
+    break;
+  }
+
+  if (index >= lines.length) {
+    return { value: {}, nextIndex: index };
+  }
+
+  const firstContent = lines[index].trim();
+  if (firstContent.startsWith('- ')) {
+    const items: unknown[] = [];
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim() || line.trimStart().startsWith('#')) {
+        index += 1;
+        continue;
+      }
+      const currentIndent = line.match(/^ */)?.[0].length ?? 0;
+      if (currentIndent < indent) break;
+      if (currentIndent !== indent || !line.trim().startsWith('- ')) break;
+      const itemContent = line.trim().slice(2).trim();
+      if (!itemContent) {
+        const nested = parseYamlBlock(lines, index + 1, indent + 2);
+        items.push(nested.value);
+        index = nested.nextIndex;
+        continue;
+      }
+      if (itemContent.includes(':')) {
+        const pseudoLines = [`${' '.repeat(indent)}${itemContent}`];
+        let nextIndex = index + 1;
+        while (nextIndex < lines.length) {
+          const nextLine = lines[nextIndex];
+          if (!nextLine.trim() || nextLine.trimStart().startsWith('#')) {
+            pseudoLines.push(nextLine);
+            nextIndex += 1;
+            continue;
+          }
+          const nextIndent = nextLine.match(/^ */)?.[0].length ?? 0;
+          if (nextIndent <= indent) break;
+          pseudoLines.push(nextLine);
+          nextIndex += 1;
+        }
+        items.push(parseYamlBlock(pseudoLines, 0, indent).value);
+        index = nextIndex;
+        continue;
+      }
+      items.push(parseYamlScalar(itemContent));
+      index += 1;
+    }
+    return { value: items, nextIndex: index };
+  }
+
+  const map: Record<string, unknown> = {};
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim() || line.trimStart().startsWith('#')) {
+      index += 1;
+      continue;
+    }
+    const currentIndent = line.match(/^ */)?.[0].length ?? 0;
+    if (currentIndent < indent) break;
+    if (currentIndent !== indent) {
+      throw new Error('Invalid indentation');
+    }
+    const trimmed = line.trim();
+    const separatorIndex = trimmed.indexOf(':');
+    if (separatorIndex < 0) {
+      throw new Error('Expected key/value separator');
+    }
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const remainder = trimmed.slice(separatorIndex + 1).trim();
+    if (!key) {
+      throw new Error('Expected key');
+    }
+    if (!remainder) {
+      const nested = parseYamlBlock(lines, index + 1, indent + 2);
+      map[key] = nested.value;
+      index = nested.nextIndex;
+      continue;
+    }
+    map[key] = parseYamlScalar(remainder);
+    index += 1;
+  }
+  return { value: map, nextIndex: index };
+}
+
+function parseYamlDraft(yamlText: string): { name?: string; description?: string; parameters?: Record<string, unknown> } | null {
+  try {
+    const lines = yamlText.replace(/\r\n/g, '\n').split('\n');
+    const parsed = parseYamlBlock(lines, 0, 0).value;
+    if (!isPlainObject(parsed)) {
+      return null;
+    }
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : undefined,
+      description: typeof parsed.description === 'string' ? parsed.description : undefined,
+      parameters: isPlainObject(parsed.parameters) ? parsed.parameters : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getServerBaseUrl(server: McpServerItem | null | undefined): string {
+  const endpointConfig = server?.endpoint_config;
+  if (!isPlainObject(endpointConfig)) return '';
+  const baseUrl = endpointConfig.base_url;
+  if (typeof baseUrl === 'string' && baseUrl.trim()) return baseUrl;
+  const url = endpointConfig.url;
+  return typeof url === 'string' ? url : '';
+}
+
+function syncToolStateFromYaml(toolId: string) {
+  const state = toolStates[toolId];
+  if (!state) return;
+  const parsedDraft = parseYamlDraft(state.yamlDefinition);
+  state.isDirty = state.yamlDefinition !== state.savedYamlDefinition;
+  state.name = parsedDraft?.name ?? state.name;
+  state.description = parsedDraft?.description ?? state.description;
+  state.previewInputSchema = parsedDraft?.parameters ?? state.savedInputSchema;
+  state.sampleArguments = buildSampleArguments(state.previewInputSchema);
 }
 
 function applyToolState(tool: ApiMonitorMcpToolDetail) {
@@ -308,11 +492,16 @@ function applyToolState(tool: ApiMonitorMcpToolDetail) {
     name: tool.name || '',
     description: tool.description || '',
     yamlDefinition: tool.yaml_definition || '',
+    savedYamlDefinition: tool.yaml_definition || '',
+    previewInputSchema: (tool.input_schema as Record<string, unknown>) || {},
+    savedInputSchema: (tool.input_schema as Record<string, unknown>) || {},
     sampleArguments: buildSampleArguments(tool.input_schema as Record<string, unknown>),
     testResult: toolStates[tool.id]?.testResult ?? null,
     saving: false,
     testing: false,
+    isDirty: false,
   };
+  syncToolStateFromYaml(tool.id);
 }
 
 function applyDetail(nextDetail: ApiMonitorMcpDetail) {
@@ -328,15 +517,22 @@ function applyDetail(nextDetail: ApiMonitorMcpDetail) {
 
 async function loadDetail() {
   if (!props.open || !props.server?.server_key) return;
+  const loadToken = activeLoadToken.value + 1;
+  activeLoadToken.value = loadToken;
   loading.value = true;
+  clearDetailState();
   try {
     const nextDetail = await getApiMonitorMcpDetail(props.server.server_key);
+    if (activeLoadToken.value !== loadToken) return;
     applyDetail(nextDetail);
   } catch (error: any) {
+    if (activeLoadToken.value !== loadToken) return;
     console.error(error);
     showErrorToast(error?.message || t('Failed to load API Monitor MCP detail'));
   } finally {
-    loading.value = false;
+    if (activeLoadToken.value === loadToken) {
+      loading.value = false;
+    }
   }
 }
 
@@ -359,12 +555,14 @@ function updateToolField(toolId: string, field: 'name' | 'description', value: s
   if (!state) return;
   state[field] = value;
   state.yamlDefinition = syncYamlTopLevelField(state.yamlDefinition, field, value);
+  syncToolStateFromYaml(toolId);
 }
 
 function updateToolYaml(toolId: string, value: string) {
   const state = toolStates[toolId];
   if (!state) return;
   state.yamlDefinition = value;
+  syncToolStateFromYaml(toolId);
 }
 
 function toggleExpanded(toolId: string) {
@@ -392,12 +590,20 @@ async function saveSharedConfig() {
   if (!detail.value?.server.server_key) return;
   savingConfig.value = true;
   try {
+    const currentEndpointConfig = isPlainObject(detail.value.server.endpoint_config)
+      ? detail.value.server.endpoint_config
+      : {};
+    const currentCredentialBinding = isPlainObject(detail.value.server.credential_binding)
+      ? detail.value.server.credential_binding
+      : {};
     const result = await updateApiMonitorMcpConfig(detail.value.server.server_key, {
       endpoint_config: {
+        ...currentEndpointConfig,
         headers: parseJsonObject(configForm.headersText, t('Shared headers JSON')),
         timeout_ms: configForm.timeoutMs,
       },
       credential_binding: {
+        ...currentCredentialBinding,
         query: parseJsonObject(configForm.queryText, t('Shared query JSON')),
         headers: parseJsonObject(configForm.credentialHeadersText, t('Credential headers JSON')),
       },
@@ -464,9 +670,9 @@ watch(
       await loadDetail();
       return;
     }
-    detail.value = null;
-    expandedToolIds.value = new Set();
-    resetToolStates();
+    activeLoadToken.value += 1;
+    loading.value = false;
+    clearDetailState();
   },
   { immediate: true },
 );
