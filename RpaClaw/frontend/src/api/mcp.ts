@@ -97,6 +97,7 @@ export interface ApiMonitorMcpToolTestResponse {
   headers?: Record<string, unknown>;
   body?: unknown;
   error?: unknown;
+  validation_status?: string;
   validation_errors?: string[];
   request_preview?: unknown;
 }
