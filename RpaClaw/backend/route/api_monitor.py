@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sse_starlette.sse import EventSourceResponse
 
 from backend.config import settings
-from backend.models import User
-from backend.auth import get_current_user
+from backend.user.dependencies import User, get_current_user
+from backend.storage import get_repository
 from backend.rpa.api_monitor import api_monitor_manager
 from backend.rpa.api_monitor.models import (
     ApiMonitorSession,
@@ -45,12 +45,21 @@ async def _get_ws_user(websocket: WebSocket) -> Optional[User]:
     if not session_id:
         return None
 
-    try:
-        from backend.auth import _validate_session
-        user = await _validate_session(session_id)
-        return user
-    except Exception:
+    repo = get_repository("user_sessions")
+    session_doc = await repo.find_one({"_id": session_id})
+    if not session_doc:
         return None
+
+    import time
+    if session_doc.get("expires_at", 0) < time.time():
+        await repo.delete_one({"_id": session_id})
+        return None
+
+    return User(
+        id=str(session_doc["user_id"]),
+        username=session_doc["username"],
+        role=session_doc.get("role", "user"),
+    )
 
 
 def _verify_session_owner(session: Optional[ApiMonitorSession], user: User) -> None:
