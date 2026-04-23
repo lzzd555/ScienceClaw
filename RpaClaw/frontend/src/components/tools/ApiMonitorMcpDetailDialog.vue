@@ -243,6 +243,7 @@
 import { reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ChevronDown, Loader2, Server, ShieldCheck } from 'lucide-vue-next';
+import { parse as parseYaml } from 'yaml';
 import {
   getApiMonitorMcpDetail,
   testApiMonitorMcpTool,
@@ -336,124 +337,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseYamlScalar(value: string): unknown {
-  const trimmed = value.trim();
-  if (trimmed === '') return '';
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
-    return trimmed.slice(1, -1);
-  }
-  if (trimmed === 'true') return true;
-  if (trimmed === 'false') return false;
-  if (trimmed === 'null' || trimmed === '~') return null;
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  return trimmed;
-}
-
-function parseYamlBlock(lines: string[], startIndex: number, indent: number): { value: unknown; nextIndex: number } {
-  let index = startIndex;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim() || line.trimStart().startsWith('#')) {
-      index += 1;
-      continue;
-    }
-    const currentIndent = line.match(/^ */)?.[0].length ?? 0;
-    if (currentIndent < indent) {
-      return { value: {}, nextIndex: index };
-    }
-    if (currentIndent > indent) {
-      throw new Error('Invalid indentation');
-    }
-    break;
-  }
-
-  if (index >= lines.length) {
-    return { value: {}, nextIndex: index };
-  }
-
-  const firstContent = lines[index].trim();
-  if (firstContent.startsWith('- ')) {
-    const items: unknown[] = [];
-    while (index < lines.length) {
-      const line = lines[index];
-      if (!line.trim() || line.trimStart().startsWith('#')) {
-        index += 1;
-        continue;
-      }
-      const currentIndent = line.match(/^ */)?.[0].length ?? 0;
-      if (currentIndent < indent) break;
-      if (currentIndent !== indent || !line.trim().startsWith('- ')) break;
-      const itemContent = line.trim().slice(2).trim();
-      if (!itemContent) {
-        const nested = parseYamlBlock(lines, index + 1, indent + 2);
-        items.push(nested.value);
-        index = nested.nextIndex;
-        continue;
-      }
-      if (itemContent.includes(':')) {
-        const pseudoLines = [`${' '.repeat(indent)}${itemContent}`];
-        let nextIndex = index + 1;
-        while (nextIndex < lines.length) {
-          const nextLine = lines[nextIndex];
-          if (!nextLine.trim() || nextLine.trimStart().startsWith('#')) {
-            pseudoLines.push(nextLine);
-            nextIndex += 1;
-            continue;
-          }
-          const nextIndent = nextLine.match(/^ */)?.[0].length ?? 0;
-          if (nextIndent <= indent) break;
-          pseudoLines.push(nextLine);
-          nextIndex += 1;
-        }
-        items.push(parseYamlBlock(pseudoLines, 0, indent).value);
-        index = nextIndex;
-        continue;
-      }
-      items.push(parseYamlScalar(itemContent));
-      index += 1;
-    }
-    return { value: items, nextIndex: index };
-  }
-
-  const map: Record<string, unknown> = {};
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim() || line.trimStart().startsWith('#')) {
-      index += 1;
-      continue;
-    }
-    const currentIndent = line.match(/^ */)?.[0].length ?? 0;
-    if (currentIndent < indent) break;
-    if (currentIndent !== indent) {
-      throw new Error('Invalid indentation');
-    }
-    const trimmed = line.trim();
-    const separatorIndex = trimmed.indexOf(':');
-    if (separatorIndex < 0) {
-      throw new Error('Expected key/value separator');
-    }
-    const key = trimmed.slice(0, separatorIndex).trim();
-    const remainder = trimmed.slice(separatorIndex + 1).trim();
-    if (!key) {
-      throw new Error('Expected key');
-    }
-    if (!remainder) {
-      const nested = parseYamlBlock(lines, index + 1, indent + 2);
-      map[key] = nested.value;
-      index = nested.nextIndex;
-      continue;
-    }
-    map[key] = parseYamlScalar(remainder);
-    index += 1;
-  }
-  return { value: map, nextIndex: index };
-}
-
 function parseYamlDraft(yamlText: string): { name?: string; description?: string; parameters?: Record<string, unknown> } | null {
   try {
-    const lines = yamlText.replace(/\r\n/g, '\n').split('\n');
-    const parsed = parseYamlBlock(lines, 0, 0).value;
+    const parsed = parseYaml(yamlText);
     if (!isPlainObject(parsed)) {
       return null;
     }
@@ -481,10 +367,16 @@ function syncToolStateFromYaml(toolId: string) {
   if (!state) return;
   const parsedDraft = parseYamlDraft(state.yamlDefinition);
   state.isDirty = state.yamlDefinition !== state.savedYamlDefinition;
-  state.name = parsedDraft?.name ?? state.name;
-  state.description = parsedDraft?.description ?? state.description;
+  state.name = parsedDraft?.name ?? parseYamlDraft(state.savedYamlDefinition)?.name ?? state.name;
+  state.description = parsedDraft?.description ?? parseYamlDraft(state.savedYamlDefinition)?.description ?? state.description;
   state.previewInputSchema = parsedDraft?.parameters ?? state.savedInputSchema;
   state.sampleArguments = buildSampleArguments(state.previewInputSchema);
+}
+
+function clearToolTestResult(toolId: string) {
+  const state = toolStates[toolId];
+  if (!state) return;
+  state.testResult = null;
 }
 
 function applyToolState(tool: ApiMonitorMcpToolDetail) {
@@ -555,6 +447,7 @@ function updateToolField(toolId: string, field: 'name' | 'description', value: s
   if (!state) return;
   state[field] = value;
   state.yamlDefinition = syncYamlTopLevelField(state.yamlDefinition, field, value);
+  clearToolTestResult(toolId);
   syncToolStateFromYaml(toolId);
 }
 
@@ -562,6 +455,7 @@ function updateToolYaml(toolId: string, value: string) {
   const state = toolStates[toolId];
   if (!state) return;
   state.yamlDefinition = value;
+  clearToolTestResult(toolId);
   syncToolStateFromYaml(toolId);
 }
 
@@ -623,6 +517,7 @@ async function saveTool(toolId: string) {
   if (!detail.value?.server.server_key) return;
   const state = toolStates[toolId];
   if (!state) return;
+  const preservedTestResult = state.testResult;
   state.saving = true;
   try {
     const updated = await updateApiMonitorMcpTool(detail.value.server.server_key, toolId, {
@@ -632,10 +527,11 @@ async function saveTool(toolId: string) {
     if (index >= 0) {
       detail.value.tools[index] = updated;
       applyToolState(updated);
-      toolStates[toolId].testResult = state.testResult;
+      toolStates[toolId].testResult = null;
     }
     showSuccessToast(t('API Monitor tool saved'));
   } catch (error: any) {
+    state.testResult = preservedTestResult;
     console.error(error);
     showErrorToast(error?.message || t('Failed to save API Monitor tool'));
   } finally {
