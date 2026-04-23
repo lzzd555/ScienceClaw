@@ -36,6 +36,38 @@ response:
     assert contract.validation_errors == []
 
 
+def test_contract_document_uses_singular_header_mapping_key():
+    contract = parse_api_monitor_tool_yaml(
+        """
+name: search_orders
+description: Search orders by keyword
+method: GET
+url: /api/orders/{tenant_id}
+parameters:
+  type: object
+  properties:
+    tenant_id:
+      type: string
+    keyword:
+      type: string
+request:
+  path:
+    tenant_id: "{{ tenant_id }}"
+  query:
+    keyword: "{{ keyword }}"
+  headers:
+    X-Tenant-ID: "{{ tenant_id }}"
+response:
+  type: object
+"""
+    )
+
+    document = contract.to_document()
+
+    assert document["header_mapping"] == {"X-Tenant-ID": "{{ tenant_id }}"}
+    assert "headers_mapping" not in document
+
+
 def test_parse_post_tool_yaml_builds_body_contract():
     contract = parse_api_monitor_tool_yaml(
         """

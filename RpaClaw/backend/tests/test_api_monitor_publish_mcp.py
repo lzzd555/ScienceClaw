@@ -80,15 +80,23 @@ def _build_session() -> ApiMonitorSession:
                 yaml_definition="""name: search_orders
 description: Search orders by keyword
 method: GET
-url: /api/orders
+url: /api/orders/{tenant_id}
 parameters:
   type: object
   properties:
+    tenant_id:
+      type: string
     keyword:
       type: string
 request:
+  path:
+    tenant_id: "{{ tenant_id }}"
   query:
     keyword: "{{ keyword }}"
+  body:
+    page_size: 20
+  headers:
+    X-Tenant-ID: "{{ tenant_id }}"
 response:
   type: object
 """,
@@ -164,6 +172,8 @@ def test_publish_session_overwrite_replaces_all_existing_tools():
                 "description": "Old description",
                 "transport": "api_monitor",
                 "source_type": "api_monitor",
+                "endpoint_config": {"base_url": "https://api.example.test"},
+                "credential_binding": {"type": "bearer", "secret_id": "secret_1"},
             }
         ]
     )
@@ -194,7 +204,10 @@ def test_publish_session_overwrite_replaces_all_existing_tools():
     )
 
     tools = asyncio.run(tool_repo.find_many({"mcp_server_id": "mcp_existing", "user_id": "u1"}))
+    server = asyncio.run(server_repo.find_one({"_id": "mcp_existing", "user_id": "u1"}))
     assert result["overwritten"] is True
+    assert server["endpoint_config"] == {"base_url": "https://api.example.test"}
+    assert server["credential_binding"] == {"type": "bearer", "secret_id": "secret_1"}
     assert sorted(tool["name"] for tool in tools) == ["create_user", "search_orders"]
 
 
@@ -277,12 +290,25 @@ async def test_publish_persists_parsed_contract_fields_and_defaults():
     assert server["default_enabled"] is True
     assert server["transport"] == "api_monitor"
     assert server["source_type"] == "api_monitor"
+    assert server["endpoint_config"] == {}
+    assert server["credential_binding"] == {}
+    assert tools[0]["mcp_server_id"] == result["server_id"]
+    assert tools[0]["user_id"] == "user_1"
+    assert tools[0]["source"] == "api_monitor"
+    assert tools[0]["source_session_id"] == "session_1"
+    assert tools[0]["order"] == 0
     assert tools[0]["validation_status"] == "valid"
+    assert tools[0]["validation_errors"] == []
     assert tools[0]["name"] == "search_orders"
+    assert tools[0]["description"] == "Search orders by keyword"
     assert tools[0]["method"] == "GET"
-    assert tools[0]["url"] == "/api/orders"
+    assert tools[0]["url"] == "/api/orders/{tenant_id}"
     assert tools[0]["input_schema"]["type"] == "object"
+    assert tools[0]["path_mapping"]["tenant_id"] == "{{ tenant_id }}"
     assert tools[0]["query_mapping"]["keyword"] == "{{ keyword }}"
+    assert tools[0]["body_mapping"]["page_size"] == 20
+    assert tools[0]["header_mapping"]["X-Tenant-ID"] == "{{ tenant_id }}"
+    assert tools[0]["response_schema"] == {"type": "object"}
     assert tools[0]["yaml_definition"].strip().startswith("name:")
 
 

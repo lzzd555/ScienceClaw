@@ -25,7 +25,7 @@ class ApiMonitorToolContract:
     path_mapping: dict[str, Any] = field(default_factory=dict)
     query_mapping: dict[str, Any] = field(default_factory=dict)
     body_mapping: dict[str, Any] = field(default_factory=dict)
-    headers_mapping: dict[str, Any] = field(default_factory=dict)
+    header_mapping: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
     raw_definition: Any = field(default_factory=dict)
 
@@ -41,7 +41,7 @@ class ApiMonitorToolContract:
             "path_mapping": self.path_mapping,
             "query_mapping": self.query_mapping,
             "body_mapping": self.body_mapping,
-            "headers_mapping": self.headers_mapping,
+            "header_mapping": self.header_mapping,
             "raw_definition": self.raw_definition,
             "validation_status": "valid" if self.valid else "invalid",
             "validation_errors": list(self.validation_errors),
@@ -111,7 +111,7 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
     path_mapping, path_errors = _validate_mapping_section("request.path", request.get("path"), properties)
     query_mapping, query_errors = _validate_mapping_section("request.query", request.get("query"), properties)
     body_mapping, body_errors = _validate_mapping_section("request.body", request.get("body"), properties)
-    headers_mapping, headers_errors = _validate_mapping_section("request.headers", request.get("headers"), properties)
+    header_mapping, headers_errors = _validate_mapping_section("request.headers", request.get("headers"), properties)
     errors.extend(path_errors)
     errors.extend(query_errors)
     errors.extend(body_errors)
@@ -138,7 +138,7 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
         path_mapping=path_mapping,
         query_mapping=query_mapping,
         body_mapping=body_mapping,
-        headers_mapping=headers_mapping,
+        header_mapping=header_mapping,
         validation_errors=errors,
         raw_definition=parsed,
     )

@@ -156,7 +156,7 @@ def _parse_tools_with_duplicate_validation(tools: list[Any]) -> list[ApiMonitorT
                     path_mapping=contract.path_mapping,
                     query_mapping=contract.query_mapping,
                     body_mapping=contract.body_mapping,
-                    headers_mapping=contract.headers_mapping,
+                    header_mapping=contract.header_mapping,
                     response_schema=contract.response_schema,
                     yaml_definition=contract.yaml_definition,
                     raw_definition=contract.raw_definition,
