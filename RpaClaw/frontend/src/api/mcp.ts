@@ -1,6 +1,7 @@
 import { apiClient, ApiResponse } from './client';
 
 export type McpTransport = 'stdio' | 'streamable_http' | 'sse' | 'api_monitor';
+export type McpWritableTransport = Exclude<McpTransport, 'api_monitor'>;
 export type McpSessionMode = 'inherit' | 'enabled' | 'disabled';
 
 export interface McpCredentialRef {
@@ -90,10 +91,20 @@ export interface ApiMonitorMcpConfigPayload {
   credential_binding?: Record<string, unknown>;
 }
 
+export interface ApiMonitorMcpToolTestResponse {
+  success: boolean;
+  status_code?: number;
+  headers?: Record<string, unknown>;
+  body?: unknown;
+  error?: unknown;
+  validation_errors?: string[];
+  request_preview?: unknown;
+}
+
 export interface McpServerPayload {
   name: string;
   description?: string;
-  transport: McpTransport;
+  transport: McpWritableTransport;
   enabled?: boolean;
   default_enabled: boolean;
   endpoint_config: McpEndpointConfig;
@@ -169,8 +180,8 @@ export async function testApiMonitorMcpTool(
   serverKey: string,
   toolId: string,
   payload: { arguments?: Record<string, unknown> },
-): Promise<Record<string, unknown>> {
-  const response = await apiClient.post<ApiResponse<Record<string, unknown>>>(
+): Promise<ApiMonitorMcpToolTestResponse> {
+  const response = await apiClient.post<ApiResponse<ApiMonitorMcpToolTestResponse>>(
     `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-tools/${encodeURIComponent(toolId)}/test`,
     payload,
   );
