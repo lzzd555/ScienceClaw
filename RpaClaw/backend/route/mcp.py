@@ -47,12 +47,12 @@ class McpServerListItem(BaseModel):
 
 
 class ApiMonitorMcpConfigUpdate(BaseModel):
-    name: str
-    description: str = ""
-    enabled: bool = True
-    default_enabled: bool = True
-    endpoint_config: Dict[str, Any] = Field(default_factory=dict)
-    credential_binding: Dict[str, Any] = Field(default_factory=dict)
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    default_enabled: bool | None = None
+    endpoint_config: Dict[str, Any] | None = None
+    credential_binding: Dict[str, Any] | None = None
 
 
 class ApiMonitorToolUpdate(BaseModel):
@@ -310,6 +310,19 @@ def _serialize_api_monitor_tool_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _api_monitor_config_value(
+    body: ApiMonitorMcpConfigUpdate,
+    server_doc: Dict[str, Any],
+    field_name: str,
+    default: Any,
+) -> Any:
+    if field_name in body.model_fields_set:
+        value = getattr(body, field_name)
+        if value is not None:
+            return value
+    return server_doc.get(field_name, default)
+
+
 def _apply_session_mode(server: Dict[str, Any], session_mode: str) -> Dict[str, Any]:
     effective_enabled = (
         server.get("enabled", True)
@@ -508,12 +521,12 @@ async def update_api_monitor_mcp_config(
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
     repo = get_repository("user_mcp_servers")
     update_doc = {
-        "name": body.name,
-        "description": body.description,
-        "enabled": body.enabled,
-        "default_enabled": body.default_enabled,
-        "endpoint_config": body.endpoint_config,
-        "credential_binding": body.credential_binding,
+        "name": _api_monitor_config_value(body, server_doc, "name", ""),
+        "description": _api_monitor_config_value(body, server_doc, "description", ""),
+        "enabled": _api_monitor_config_value(body, server_doc, "enabled", True),
+        "default_enabled": _api_monitor_config_value(body, server_doc, "default_enabled", True),
+        "endpoint_config": _api_monitor_config_value(body, server_doc, "endpoint_config", {}),
+        "credential_binding": _api_monitor_config_value(body, server_doc, "credential_binding", {}),
         "updated_at": datetime.now(),
     }
     await repo.update_one({"_id": str(server_doc["_id"]), "user_id": user_id}, {"$set": update_doc})
@@ -532,7 +545,7 @@ async def update_api_monitor_tool(
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
     tool_doc = await _get_owned_api_monitor_tool_doc(str(server_doc["_id"]), tool_id, user_id)
     contract = parse_api_monitor_tool_yaml(body.yaml_definition)
-    update_doc = {**contract.to_document(), "updated_at": datetime.now()}
+    update_doc = {**contract.to_document(), "url_pattern": contract.url, "updated_at": datetime.now()}
     repo = get_repository("api_monitor_mcp_tools")
     await repo.update_one(
         {"_id": tool_id, "mcp_server_id": str(server_doc["_id"]), "user_id": user_id},
@@ -561,8 +574,12 @@ async def test_api_monitor_tool(
             }
         )
 
+    tool_name = str(tool_doc.get("name", "")).strip()
+    if not tool_name:
+        return ApiResponse(data={"success": False, "error": "API Monitor tool has no callable name"})
+
     server = _to_server_definition(_serialize_api_monitor_user_server(server_doc))
-    result = await ApiMonitorMcpRuntime(server).call_tool(str(tool_doc.get("name", "")), body.arguments)
+    result = await ApiMonitorMcpRuntime(server).call_tool(tool_name, body.arguments)
     return ApiResponse(data=result)
 
 
