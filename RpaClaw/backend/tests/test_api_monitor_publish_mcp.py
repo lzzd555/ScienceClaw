@@ -162,6 +162,34 @@ def test_registry_replace_tools_rewrites_existing_collection():
     assert tools[0]["source"] == "api_monitor"
 
 
+def test_registry_replace_tools_does_not_delete_when_document_build_fails():
+    server_repo = _MemoryRepo()
+    tool_repo = _MemoryRepo(
+        [
+            {
+                "_id": "old_tool",
+                "user_id": "u1",
+                "mcp_server_id": "mcp_existing",
+                "name": "old_tool",
+                "source": "api_monitor",
+            }
+        ]
+    )
+    registry = ApiMonitorMcpRegistry(server_repository=server_repo, tool_repository=tool_repo)
+
+    with pytest.raises(AttributeError):
+        asyncio.run(
+            registry.replace_tools(
+                mcp_server_id="mcp_existing",
+                user_id="u1",
+                session_tools=[object()],
+            )
+        )
+
+    tools = asyncio.run(tool_repo.find_many({"mcp_server_id": "mcp_existing", "user_id": "u1"}))
+    assert [tool["name"] for tool in tools] == ["old_tool"]
+
+
 def test_publish_session_overwrite_replaces_all_existing_tools():
     server_repo = _MemoryRepo(
         [

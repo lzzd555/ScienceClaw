@@ -87,12 +87,12 @@ class ApiMonitorMcpRegistry:
         session_tools: list[dict[str, Any]],
         base_url: str = "",
     ) -> None:
-        await self._tools.delete_many({"mcp_server_id": mcp_server_id, "user_id": user_id})
         now = datetime.now()
         contract_docs = _parse_tools_with_duplicate_validation(session_tools)
+        tool_docs: list[dict[str, Any]] = []
         for index, (tool, contract) in enumerate(zip(session_tools, contract_docs, strict=True)):
             tool_id = f"{mcp_server_id}_{index}_{uuid.uuid4().hex[:8]}"
-            await self._tools.insert_one(
+            tool_docs.append(
                 {
                     "_id": tool_id,
                     "user_id": user_id,
@@ -112,6 +112,9 @@ class ApiMonitorMcpRegistry:
                     **contract.to_document(),
                 }
             )
+        await self._tools.delete_many({"mcp_server_id": mcp_server_id, "user_id": user_id})
+        for tool_doc in tool_docs:
+            await self._tools.insert_one(tool_doc)
 
     async def list_tools_for_server(self, *, mcp_server_id: str, user_id: str) -> list[dict[str, Any]]:
         return await self._tools.find_many(

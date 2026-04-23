@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -133,6 +134,117 @@ def test_list_mcp_servers_returns_normalized_system_and_user_entries(monkeypatch
     assert data[0]["endpoint_config"]["headers"] == {"Authorization": "Bearer top-secret"}
     assert "env" not in data[0]["endpoint_config"]
     assert data[0]["credential_binding"] == {}
+
+
+def test_list_mcp_servers_includes_api_monitor_source(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    monkeypatch.setattr(mcp_route, "load_system_mcp_servers", lambda: [])
+
+    async def fake_user_servers(user_id: str):
+        assert user_id == "user-1"
+        return [
+            {
+                "_id": "mcp_api_monitor",
+                "user_id": "user-1",
+                "name": "Example MCP",
+                "description": "Captured APIs",
+                "transport": "api_monitor",
+                "enabled": True,
+                "default_enabled": False,
+                "source_type": "api_monitor",
+            }
+        ]
+
+    monkeypatch.setattr(mcp_route, "_list_user_mcp_servers", fake_user_servers)
+
+    response = client.get("/api/v1/mcp/servers")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data[0]["server_key"] == "user:mcp_api_monitor"
+    assert data[0]["transport"] == "api_monitor"
+    assert data[0]["source_type"] == "api_monitor"
+    assert data[0]["endpoint_config"] == {}
+
+
+def test_discover_mcp_tools_reads_internal_api_monitor_tools(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+
+    async def fake_resolve(server_key: str, user_id: str):
+        assert server_key == "user:mcp_api_monitor"
+        assert user_id == "user-1"
+        return {
+            "id": "mcp_api_monitor",
+            "server_key": "user:mcp_api_monitor",
+            "scope": "user",
+            "name": "Example MCP",
+            "description": "Captured APIs",
+            "transport": "api_monitor",
+            "source_type": "api_monitor",
+        }
+
+    async def fake_load_tools(server_id: str, user_id: str):
+        assert server_id == "mcp_api_monitor"
+        assert user_id == "user-1"
+        return [
+            {
+                "name": "list_users",
+                "description": "List users",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
+
+    monkeypatch.setattr(mcp_route, "_resolve_server_by_key", fake_resolve)
+    monkeypatch.setattr(mcp_route, "_load_api_monitor_tools", fake_load_tools)
+
+    response = client.post("/api/v1/mcp/servers/user:mcp_api_monitor/discover-tools")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["tool_count"] == 1
+    assert data["tools"][0]["name"] == "list_users"
+
+
+def test_load_api_monitor_tools_filters_invalid_and_prefers_parsed_schema(monkeypatch):
+    tool_repo = _MemoryRepo(
+        [
+            {
+                "_id": "tool_valid",
+                "mcp_server_id": "mcp_api_monitor",
+                "user_id": "user-1",
+                "name": "search_orders",
+                "description": "Search orders",
+                "validation_status": "valid",
+                "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+                "request_body_schema": {"type": "object", "properties": {"legacy": {"type": "string"}}},
+            },
+            {
+                "_id": "tool_invalid",
+                "mcp_server_id": "mcp_api_monitor",
+                "user_id": "user-1",
+                "name": "broken_tool",
+                "validation_status": "invalid",
+                "input_schema": {"type": "object", "properties": {"broken": {"type": "string"}}},
+            },
+            {
+                "_id": "tool_legacy",
+                "mcp_server_id": "mcp_api_monitor",
+                "user_id": "user-1",
+                "name": "legacy_tool",
+                "request_body_schema": {"type": "object", "properties": {"page": {"type": "integer"}}},
+            },
+        ]
+    )
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: tool_repo)
+
+    tools = asyncio.run(mcp_route._load_api_monitor_tools("mcp_api_monitor", "user-1"))
+
+    assert [tool["name"] for tool in tools] == ["search_orders", "legacy_tool"]
+    assert tools[0]["input_schema"]["properties"] == {"keyword": {"type": "string"}}
+    assert tools[1]["input_schema"]["properties"] == {"page": {"type": "integer"}}
 
 
 def test_create_mcp_server_rejects_stdio_outside_local(monkeypatch):

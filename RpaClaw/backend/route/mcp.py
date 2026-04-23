@@ -36,6 +36,7 @@ class McpServerListItem(BaseModel):
     name: str
     description: str = ""
     transport: str
+    source_type: str = ""
     enabled: bool = True
     default_enabled: bool = False
     readonly: bool = False
@@ -53,6 +54,41 @@ async def _maybe_await(value: Any) -> Any:
 async def _list_user_mcp_servers(user_id: str) -> List[Dict[str, Any]]:
     repo = get_repository("user_mcp_servers")
     return await repo.find_many({"user_id": user_id}, sort=[("updated_at", -1)])
+
+
+async def _load_api_monitor_tools(server_id: str, user_id: str) -> list[dict[str, Any]]:
+    repo = get_repository("api_monitor_mcp_tools")
+    docs = await repo.find_many(
+        {"mcp_server_id": server_id, "user_id": user_id},
+        sort=[("updated_at", -1)],
+    )
+    tools: list[dict[str, Any]] = []
+    for doc in docs:
+        if _api_monitor_tool_is_invalid(doc):
+            continue
+        input_schema = _api_monitor_tool_input_schema(doc)
+        tools.append(
+            {
+                "name": doc.get("name", ""),
+                "description": doc.get("description", ""),
+                "input_schema": input_schema,
+            }
+        )
+    return tools
+
+
+def _api_monitor_tool_is_invalid(doc: dict[str, Any]) -> bool:
+    return doc.get("validation_status") == "invalid"
+
+
+def _api_monitor_tool_input_schema(doc: dict[str, Any]) -> dict[str, Any]:
+    input_schema = doc.get("input_schema")
+    if isinstance(input_schema, dict):
+        return input_schema
+    legacy_schema = doc.get("request_body_schema")
+    if isinstance(legacy_schema, dict):
+        return legacy_schema
+    return {"type": "object", "properties": {}}
 
 
 async def _build_rpa_gateway_tools(user_id: str) -> list[dict[str, Any]]:
@@ -182,17 +218,23 @@ def _serialize_system_server(server: Any) -> Dict[str, Any]:
 
 
 def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
+    transport = doc.get("transport", "streamable_http")
+    endpoint_config = doc.get("endpoint_config") or {}
+    if doc.get("source_type") == "api_monitor":
+        transport = "api_monitor"
+        endpoint_config = {}
     return McpServerListItem(
         id=str(doc["_id"]),
         server_key=f"user:{doc['_id']}",
         scope="user",
         name=doc["name"],
         description=doc.get("description", ""),
-        transport=doc["transport"],
+        transport=transport,
+        source_type=doc.get("source_type", ""),
         enabled=doc.get("enabled", True),
         default_enabled=doc.get("default_enabled", False),
         readonly=False,
-        endpoint_config=doc.get("endpoint_config") or {},
+        endpoint_config=endpoint_config,
         credential_binding=doc.get("credential_binding") or {},
         tool_policy=doc.get("tool_policy") or {},
     ).model_dump()
@@ -246,6 +288,14 @@ async def _discover_tools(server_key: str, user_id: str) -> Dict[str, Any]:
     server = await _resolve_server_by_key(server_key, user_id)
     if not server:
         raise HTTPException(status_code=404, detail="MCP server not found")
+
+    if server.get("source_type") == "api_monitor":
+        tools = await _load_api_monitor_tools(server["id"], user_id)
+        return {
+            "server_key": server_key,
+            "tools": tools,
+            "tool_count": len(tools),
+        }
 
     definition = _to_server_definition(server)
     if definition.scope == "system" and definition.id == RPA_GATEWAY_SYSTEM_SERVER_ID:
