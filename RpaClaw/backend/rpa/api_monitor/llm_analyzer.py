@@ -88,16 +88,27 @@ Guidelines:
 - Mark parameters as required only if they appear in every sample or seem essential
 - Infer response schema from the captured response bodies
 - Only return valid YAML, no markdown fences, no extra commentary
+
+DOM Context Guidelines:
+- If the captured API request has missing or empty parameters but the DOM context shows \
+  related form inputs/fields, include those as optional parameters in the tool definition
+- Use the label text and placeholder text from form inputs to generate parameter descriptions
+- Map input types to JSON schema types: text -> string, number -> integer/number, \
+  date -> string (format: date), checkbox -> boolean, select -> enum
+- If the same API endpoint is triggered by multiple buttons (e.g., "Search" and "Reset"), \
+  generate only ONE tool that covers all use cases, with optional parameters
 """
 
 TOOL_GEN_USER = """\
 Endpoint: {method} {url_pattern}
 Page context: {page_context}
 
+{dom_context_section}
+
 API call samples:
 {samples_json}
 
-Generate the YAML tool definition.
+Generate the YAML tool definition. Use DOM context to infer parameters not present in samples.
 """
 
 # ── LLM call helpers ─────────────────────────────────────────────────
@@ -169,6 +180,7 @@ async def generate_tool_definition(
     url_pattern: str,
     samples: List[CapturedApiCall],
     page_context: str = "",
+    dom_context: str = "",
     model_config: Optional[Dict] = None,
 ) -> str:
     """Generate an OpenAI YAML tool definition from captured API call samples.
@@ -196,10 +208,15 @@ async def generate_tool_definition(
                     entry["response_body"] = call.response.body
         sample_data.append(entry)
 
+    dom_context_section = ""
+    if dom_context:
+        dom_context_section = f"DOM context (form structure):\n{dom_context}"
+
     user_prompt = TOOL_GEN_USER.format(
         method=method,
         url_pattern=url_pattern,
         page_context=page_context or "Unknown page",
+        dom_context_section=dom_context_section,
         samples_json=json.dumps(sample_data, indent=2, ensure_ascii=False),
     )
 
