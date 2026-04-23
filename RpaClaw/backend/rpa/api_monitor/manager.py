@@ -130,21 +130,22 @@ class ApiMonitorSessionManager:
         self,
         user_id: str,
         target_url: str,
-        sandbox_session_id: str,
+        sandbox_session_id: Optional[str] = None,
     ) -> ApiMonitorSession:
         """Create a new API Monitor session with its own browser context."""
         session_id = str(uuid.uuid4())
+        effective_sandbox_id = sandbox_session_id or session_id
         session = ApiMonitorSession(
             id=session_id,
             user_id=user_id,
-            sandbox_session_id=sandbox_session_id,
+            sandbox_session_id=effective_sandbox_id,
             target_url=target_url,
         )
         self.sessions[session_id] = session
 
         # Create browser context via CDP connector
         browser = await get_cdp_connector().get_browser(
-            session_id=sandbox_session_id,
+            session_id=effective_sandbox_id,
             user_id=user_id,
         )
         context = await browser.new_context(**get_context_kwargs())
