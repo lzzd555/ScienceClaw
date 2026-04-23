@@ -278,7 +278,7 @@ def _sanitize_preview_fragment(fragment: str) -> str:
     if not fragment:
         return ""
     if "=" not in fragment and "&" not in fragment:
-        return fragment
+        return "****"
     return _sanitize_preview_query_string(fragment)
 
 
@@ -303,11 +303,14 @@ def _sanitize_preview_path(path: str, url_template: str, arguments: dict[str, An
             sanitized_segment = "***"
             mask_next_segment = False
         elif template_segment:
-            single_match = SINGLE_TEMPLATE_RE.match(template_segment)
-            if single_match and _is_sensitive_preview_key_name(single_match.group(1)):
+            if _template_segment_has_sensitive_placeholder(template_segment):
                 sanitized_segment = "***"
-            elif _is_sensitive_preview_key_name(template_segment):
-                mask_next_segment = True
+            else:
+                single_match = SINGLE_TEMPLATE_RE.match(template_segment)
+                if single_match and _is_sensitive_preview_key_name(single_match.group(1)):
+                    sanitized_segment = "***"
+                elif _is_sensitive_preview_key_name(template_segment):
+                    mask_next_segment = True
         elif "=" in segment:
             key, value = segment.split("=", 1)
             if _is_sensitive_preview_key_name(key):
@@ -318,6 +321,13 @@ def _sanitize_preview_path(path: str, url_template: str, arguments: dict[str, An
         sanitized_segments.append(sanitized_segment)
 
     return "/".join(sanitized_segments)
+
+
+def _template_segment_has_sensitive_placeholder(template_segment: str) -> bool:
+    for match in TEMPLATE_RE.findall(template_segment):
+        if _is_sensitive_preview_key_name(match):
+            return True
+    return False
 
 
 def _validate_mapping_section(
