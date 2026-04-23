@@ -19,6 +19,20 @@ SENSITIVE_HEADER_NAMES = {
     "api-key",
     "token",
 }
+SENSITIVE_PREVIEW_KEY_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "credential",
+    "secret",
+    "password",
+    "key",
+}
 
 
 @dataclass
@@ -178,12 +192,11 @@ def render_mapping(mapping: dict[str, Any] | Any, arguments: dict[str, Any] | An
 
 
 def sanitize_headers(headers: dict[str, Any] | Any) -> dict[str, Any]:
-    if not isinstance(headers, dict):
-        return {}
-    return {
-        key: "***" if _is_sensitive_header_name(key) else value
-        for key, value in headers.items()
-    }
+    return sanitize_preview_mapping(headers)
+
+
+def sanitize_preview_mapping(value: dict[str, Any] | list[Any] | Any) -> dict[str, Any] | list[Any] | Any:
+    return _sanitize_preview_value(value)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -205,8 +218,28 @@ def _extract_template_variables(value: str) -> list[str]:
 
 
 def _is_sensitive_header_name(name: str) -> bool:
+    return _is_sensitive_preview_key_name(name)
+
+
+def _sanitize_preview_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "***" if _is_sensitive_preview_key_name(key) else _sanitize_preview_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_preview_value(item) for item in value]
+    return value
+
+
+def _is_sensitive_preview_key_name(name: str) -> bool:
     normalized = str(name).strip().lower()
-    return normalized in SENSITIVE_HEADER_NAMES or normalized.endswith("-token")
+    if not normalized:
+        return False
+    if normalized in SENSITIVE_PREVIEW_KEY_NAMES or normalized in SENSITIVE_HEADER_NAMES:
+        return True
+    parts = re.split(r"[^a-z0-9]+", normalized)
+    return any(part in SENSITIVE_PREVIEW_KEY_NAMES or part in SENSITIVE_HEADER_NAMES for part in parts if part)
 
 
 def _validate_mapping_section(

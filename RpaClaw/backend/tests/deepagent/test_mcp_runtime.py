@@ -362,6 +362,31 @@ def test_api_monitor_runtime_lists_only_valid_tools(monkeypatch):
     assert tools[0].input_schema["properties"] == {"keyword": {"type": "string"}}
 
 
+def test_api_monitor_runtime_uses_legacy_request_body_schema(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "legacy_tool",
+                "validation_status": "valid",
+                "method": "POST",
+                "url": "https://api.example.test/items",
+                "request_body_schema": {"type": "object", "properties": {"page": {"type": "integer"}}},
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
+    )
+
+    tools = asyncio.run(runtime.list_tools())
+
+    assert [tool.name for tool in tools] == ["legacy_tool"]
+    assert tools[0].input_schema == {"type": "object", "properties": {"page": {"type": "integer"}}}
+
+
 def test_api_monitor_runtime_does_not_call_invalid_tool(monkeypatch):
     repo = _MemoryRepo(
         [
@@ -410,6 +435,7 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
                 "query_mapping": {
                     "expand": "{{ expand }}",
                     "count": "{{ count }}",
+                    "access_token": "{{ access_token }}",
                 },
             }
         ]
@@ -437,7 +463,14 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     result = asyncio.run(
         runtime.call_tool(
             "get_user",
-            {"id": "42", "expand": "profile", "count": 3, "request_id": "req-1", "user_token": "user-secret"},
+            {
+                "id": "42",
+                "expand": "profile",
+                "count": 3,
+                "request_id": "req-1",
+                "user_token": "user-secret",
+                "access_token": "query-secret",
+            },
         )
     )
 
@@ -448,7 +481,13 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
             "GET",
             "https://example.test/api/users/42",
             {
-                "params": {"tenant": "acme", "credential": "secret", "expand": "profile", "count": 3},
+                "params": {
+                    "tenant": "acme",
+                    "credential": "secret",
+                    "expand": "profile",
+                    "count": 3,
+                    "access_token": "query-secret",
+                },
                 "headers": {
                     "Accept": "application/json",
                     "X-Api-Key": "server-secret",
@@ -462,7 +501,13 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     assert result["request_preview"] == {
         "method": "GET",
         "url": "https://example.test/api/users/42",
-        "query": {"tenant": "acme", "credential": "secret", "expand": "profile", "count": 3},
+        "query": {
+            "tenant": "acme",
+            "credential": "***",
+            "expand": "profile",
+            "count": 3,
+            "access_token": "***",
+        },
         "headers": {
             "Accept": "application/json",
             "X-Api-Key": "***",
@@ -518,7 +563,11 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
                 "url": "https://api.example.test/items",
                 "body_mapping": {
                     "count": "{{ count }}",
-                    "items": [{"name": "{{ name }}"}],
+                    "credentials": {
+                        "api_key": "{{ api_key }}",
+                        "nested": [{"refresh_token": "{{ refresh_token }}"}],
+                    },
+                    "items": [{"name": "{{ name }}", "password": "{{ password }}"}],
                 },
             }
         ]
@@ -531,17 +580,46 @@ def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
         McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
     )
 
-    result = asyncio.run(runtime.call_tool("create_items", {"count": 2, "name": "cell"}))
+    result = asyncio.run(
+        runtime.call_tool(
+            "create_items",
+            {
+                "count": 2,
+                "name": "cell",
+                "api_key": "body-secret",
+                "refresh_token": "refresh-secret",
+                "password": "pass-secret",
+            },
+        )
+    )
 
     assert result["success"] is True
     assert client.calls == [
         (
             "POST",
             "https://api.example.test/items",
-            {"params": {}, "headers": {}, "json": {"count": 2, "items": [{"name": "cell"}]}},
+            {
+                "params": {},
+                "headers": {},
+                "json": {
+                    "count": 2,
+                    "credentials": {
+                        "api_key": "body-secret",
+                        "nested": [{"refresh_token": "refresh-secret"}],
+                    },
+                    "items": [{"name": "cell", "password": "pass-secret"}],
+                },
+            },
         )
     ]
-    assert result["request_preview"]["body"] == {"count": 2, "items": [{"name": "cell"}]}
+    assert result["request_preview"]["body"] == {
+        "count": 2,
+        "credentials": {
+            "api_key": "***",
+            "nested": [{"refresh_token": "***"}],
+        },
+        "items": [{"name": "cell", "password": "***"}],
+    }
 
 
 def test_api_monitor_runtime_returns_structured_non_2xx(monkeypatch):

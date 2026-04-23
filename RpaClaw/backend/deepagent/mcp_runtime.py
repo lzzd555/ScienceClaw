@@ -17,6 +17,7 @@ from backend.rpa.api_monitor_mcp_contract import (
     render_mapping,
     render_template_value,
     sanitize_headers,
+    sanitize_preview_mapping,
 )
 from backend.storage import get_repository
 
@@ -269,9 +270,9 @@ class ApiMonitorMcpRuntime:
             "request_preview": {
                 "method": method,
                 "url": url,
-                "query": request_query,
+                "query": sanitize_preview_mapping(request_query),
                 "headers": sanitize_headers(request_headers),
-                "body": json_body,
+                "body": sanitize_preview_mapping(json_body) if json_body is not None else None,
             },
         }
 
@@ -315,6 +316,9 @@ def _api_monitor_tool_input_schema(doc: Mapping[str, Any]) -> dict[str, Any]:
     input_schema = doc.get("input_schema")
     if isinstance(input_schema, dict):
         return input_schema
+    legacy_schema = doc.get("request_body_schema")
+    if isinstance(legacy_schema, dict):
+        return legacy_schema
     return {"type": "object", "properties": {}}
 
 
