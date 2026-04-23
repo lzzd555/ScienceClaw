@@ -110,18 +110,32 @@ class _MemoryRepo:
 
 
 class _ApiResponse:
-    is_success = True
-    status_code = 200
-    headers = {"content-type": "application/json"}
-    text = '{"ok": true}'
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        json_body: Any = None,
+        text: str = '{"ok": true}',
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {"content-type": "application/json"}
+        self._json_body = {"ok": True} if json_body is None else json_body
+        self.text = text
+
+    @property
+    def is_success(self) -> bool:
+        return 200 <= self.status_code < 300
 
     def json(self):
-        return {"ok": True}
+        return self._json_body
 
 
 class _ApiMonitorAsyncClient:
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, response: _ApiResponse | None = None, **kwargs: Any) -> None:
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.kwargs = kwargs
+        self.response = response or _ApiResponse()
 
     async def __aenter__(self):
         return self
@@ -131,7 +145,7 @@ class _ApiMonitorAsyncClient:
 
     async def request(self, method: str, url: str, **kwargs: Any):
         self.calls.append((method, url, kwargs))
-        return _ApiResponse()
+        return self.response
 
 
 @asynccontextmanager
@@ -299,7 +313,7 @@ def test_call_tool_result_normalization(monkeypatch):
     }
 
 
-def test_api_monitor_runtime_lists_internal_tools(monkeypatch):
+def test_api_monitor_runtime_lists_only_valid_tools(monkeypatch):
     repo = _MemoryRepo(
         [
             {
@@ -321,6 +335,19 @@ def test_api_monitor_runtime_lists_internal_tools(monkeypatch):
                 "name": "legacy_tool",
                 "request_body_schema": {"type": "object", "properties": {"page": {"type": "integer"}}},
             },
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "",
+                "description": "Empty name",
+                "validation_status": "valid",
+                "input_schema": {"type": "object", "properties": {"ignored": {"type": "string"}}},
+            },
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "pending_tool",
+                "description": "No parsed validation status yet",
+                "input_schema": {"type": "object", "properties": {"ignored": {"type": "string"}}},
+            },
         ]
     )
     monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
@@ -331,9 +358,8 @@ def test_api_monitor_runtime_lists_internal_tools(monkeypatch):
 
     tools = asyncio.run(runtime.list_tools())
 
-    assert [tool.name for tool in tools] == ["list_users", "legacy_tool"]
+    assert [tool.name for tool in tools] == ["list_users"]
     assert tools[0].input_schema["properties"] == {"keyword": {"type": "string"}}
-    assert tools[1].input_schema["properties"] == {"page": {"type": "integer"}}
 
 
 def test_api_monitor_runtime_does_not_call_invalid_tool(monkeypatch):
@@ -351,7 +377,11 @@ def test_api_monitor_runtime_does_not_call_invalid_tool(monkeypatch):
     )
     client = _ApiMonitorAsyncClient()
     monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
-    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+    def fake_async_client(**kwargs):
+        client.kwargs = kwargs
+        return client
+
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", fake_async_client)
 
     runtime = McpSdkRuntimeFactory().create_runtime(
         McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
@@ -363,15 +393,98 @@ def test_api_monitor_runtime_does_not_call_invalid_tool(monkeypatch):
     assert client.calls == []
 
 
-def test_api_monitor_runtime_calls_saved_api(monkeypatch):
+def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     repo = _MemoryRepo(
         [
             {
                 "mcp_server_id": "mcp_api_monitor",
                 "name": "get_user",
+                "validation_status": "valid",
                 "method": "GET",
-                "base_url": "https://example.test",
-                "url_pattern": "/api/users/{id}",
+                "url": "/api/users/{{ id }}",
+                "header_mapping": {
+                    "X-Request-Id": "{{ request_id }}",
+                    "Authorization": "Bearer {{ user_token }}",
+                },
+                "query_mapping": {
+                    "expand": "{{ expand }}",
+                    "count": "{{ count }}",
+                },
+            }
+        ]
+    )
+    client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+    def fake_api_monitor_client(**kwargs):
+        client.kwargs = kwargs
+        return client
+
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", fake_api_monitor_client)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(
+            id="mcp_api_monitor",
+            name="Example MCP",
+            transport="api_monitor",
+            scope="user",
+            url="https://example.test/root?tenant=acme&credential=secret",
+            headers={"Accept": "application/json", "X-Api-Key": "server-secret"},
+            timeout_ms=45000,
+        )
+    )
+
+    result = asyncio.run(
+        runtime.call_tool(
+            "get_user",
+            {"id": "42", "expand": "profile", "count": 3, "request_id": "req-1", "user_token": "user-secret"},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["body"] == {"ok": True}
+    assert client.calls == [
+        (
+            "GET",
+            "https://example.test/api/users/42",
+            {
+                "params": {"tenant": "acme", "credential": "secret", "expand": "profile", "count": 3},
+                "headers": {
+                    "Accept": "application/json",
+                    "X-Api-Key": "server-secret",
+                    "X-Request-Id": "req-1",
+                    "Authorization": "Bearer user-secret",
+                },
+            },
+        )
+    ]
+    assert client.kwargs["timeout"] == 45.0
+    assert result["request_preview"] == {
+        "method": "GET",
+        "url": "https://example.test/api/users/42",
+        "query": {"tenant": "acme", "credential": "secret", "expand": "profile", "count": 3},
+        "headers": {
+            "Accept": "application/json",
+            "X-Api-Key": "***",
+            "X-Request-Id": "req-1",
+            "Authorization": "***",
+        },
+        "body": None,
+    }
+
+
+def test_api_monitor_runtime_posts_rendered_body_mapping(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "create_items",
+                "validation_status": "valid",
+                "method": "POST",
+                "url": "https://api.example.test/items",
+                "body_mapping": {
+                    "count": "{{ count }}",
+                    "items": [{"name": "{{ name }}"}],
+                },
             }
         ]
     )
@@ -383,10 +496,51 @@ def test_api_monitor_runtime_calls_saved_api(monkeypatch):
         McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
     )
 
-    result = asyncio.run(runtime.call_tool("get_user", {"id": "42", "expand": "profile"}))
+    result = asyncio.run(runtime.call_tool("create_items", {"count": 2, "name": "cell"}))
 
     assert result["success"] is True
-    assert result["body"] == {"ok": True}
     assert client.calls == [
-        ("GET", "https://example.test/api/users/42", {"params": {"expand": "profile"}})
+        (
+            "POST",
+            "https://api.example.test/items",
+            {"params": {}, "headers": {}, "json": {"count": 2, "items": [{"name": "cell"}]}},
+        )
     ]
+    assert result["request_preview"]["body"] == {"count": 2, "items": [{"name": "cell"}]}
+
+
+def test_api_monitor_runtime_returns_structured_non_2xx(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "get_user",
+                "validation_status": "valid",
+                "method": "GET",
+                "url": "/api/users/{{ id }}",
+            }
+        ]
+    )
+    client = _ApiMonitorAsyncClient(
+        response=_ApiResponse(status_code=404, json_body={"error": "not found"}, text='{"error": "not found"}')
+    )
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(
+            id="mcp_api_monitor",
+            name="Example MCP",
+            transport="api_monitor",
+            scope="user",
+            url="https://example.test",
+            headers={"Authorization": "Bearer server-secret"},
+        )
+    )
+
+    result = asyncio.run(runtime.call_tool("get_user", {"id": "missing"}))
+
+    assert result["success"] is False
+    assert result["status_code"] == 404
+    assert result["body"] == {"error": "not found"}
+    assert result["request_preview"]["headers"] == {"Authorization": "***"}

@@ -21,6 +21,11 @@ async def _load_user_mcp_servers(user_id: str) -> List[McpServerDefinition]:
     servers: List[McpServerDefinition] = []
     for doc in docs:
         endpoint = doc.get("endpoint_config") or {}
+        endpoint_url = endpoint.get("url") or endpoint.get("base_url", "")
+        endpoint_query = endpoint.get("query") or {}
+        if endpoint_query:
+            endpoint_url = append_query_params(endpoint_url, endpoint_query)
+        default_timeout_ms = 30000 if doc["transport"] == "api_monitor" else 20000
         servers.append(
             McpServerDefinition(
                 id=str(doc["_id"]),
@@ -30,13 +35,13 @@ async def _load_user_mcp_servers(user_id: str) -> List[McpServerDefinition]:
                 scope="user",
                 enabled=doc.get("enabled", True),
                 default_enabled=doc.get("default_enabled", False),
-                url=endpoint.get("url", ""),
+                url=endpoint_url,
                 command=endpoint.get("command", ""),
                 args=endpoint.get("args", []),
                 cwd=endpoint.get("cwd", ""),
                 headers=endpoint.get("headers", {}),
                 env=endpoint.get("env", {}),
-                timeout_ms=endpoint.get("timeout_ms", 20000),
+                timeout_ms=endpoint.get("timeout_ms", default_timeout_ms),
                 credential_binding=doc.get("credential_binding") or {},
                 tool_policy=doc.get("tool_policy", {}),
             )

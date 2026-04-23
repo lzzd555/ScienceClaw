@@ -9,7 +9,16 @@ import yaml
 
 TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 TEMPLATE_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+SINGLE_TEMPLATE_RE = re.compile(r"^\s*{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}\s*$")
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "token",
+}
 
 
 @dataclass
@@ -144,6 +153,39 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
     )
 
 
+def render_template_value(value: Any, arguments: dict[str, Any] | Any) -> Any:
+    if isinstance(value, str):
+        single_match = SINGLE_TEMPLATE_RE.match(value)
+        if single_match:
+            return arguments.get(single_match.group(1))
+
+        def replace(match: re.Match[str]) -> str:
+            argument_value = arguments.get(match.group(1), "")
+            return "" if argument_value is None else str(argument_value)
+
+        return TEMPLATE_RE.sub(replace, value)
+    if isinstance(value, dict):
+        return render_mapping(value, arguments)
+    if isinstance(value, list):
+        return [render_template_value(item, arguments) for item in value]
+    return value
+
+
+def render_mapping(mapping: dict[str, Any] | Any, arguments: dict[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(mapping, dict):
+        return {}
+    return {key: render_template_value(value, arguments) for key, value in mapping.items()}
+
+
+def sanitize_headers(headers: dict[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        key: "***" if _is_sensitive_header_name(key) else value
+        for key, value in headers.items()
+    }
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -160,6 +202,11 @@ def _extract_template_variables(value: str) -> list[str]:
             seen.add(variable)
             variables.append(variable)
     return variables
+
+
+def _is_sensitive_header_name(name: str) -> bool:
+    normalized = str(name).strip().lower()
+    return normalized in SENSITIVE_HEADER_NAMES or normalized.endswith("-token")
 
 
 def _validate_mapping_section(

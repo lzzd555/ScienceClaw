@@ -83,6 +83,36 @@ def test_load_user_mcp_servers_stringifies_mongo_like_id(monkeypatch):
     assert [server.id for server in servers] == ["user-mcp-1"]
 
 
+def test_load_user_api_monitor_mcp_defaults_enabled_and_endpoint_config(monkeypatch):
+    repo = FakeRepo(
+        [
+            {
+                "_id": "mcp_api_monitor",
+                "name": "API Monitor",
+                "transport": "api_monitor",
+                "default_enabled": True,
+                "endpoint_config": {
+                    "base_url": "https://api.example.test/v1",
+                    "headers": {"X-Api-Key": "server-secret"},
+                    "query": {"tenant": "acme"},
+                    "timeout_ms": 15000,
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr(mcp_registry, "get_repository", lambda _: repo)
+
+    servers = asyncio.run(mcp_registry._load_user_mcp_servers("u1"))
+
+    assert len(servers) == 1
+    assert servers[0].id == "mcp_api_monitor"
+    assert servers[0].transport == "api_monitor"
+    assert servers[0].default_enabled is True
+    assert servers[0].url == "https://api.example.test/v1?tenant=acme"
+    assert servers[0].headers == {"X-Api-Key": "server-secret"}
+    assert servers[0].timeout_ms == 15000
+
+
 def test_build_effective_mcp_servers_excludes_disabled_user_servers(monkeypatch):
     system_server = McpServerDefinition(
         id="pubmed",

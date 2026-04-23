@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import httpx
 from mcp import ClientSession, StdioServerParameters
@@ -13,6 +13,11 @@ from mcp.client.streamable_http import streamable_http_client
 
 from backend.config import settings
 from backend.mcp.models import McpServerDefinition
+from backend.rpa.api_monitor_mcp_contract import (
+    render_mapping,
+    render_template_value,
+    sanitize_headers,
+)
 from backend.storage import get_repository
 
 
@@ -205,7 +210,7 @@ class ApiMonitorMcpRuntime:
         self._tools = get_repository("api_monitor_mcp_tools")
 
     async def list_tools(self) -> Sequence[McpToolDefinition | Mapping[str, Any]]:
-        docs = await self._tools.find_many({"mcp_server_id": self._server.id})
+        docs = await self._tools.find_many({"mcp_server_id": self._server.id, "validation_status": "valid"})
         return [
             McpToolDefinition(
                 name=str(doc.get("name", "")),
@@ -213,27 +218,43 @@ class ApiMonitorMcpRuntime:
                 input_schema=_api_monitor_tool_input_schema(doc),
             )
             for doc in docs
-            if doc.get("name") and not _api_monitor_tool_is_invalid(doc)
+            if str(doc.get("name", "")).strip()
         ]
 
     async def call_tool(self, tool_name: str, arguments: Mapping[str, Any]) -> Any:
-        docs = await self._tools.find_many({"mcp_server_id": self._server.id, "name": tool_name})
-        doc = next((item for item in docs if not _api_monitor_tool_is_invalid(item)), None)
+        docs = await self._tools.find_many(
+            {"mcp_server_id": self._server.id, "name": tool_name, "validation_status": "valid"}
+        )
+        doc = next((item for item in docs if _api_monitor_tool_is_valid(item)), None)
         if not doc:
             return {"success": False, "error": f"API Monitor tool '{tool_name}' not found"}
 
         method = str(doc.get("method") or "GET").upper()
-        url = _build_api_monitor_url(str(doc.get("base_url") or ""), str(doc.get("url_pattern") or ""), arguments)
+        rendered_arguments = dict(arguments)
+        url = _build_api_monitor_url(
+            _api_monitor_base_url(self._server),
+            _api_monitor_tool_url(doc),
+            rendered_arguments,
+        )
         if not url:
             return {"success": False, "error": f"API Monitor tool '{tool_name}' has no callable URL"}
 
-        path_keys = _path_parameter_names(str(doc.get("url_pattern") or ""))
-        remaining_args = {key: value for key, value in dict(arguments).items() if key not in path_keys}
-        async with httpx.AsyncClient(timeout=_timeout_seconds(self._server)) as client:
-            if method in {"POST", "PUT", "PATCH"}:
-                response = await client.request(method, url, json=remaining_args)
-            else:
-                response = await client.request(method, url, params=remaining_args)
+        request_query = _api_monitor_base_query(self._server)
+        request_query.update(render_mapping(doc.get("query_mapping"), rendered_arguments))
+        request_headers: dict[str, Any] = dict(self._server.headers)
+        request_headers.update(render_mapping(doc.get("header_mapping"), rendered_arguments))
+        request_body = render_mapping(doc.get("body_mapping"), rendered_arguments)
+        json_body = request_body or None
+
+        request_kwargs: dict[str, Any] = {
+            "params": request_query,
+            "headers": request_headers,
+        }
+        if json_body is not None:
+            request_kwargs["json"] = json_body
+
+        async with httpx.AsyncClient(timeout=_api_monitor_timeout_seconds(self._server)) as client:
+            response = await client.request(method, url, **request_kwargs)
 
         content_type = response.headers.get("content-type", "")
         try:
@@ -245,6 +266,13 @@ class ApiMonitorMcpRuntime:
             "status_code": response.status_code,
             "headers": dict(response.headers),
             "body": body,
+            "request_preview": {
+                "method": method,
+                "url": url,
+                "query": request_query,
+                "headers": sanitize_headers(request_headers),
+                "body": json_body,
+            },
         }
 
 
@@ -268,7 +296,7 @@ def _path_parameter_names(url_pattern: str) -> set[str]:
 
 
 def _build_api_monitor_url(base_url: str, url_pattern: str, arguments: Mapping[str, Any]) -> str:
-    rendered = url_pattern
+    rendered = str(render_template_value(url_pattern, dict(arguments)) or "")
     for key in _path_parameter_names(url_pattern):
         if key in arguments:
             rendered = rendered.replace("{" + key + "}", str(arguments[key]))
@@ -276,21 +304,41 @@ def _build_api_monitor_url(base_url: str, url_pattern: str, arguments: Mapping[s
         return rendered
     if not base_url:
         return ""
-    return urljoin(base_url.rstrip("/") + "/", rendered.lstrip("/"))
+    return urljoin(base_url.rstrip("/") + "/", rendered if rendered.startswith("/") else rendered.lstrip("/"))
 
 
-def _api_monitor_tool_is_invalid(doc: Mapping[str, Any]) -> bool:
-    return doc.get("validation_status") == "invalid"
+def _api_monitor_tool_is_valid(doc: Mapping[str, Any]) -> bool:
+    return doc.get("validation_status") == "valid"
 
 
 def _api_monitor_tool_input_schema(doc: Mapping[str, Any]) -> dict[str, Any]:
     input_schema = doc.get("input_schema")
     if isinstance(input_schema, dict):
         return input_schema
-    legacy_schema = doc.get("request_body_schema")
-    if isinstance(legacy_schema, dict):
-        return legacy_schema
-    return {}
+    return {"type": "object", "properties": {}}
+
+
+def _api_monitor_tool_url(doc: Mapping[str, Any]) -> str:
+    url = str(doc.get("url") or "")
+    if url:
+        return url
+    return str(doc.get("url_pattern") or "")
+
+
+def _api_monitor_base_url(server: McpServerDefinition) -> str:
+    parts = urlsplit(server.url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", parts.fragment))
+
+
+def _api_monitor_base_query(server: McpServerDefinition) -> dict[str, Any]:
+    return dict(parse_qsl(urlsplit(server.url).query, keep_blank_values=True))
+
+
+def _api_monitor_timeout_seconds(server: McpServerDefinition) -> float:
+    timeout_ms = server.timeout_ms
+    if timeout_ms == 20000:
+        timeout_ms = 30000
+    return max(timeout_ms / 1000.0, 0.001)
 
 
 def coerce_mcp_tool_definition(tool: McpToolDefinition | Mapping[str, Any]) -> McpToolDefinition:
