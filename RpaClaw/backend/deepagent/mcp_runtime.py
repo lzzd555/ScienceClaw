@@ -270,7 +270,7 @@ class ApiMonitorMcpRuntime:
             "body": body,
             "request_preview": {
                 "method": method,
-                "url": sanitize_preview_url(url),
+                "url": sanitize_preview_url(url, url_template=_api_monitor_tool_url(doc), arguments=rendered_arguments),
                 "query": sanitize_preview_mapping(request_query),
                 "headers": sanitize_headers(request_headers),
                 "body": sanitize_preview_mapping(json_body) if json_body is not None else None,

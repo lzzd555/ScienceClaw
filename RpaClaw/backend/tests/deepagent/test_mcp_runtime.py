@@ -518,6 +518,44 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
     }
 
 
+def test_api_monitor_runtime_redacts_path_and_fragment_preview(monkeypatch):
+    repo = _MemoryRepo(
+        [
+            {
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "get_session",
+                "validation_status": "valid",
+                "method": "GET",
+                "url": "https://api.example.test/sessions/{{ accessToken }}/users/{{ userId }}#access_token={{ access_token }}&state=x",
+            }
+        ]
+    )
+    client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+
+    runtime = McpSdkRuntimeFactory().create_runtime(
+        McpServerDefinition(id="mcp_api_monitor", name="Example MCP", transport="api_monitor", scope="user")
+    )
+
+    result = asyncio.run(
+        runtime.call_tool(
+            "get_session",
+            {"accessToken": "session-secret", "userId": "42", "access_token": "frag-secret"},
+        )
+    )
+
+    assert result["success"] is True
+    assert client.calls == [
+        (
+            "GET",
+            "https://api.example.test/sessions/session-secret/users/42#access_token=frag-secret&state=x",
+            {"params": {}, "headers": {}},
+        )
+    ]
+    assert result["request_preview"]["url"] == "https://api.example.test/sessions/***/users/42#access_token=***&state=x"
+
+
 def test_api_monitor_runtime_falls_back_to_tool_base_url(monkeypatch):
     repo = _MemoryRepo(
         [

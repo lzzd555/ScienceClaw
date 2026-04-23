@@ -200,24 +200,20 @@ def sanitize_preview_mapping(value: dict[str, Any] | list[Any] | Any) -> dict[st
     return _sanitize_preview_value(value)
 
 
-def sanitize_preview_url(url: str) -> str:
+def sanitize_preview_url(
+    url: str,
+    *,
+    url_template: str = "",
+    arguments: dict[str, Any] | None = None,
+) -> str:
     if not url:
         return ""
 
     parsed = urlsplit(url)
-    if not parsed.query:
-        return url
-
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    sanitized_query = urlencode(
-        [
-            (key, "***" if _is_sensitive_preview_key_name(key) else value)
-            for key, value in query_pairs
-        ],
-        doseq=True,
-        safe="*",
-    )
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, sanitized_query, parsed.fragment))
+    sanitized_path = _sanitize_preview_path(parsed.path, url_template, arguments or {})
+    sanitized_query = _sanitize_preview_query_string(parsed.query)
+    sanitized_fragment = _sanitize_preview_fragment(parsed.fragment)
+    return urlunsplit((parsed.scheme, parsed.netloc, sanitized_path, sanitized_query, sanitized_fragment))
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -262,6 +258,66 @@ def _is_sensitive_preview_key_name(name: str) -> bool:
     camel_spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name).strip())
     parts = re.split(r"[^a-z0-9]+", camel_spaced.lower())
     return any(part in SENSITIVE_PREVIEW_KEY_NAMES or part in SENSITIVE_HEADER_NAMES for part in parts if part)
+
+
+def _sanitize_preview_query_string(query: str) -> str:
+    if not query:
+        return ""
+    query_pairs = parse_qsl(query, keep_blank_values=True)
+    return urlencode(
+        [
+            (key, "***" if _is_sensitive_preview_key_name(key) else value)
+            for key, value in query_pairs
+        ],
+        doseq=True,
+        safe="*",
+    )
+
+
+def _sanitize_preview_fragment(fragment: str) -> str:
+    if not fragment:
+        return ""
+    if "=" not in fragment and "&" not in fragment:
+        return fragment
+    return _sanitize_preview_query_string(fragment)
+
+
+def _sanitize_preview_path(path: str, url_template: str, arguments: dict[str, Any]) -> str:
+    if not path:
+        return ""
+
+    template_segments = urlsplit(url_template).path.split("/") if url_template else []
+    path_segments = path.split("/")
+    sanitized_segments: list[str] = []
+    mask_next_segment = False
+
+    for index, segment in enumerate(path_segments):
+        if not segment:
+            sanitized_segments.append(segment)
+            continue
+
+        template_segment = template_segments[index] if index < len(template_segments) else ""
+        sanitized_segment = segment
+
+        if mask_next_segment:
+            sanitized_segment = "***"
+            mask_next_segment = False
+        elif template_segment:
+            single_match = SINGLE_TEMPLATE_RE.match(template_segment)
+            if single_match and _is_sensitive_preview_key_name(single_match.group(1)):
+                sanitized_segment = "***"
+            elif _is_sensitive_preview_key_name(template_segment):
+                mask_next_segment = True
+        elif "=" in segment:
+            key, value = segment.split("=", 1)
+            if _is_sensitive_preview_key_name(key):
+                sanitized_segment = f"{key}=***"
+        elif _is_sensitive_preview_key_name(segment):
+            mask_next_segment = True
+
+        sanitized_segments.append(sanitized_segment)
+
+    return "/".join(sanitized_segments)
 
 
 def _validate_mapping_section(
