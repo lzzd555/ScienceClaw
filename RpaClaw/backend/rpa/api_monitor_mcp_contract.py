@@ -15,6 +15,7 @@ ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 @dataclass
 class ApiMonitorToolContract:
     valid: bool
+    yaml_definition: str = ""
     name: str = ""
     description: str = ""
     method: str = ""
@@ -26,10 +27,11 @@ class ApiMonitorToolContract:
     body_mapping: dict[str, Any] = field(default_factory=dict)
     headers_mapping: dict[str, Any] = field(default_factory=dict)
     validation_errors: list[str] = field(default_factory=list)
-    raw_definition: dict[str, Any] = field(default_factory=dict)
+    raw_definition: Any = field(default_factory=dict)
 
     def to_document(self) -> dict[str, Any]:
         return {
+            "yaml_definition": self.yaml_definition,
             "name": self.name,
             "description": self.description,
             "method": self.method,
@@ -52,11 +54,17 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
     except Exception as exc:  # noqa: BLE001
         return ApiMonitorToolContract(
             valid=False,
+            yaml_definition=yaml_definition,
             validation_errors=[f"YAML parse error: {exc}"],
         )
 
     if not isinstance(parsed, dict):
-        parsed = {}
+        return ApiMonitorToolContract(
+            valid=False,
+            yaml_definition=yaml_definition,
+            raw_definition=parsed,
+            validation_errors=["YAML root must be an object"],
+        )
 
     errors: list[str] = []
     name = _string_value(parsed.get("name"))
@@ -78,34 +86,49 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
     if not url:
         errors.append("url is required")
 
-    parameters = _as_dict(parsed.get("parameters"))
+    parameters_raw = parsed.get("parameters")
+    parameters = _as_dict(parameters_raw)
     input_schema = parameters
     properties = _as_dict(parameters.get("properties")) if parameters else {}
-    if not parameters:
+    if parameters_raw is None:
         errors.append("parameters is required")
+    elif not isinstance(parameters_raw, dict):
+        errors.append("parameters must be an object")
     elif _string_value(parameters.get("type")) != "object":
         errors.append("parameters.type must be object")
     if parameters and not isinstance(parameters.get("properties"), dict):
         errors.append("parameters.properties must be an object")
 
-    request = _as_dict(parsed.get("request"))
-    path_mapping = _as_dict(request.get("path")) if request else {}
-    query_mapping = _as_dict(request.get("query")) if request else {}
-    body_mapping = _as_dict(request.get("body")) if request else {}
-    headers_mapping = _as_dict(request.get("headers")) if request else {}
+    request_raw = parsed.get("request")
+    request: dict[str, Any] = {}
+    if request_raw is None:
+        pass
+    elif isinstance(request_raw, dict):
+        request = request_raw
+    else:
+        errors.append("request must be an object")
 
-    for section_name, mapping in (
-        ("request.path", path_mapping),
-        ("request.query", query_mapping),
-        ("request.body", body_mapping),
-        ("request.headers", headers_mapping),
-    ):
-        errors.extend(_validate_mapping_variables(section_name, mapping, properties))
+    path_mapping, path_errors = _validate_mapping_section("request.path", request.get("path"), properties)
+    query_mapping, query_errors = _validate_mapping_section("request.query", request.get("query"), properties)
+    body_mapping, body_errors = _validate_mapping_section("request.body", request.get("body"), properties)
+    headers_mapping, headers_errors = _validate_mapping_section("request.headers", request.get("headers"), properties)
+    errors.extend(path_errors)
+    errors.extend(query_errors)
+    errors.extend(body_errors)
+    errors.extend(headers_errors)
 
-    response_schema = _as_dict(parsed.get("response"))
+    response_raw = parsed.get("response")
+    if response_raw is None:
+        response_schema = {}
+    elif isinstance(response_raw, dict):
+        response_schema = response_raw
+    else:
+        response_schema = {}
+        errors.append("response must be an object")
 
     return ApiMonitorToolContract(
         valid=not errors,
+        yaml_definition=yaml_definition,
         name=name,
         description=description,
         method=method,
@@ -129,8 +152,26 @@ def _string_value(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _extract_template_variables(value: str) -> set[str]:
-    return set(TEMPLATE_RE.findall(value))
+def _extract_template_variables(value: str) -> list[str]:
+    seen: set[str] = set()
+    variables: list[str] = []
+    for variable in TEMPLATE_RE.findall(value):
+        if variable not in seen:
+            seen.add(variable)
+            variables.append(variable)
+    return variables
+
+
+def _validate_mapping_section(
+    prefix: str,
+    section_value: Any,
+    allowed_properties: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    if section_value is None:
+        return {}, []
+    if not isinstance(section_value, dict):
+        return {}, [f"{prefix} must be an object"]
+    return section_value, _validate_mapping_variables(prefix, section_value, allowed_properties)
 
 
 def _validate_mapping_variables(
