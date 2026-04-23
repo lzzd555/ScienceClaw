@@ -206,7 +206,8 @@
                   <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2">
                       <h3 class="truncate text-base font-bold text-[var(--text-primary)]">{{ item.server.name }}</h3>
-                      <span class="badge-violet">{{ t('MCP server') }}</span>
+                      <span v-if="item.server.transport === 'api_monitor'" class="badge-teal">{{ t('API Monitor MCP') }}</span>
+                      <span v-else class="badge-violet">{{ t('MCP server') }}</span>
                       <span class="badge-muted">{{ item.server.transport }}</span>
                     </div>
                     <p class="mt-2 line-clamp-2 text-sm leading-6 text-[var(--text-secondary)]">{{ item.server.description || t('No description') }}</p>
@@ -240,7 +241,7 @@
                 </div>
                 <div v-if="item.kind === 'server'" class="mcp-actions">
                   <span class="status-pill" :class="item.server.enabled ? 'status-on' : 'status-warn'">{{ item.server.enabled ? t('Enabled') : t('Disabled') }}</span>
-                  <button class="action-muted" @click="openEditDialog(item.server)">
+                  <button v-if="item.server.transport !== 'api_monitor'" class="action-muted" @click="openEditDialog(item.server)">
                     <Pencil :size="14" class="inline" />
                     {{ t('Edit') }}
                   </button>
@@ -270,6 +271,12 @@
     </main>
 
     <Teleport to="body">
+      <ApiMonitorMcpDetailDialog
+        v-model:open="apiMonitorDetailOpen"
+        :server="selectedApiMonitorServer"
+        @server-updated="handleApiMonitorServerUpdated"
+      />
+
       <div v-if="formOpen" class="fixed inset-0 z-[9999] flex items-center justify-center px-4 py-6">
         <div class="absolute inset-0 bg-slate-950/55 backdrop-blur-sm" @click="closeFormDialog"></div>
         <div class="relative z-10 flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] shadow-2xl dark:border-white/10 dark:bg-[#101115]">
@@ -641,6 +648,7 @@ import {
   X,
 } from 'lucide-vue-next';
 import { useRoute, useRouter } from 'vue-router';
+import ApiMonitorMcpDetailDialog from '@/components/tools/ApiMonitorMcpDetailDialog.vue';
 import { getTools, blockTool, deleteTool as apiDeleteTool } from '../api/agent';
 import type { ExternalToolItem } from '../types/response';
 import { listCredentials, type Credential } from '../api/credential';
@@ -695,6 +703,8 @@ const savingForm = ref(false);
 const showAdvancedQuery = ref(false);
 const toolsDialogOpen = ref(false);
 const selectedServer = ref<McpServerItem | null>(null);
+const apiMonitorDetailOpen = ref(false);
+const selectedApiMonitorServer = ref<McpServerItem | null>(null);
 const discoveredTools = ref<McpToolDiscoveryItem[]>([]);
 const rpaMcpTools = ref<RpaMcpToolItem[]>([]);
 const gatewayTestDialogOpen = ref(false);
@@ -838,6 +848,7 @@ const resetForm = () => {
 };
 
 const applyServerToForm = (server: McpServerItem) => {
+  if (server.transport === 'api_monitor') return;
   const endpoint = server.endpoint_config || {};
   form.name = server.name;
   form.description = server.description || '';
@@ -897,6 +908,7 @@ const getExternalToolInitial = (tool: ExternalToolItem) => tool.name.trim().char
 
 const formatServerEndpointText = (server: McpServerItem) => {
   const endpoint = formatMcpServerEndpoint(server);
+  if (endpoint === 'Internal API Monitor MCP') return t('Internal API Monitor MCP');
   return endpoint === 'No endpoint' ? t('No endpoint') : endpoint;
 };
 
@@ -1059,6 +1071,11 @@ const runTest = async (server: McpServerItem) => {
 };
 
 const openToolsDialog = async (server: McpServerItem) => {
+  if (server.transport === 'api_monitor') {
+    selectedApiMonitorServer.value = server;
+    apiMonitorDetailOpen.value = true;
+    return;
+  }
   try {
     const result = await discoverMcpTools(server.server_key);
     selectedServer.value = server;
@@ -1074,6 +1091,13 @@ const closeToolsDialog = () => {
   toolsDialogOpen.value = false;
   selectedServer.value = null;
   discoveredTools.value = [];
+};
+
+const handleApiMonitorServerUpdated = (updatedServer: McpServerItem) => {
+  selectedApiMonitorServer.value = updatedServer;
+  mcpServers.value = mcpServers.value.map((server) => (
+    server.id === updatedServer.id ? updatedServer : server
+  ));
 };
 
 
@@ -1262,6 +1286,7 @@ const deletePrivateServer = async (server: McpServerItem) => {
 
 .badge-blue,
 .badge-violet,
+.badge-teal,
 .badge-muted {
   border-radius: 0.375rem;
   padding: 0.125rem 0.5rem;
@@ -1280,6 +1305,13 @@ const deletePrivateServer = async (server: McpServerItem) => {
 .badge-violet {
   background: rgba(237, 233, 254, 0.9);
   color: rgb(109, 40, 217);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.badge-teal {
+  background: rgba(204, 251, 241, 0.9);
+  color: rgb(15, 118, 110);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -1417,6 +1449,11 @@ const deletePrivateServer = async (server: McpServerItem) => {
   color: rgb(221, 214, 254);
 }
 
+.dark .badge-teal {
+  background: rgba(45, 212, 191, 0.12);
+  color: rgb(153, 246, 228);
+}
+
 .dark .badge-muted,
 .dark .status-muted {
   background: rgba(255, 255, 255, 0.1);
@@ -1463,4 +1500,3 @@ const deletePrivateServer = async (server: McpServerItem) => {
   background: rgba(255, 255, 255, 0.06);
 }
 </style>
-
