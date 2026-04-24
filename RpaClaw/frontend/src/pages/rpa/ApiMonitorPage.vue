@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal } from 'lucide-vue-next';
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   startSession,
@@ -12,6 +12,7 @@ import {
   updateTool as apiUpdateTool,
   deleteTool as apiDeleteTool,
   publishMcpToolBundle,
+  updateToolSelection as apiUpdateToolSelection,
   type ApiMonitorSession,
   type ApiToolDefinition,
 } from '@/api/apiMonitor';
@@ -34,6 +35,13 @@ const sessionId = ref<string>('');
 const session = ref<ApiMonitorSession | null>(null);
 const urlInput = ref('https://');
 const tools = ref<ApiToolDefinition[]>([]);
+const adoptedTools = computed(() => tools.value.filter((tool) => tool.selected));
+const notAdoptedTools = computed(() => tools.value.filter((tool) => !tool.selected));
+const adoptedToolCount = computed(() => adoptedTools.value.length);
+const toolGroups = computed(() => [
+  { key: 'adopted', title: '采用', items: adoptedTools.value },
+  { key: 'not-adopted', title: '不采用', items: notAdoptedTools.value },
+]);
 const terminalLines = ref<{ html: string }[]>([]);
 const isRecording = ref(false);
 const isAnalyzing = ref(false);
@@ -457,6 +465,20 @@ const handleDeleteTool = async (toolId: string) => {
   }
 };
 
+const toggleToolSelection = async (tool: ApiToolDefinition, selected: boolean) => {
+  if (!sessionId.value) return;
+  try {
+    const updated = await apiUpdateToolSelection(sessionId.value, tool.id, selected);
+    const idx = tools.value.findIndex((item) => item.id === tool.id);
+    if (idx >= 0) {
+      tools.value[idx] = updated;
+    }
+    addLog('INFO', `${selected ? '已采用' : '已取消采用'}: ${tool.name || tool.url_pattern}`);
+  } catch (err: any) {
+    addLog('ERROR', `更新采用状态失败: ${err.message}`);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Publish as MCP
 // ---------------------------------------------------------------------------
@@ -472,14 +494,14 @@ const getDefaultMcpName = () => {
 };
 
 const openPublishDialog = () => {
-  if (!sessionId.value || !tools.value.length) return;
+  if (!sessionId.value || !adoptedToolCount.value) return;
   publishForm.mcpName = publishForm.mcpName || getDefaultMcpName();
   publishForm.description = publishForm.description || session.value?.target_url || urlInput.value || '';
   publishDialogOpen.value = true;
 };
 
 const submitPublish = async (confirmOverwrite = false) => {
-  if (!sessionId.value || !tools.value.length || !publishForm.mcpName.trim()) return;
+  if (!sessionId.value || !adoptedToolCount.value || !publishForm.mcpName.trim()) return;
   isPublishing.value = true;
   try {
     addLog('INFO', '正在发布 MCP 工具...');
@@ -517,6 +539,21 @@ const methodColors: Record<string, string> = {
 };
 
 const getMethodClass = (method: string) => methodColors[method.toUpperCase()] || 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+
+const confidenceLabels: Record<string, string> = {
+  high: '高置信',
+  medium: '中置信',
+  low: '低置信',
+};
+
+const confidenceClasses: Record<string, string> = {
+  high: 'bg-emerald-500/15 text-emerald-600 border-emerald-500/25 dark:text-emerald-300',
+  medium: 'bg-amber-500/15 text-amber-600 border-amber-500/25 dark:text-amber-300',
+  low: 'bg-slate-500/15 text-slate-600 border-slate-500/25 dark:text-slate-300',
+};
+
+const getConfidenceLabel = (confidence: string) => confidenceLabels[confidence] || '中置信';
+const getConfidenceClass = (confidence: string) => confidenceClasses[confidence] || confidenceClasses.medium;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -601,7 +638,7 @@ onBeforeUnmount(() => {
               </button>
               <button
                 @click="openPublishDialog"
-                :disabled="!sessionId || !tools.length || isPublishing"
+                :disabled="!sessionId || !adoptedToolCount || isPublishing"
                 class="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-lg transition hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
               >
                 <Save :size="16" />
@@ -655,7 +692,7 @@ onBeforeUnmount(() => {
         <!-- Status Bar -->
         <div class="h-10 border-t border-slate-100 dark:border-white/10 bg-white dark:bg-[#1a1a1a] flex items-center px-4 gap-4 text-xs text-[var(--text-secondary)] flex-shrink-0">
           <div class="flex items-center gap-1.5 font-medium">
-            <span class="font-mono font-bold" :class="tools.length > 0 ? 'text-sky-500' : 'text-[var(--text-tertiary)]'">{{ tools.length }}</span> 个工具
+            <span class="font-mono font-bold" :class="tools.length > 0 ? 'text-sky-500' : 'text-[var(--text-tertiary)]'">{{ adoptedToolCount }}/{{ tools.length }}</span> 个工具
           </div>
           <div class="w-px h-3 bg-slate-200 dark:bg-white/10"></div>
           <div class="flex items-center gap-1.5 font-medium">
@@ -717,48 +754,70 @@ onBeforeUnmount(() => {
             <div v-if="tools.length === 0" class="h-full flex flex-col items-center justify-center text-[var(--text-tertiary)]">
               <Wrench :size="40" class="mb-3 opacity-30" />
               <p class="text-sm font-medium text-[var(--text-secondary)] mb-1">尚未检测到工具</p>
-              <p class="text-xs">点击“分析”或“录制”以发现 API 工具。</p>
+              <p class="text-xs">点击"分析"或"录制"以发现 API 工具。</p>
             </div>
 
-            <!-- Tool cards -->
-            <div
-              v-for="tool in tools"
-              :key="tool.id"
-              class="rounded-2xl border border-slate-200 bg-slate-50/80 shadow-sm overflow-hidden dark:border-white/10 dark:bg-white/[0.04]"
-            >
-              <!-- Collapsed view -->
-              <div
-                class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
-                @click="toggleToolExpand(tool.id)"
-              >
-                <span
-                  class="text-[10px] font-bold px-2 py-0.5 rounded-md"
-                  :class="getMethodClass(tool.method)"
+            <!-- Grouped tool cards -->
+            <template v-for="group in toolGroups" :key="group.key">
+              <div v-if="group.items.length" class="space-y-2">
+                <div class="flex items-center justify-between px-1 text-[11px] font-bold text-[var(--text-tertiary)]">
+                  <span>{{ group.title }}</span>
+                  <span>{{ group.items.length }}</span>
+                </div>
+                <div
+                  v-for="tool in group.items"
+                  :key="tool.id"
+                  class="rounded-2xl border border-slate-200 bg-slate-50/80 shadow-sm overflow-hidden dark:border-white/10 dark:bg-white/[0.04]"
                 >
-                  {{ tool.method }}
-                </span>
-                <span class="text-[11px] font-mono text-[var(--text-primary)] flex-1 truncate">{{ tool.url_pattern }}</span>
-                <ChevronDown :size="16" class="text-[var(--text-tertiary)] transition-transform" :class="expandedToolId === tool.id ? 'rotate-180' : ''" />
-              </div>
-
-              <!-- Expanded view -->
-              <div v-if="expandedToolId === tool.id" class="border-t border-slate-100 dark:border-white/10 px-4 py-4 bg-white dark:bg-transparent">
-                <p class="text-xs text-[var(--text-secondary)] mb-3 font-medium">{{ tool.description }}</p>
-                <textarea
-                  v-model="toolEdits[tool.id]"
-                  class="w-full h-40 bg-[#f8fafc] dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-xl text-[11px] font-mono text-[var(--text-primary)] p-3 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 resize-y transition-shadow"
-                  spellcheck="false"
-                ></textarea>
-                <div class="flex justify-end gap-2 mt-3">
-                  <button
-                    @click="handleDeleteTool(tool.id)"
-                    class="rounded-xl border border-red-200 px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 dark:border-red-500/20 dark:text-red-400 dark:hover:bg-red-500/10"
+                  <div
+                    class="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                    @click="toggleToolExpand(tool.id)"
                   >
-                    删除
-                  </button>
+                    <button
+                      class="shrink-0 rounded-lg border px-2 py-1 text-[10px] font-bold transition"
+                      :class="tool.selected ? 'border-emerald-400 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' : 'border-slate-300 bg-white text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-300'"
+                      @click.stop="toggleToolSelection(tool, !tool.selected)"
+                    >
+                      {{ tool.selected ? '采用' : '不采用' }}
+                    </button>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded-md" :class="getMethodClass(tool.method)">
+                      {{ tool.method }}
+                    </span>
+                    <span class="text-[11px] font-mono text-[var(--text-primary)] flex-1 truncate">{{ tool.url_pattern }}</span>
+                    <span class="shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold" :class="getConfidenceClass(tool.confidence)">
+                      {{ getConfidenceLabel(tool.confidence) }}
+                    </span>
+                    <ChevronDown :size="16" class="text-[var(--text-tertiary)] transition-transform" :class="expandedToolId === tool.id ? 'rotate-180' : ''" />
+                  </div>
+
+                  <div v-if="expandedToolId === tool.id" class="border-t border-slate-100 dark:border-white/10 px-4 py-4 bg-white dark:bg-transparent">
+                    <p class="text-xs text-[var(--text-secondary)] mb-2 font-medium">{{ tool.description }}</p>
+                    <div v-if="tool.confidence_reasons?.length" class="mb-3 flex flex-wrap gap-1.5">
+                      <span
+                        v-for="reason in tool.confidence_reasons"
+                        :key="reason"
+                        class="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-medium text-[var(--text-secondary)] dark:bg-white/10"
+                      >
+                        {{ reason }}
+                      </span>
+                    </div>
+                    <textarea
+                      v-model="toolEdits[tool.id]"
+                      class="w-full h-40 bg-[#f8fafc] dark:bg-black/20 border border-slate-200 dark:border-white/10 rounded-xl text-[11px] font-mono text-[var(--text-primary)] p-3 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 resize-y transition-shadow"
+                      spellcheck="false"
+                    ></textarea>
+                    <div class="flex justify-end gap-2 mt-3">
+                      <button
+                        @click="handleDeleteTool(tool.id)"
+                        class="rounded-xl border border-red-200 px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 dark:border-red-500/20 dark:text-red-400 dark:hover:bg-red-500/10"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            </template>
           </div>
         </div>
       </section>
@@ -774,7 +833,7 @@ onBeforeUnmount(() => {
         <div class="flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5 dark:border-white/10 dark:bg-white/[0.055]">
           <div>
             <h2 class="text-xl font-black text-[var(--text-primary)]">保存为 MCP 工具</h2>
-            <p class="mt-1 text-sm text-[var(--text-tertiary)]">将录制的 API 接口打包成 MCP</p>
+            <p class="mt-1 text-sm text-[var(--text-tertiary)]">将采用的 API 接口打包成 MCP</p>
           </div>
           <button
             class="rounded-xl p-2 text-[var(--text-tertiary)] transition hover:bg-slate-100 hover:text-[var(--text-primary)] dark:hover:bg-white/10"
