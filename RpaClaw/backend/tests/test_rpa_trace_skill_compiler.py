@@ -256,6 +256,44 @@ def test_duplicate_sensitive_fill_values_consume_params_in_order():
     assert "get_by_role('textbox', name='ERP Password').fill(kwargs['password_2'])" in body
 
 
+def test_manual_navigate_click_preserves_click_navigation_semantics():
+    trace = RPAAcceptedTrace(
+        trace_id="login-submit",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="navigate_click",
+        description='点击 button("登录") 并跳转页面',
+        after_page=RPAPageState(url="https://example.com/app"),
+        locator_candidates=[
+            {"locator": {"method": "role", "role": "button", "name": "登录"}, "selected": True},
+        ],
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "expect_navigation" in body
+    assert "get_by_role('button', name='登录').click()" in body
+    assert "goto(_target_url" not in body
+
+
+def test_manual_fill_without_valid_locator_raises_clear_runtime_error():
+    trace = RPAAcceptedTrace(
+        trace_id="broken-fill",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="fill",
+        description='输入 "abc" 到 None',
+        value="abc",
+        locator_candidates=[{"selected": True}],
+        validation={"status": "broken", "details": "missing strict locator"},
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "Recorded fill action is missing a valid target locator" in body
+    assert "locator('body')" not in body
+
+
 def test_navigation_after_selected_project_uses_dynamic_result_url():
     traces = [
         RPAAcceptedTrace(

@@ -1032,6 +1032,9 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.steps), 1)
         self.assertEqual(self.session.steps[-1].action, "navigate_click")
         self.assertEqual(self.session.steps[-1].url, "https://example.com/next")
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].action, "navigate_click")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.com/next")
 
     def test_make_description_formats_nth_locator(self):
         description = self.manager._make_description(
@@ -1167,6 +1170,48 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.steps), 1)
         self.assertEqual(self.session.steps[-1].action, "navigate_press")
         self.assertEqual(self.session.steps[-1].url, "https://example.com/next")
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].action, "navigate_press")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.com/next")
+
+    async def test_select_step_locator_candidate_refreshes_manual_trace(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1234567890,
+                "locator": {"method": "css", "value": "button.primary"},
+                "locator_candidates": [
+                    {
+                        "kind": "css",
+                        "score": 500,
+                        "selected": True,
+                        "strict_match_count": 1,
+                        "locator": {"method": "css", "value": "button.primary"},
+                    },
+                    {
+                        "kind": "role",
+                        "score": 100,
+                        "selected": False,
+                        "strict_match_count": 1,
+                        "locator": {"method": "role", "role": "button", "name": "Search"},
+                    },
+                ],
+            },
+        )
+
+        await self.manager.select_step_locator_candidate(self.session.id, 0, 1)
+
+        self.assertEqual(
+            self.session.traces[0].locator_candidates[1]["locator"],
+            {"method": "role", "role": "button", "name": "Search"},
+        )
+        self.assertTrue(self.session.traces[0].locator_candidates[1]["selected"])
 
     async def test_navigation_upgrade_uses_sequence_predecessor_not_last_arrival(self):
         page = _FakePage("https://example.com", "Example")

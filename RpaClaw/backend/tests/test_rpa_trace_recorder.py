@@ -68,3 +68,28 @@ def test_fill_trace_links_literal_value_to_runtime_result_ref():
     assert updated.trace_type == "dataflow_fill"
     assert updated.dataflow.selected_source_ref == "customer_info.name"
 
+
+def test_manual_step_to_trace_preserves_signals_and_filters_invalid_locators():
+    trace = manual_step_to_trace(
+        {
+            "id": "step-4",
+            "action": "fill",
+            "source": "record",
+            "description": "Fill account",
+            "target": '{"selected": true}',
+            "locator_candidates": [
+                {"selected": True},
+                {"locator": {"method": "css", "value": ""}},
+                {"locator": {"method": "role", "role": "textbox", "name": "Account"}, "selected": False},
+            ],
+            "validation": {"status": "broken", "details": "missing locator"},
+            "signals": {"navigation": {"url": "https://example.com/next"}},
+        }
+    )
+
+    assert trace.validation["status"] == "broken"
+    assert trace.signals["navigation"]["url"] == "https://example.com/next"
+    assert trace.locator_candidates == [
+        {"locator": {"method": "role", "role": "textbox", "name": "Account"}, "selected": True}
+    ]
+

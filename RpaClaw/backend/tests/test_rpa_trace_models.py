@@ -20,6 +20,8 @@ def test_ai_operation_trace_serializes_execution_and_page_state():
             code="async def run(page, results):\n    return {'url': page.url}",
             output={"selected_project": {"url": "https://github.com/owner/repo"}},
         ),
+        validation={"status": "ok"},
+        signals={"navigation": {"url": "https://github.com/owner/repo"}},
         accepted=True,
     )
 
@@ -28,6 +30,8 @@ def test_ai_operation_trace_serializes_execution_and_page_state():
     assert payload["trace_type"] == "ai_operation"
     assert payload["before_page"]["url"] == "https://github.com/trending"
     assert payload["ai_execution"]["language"] == "python"
+    assert payload["validation"]["status"] == "ok"
+    assert payload["signals"]["navigation"]["url"] == "https://github.com/owner/repo"
     assert payload["accepted"] is True
 
 

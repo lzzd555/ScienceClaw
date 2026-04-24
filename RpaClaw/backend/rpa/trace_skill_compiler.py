@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from backend.rpa.playwright_security import get_chromium_launch_kwargs, get_context_kwargs
 
+from .trace_locator_utils import has_valid_locator, normalize_locator
 from .trace_models import RPAAcceptedTrace, RPATraceType
 
 
@@ -230,14 +231,27 @@ class TraceSkillCompiler:
         trace: RPAAcceptedTrace,
         previous_traces: List[RPAAcceptedTrace],
     ) -> List[str]:
-        action = trace.action or ""
-        if action in {"navigate_click", "navigate_press"} and trace.after_page.url:
-            return self._render_navigation_trace(index, trace, previous_traces)
+        action = self._effective_manual_action(trace)
         stable_subpage = self._manual_github_subpage_navigation(index, trace, previous_traces)
         if stable_subpage:
             return stable_subpage
         locator = self._best_locator(trace.locator_candidates)
         lines = ["", f"    # trace {index}: {trace.description or action}"]
+        if action in {"navigate_click", "navigate_press"}:
+            if not locator:
+                lines.extend(self._invalid_manual_action_lines(action))
+                return lines
+            expr = _locator_expression("current_page", locator)
+            lines.append("    async with current_page.expect_navigation(wait_until='domcontentloaded'):")
+            if action == "navigate_click":
+                lines.append(f"        await {expr}.click()")
+            else:
+                lines.append(f"        await {expr}.press({str(trace.value or '')!r})")
+            lines.append("    await current_page.wait_for_load_state('domcontentloaded')")
+            return lines
+        if not locator and action in {"click", "fill", "press", "check", "uncheck", "select"}:
+            lines.extend(self._invalid_manual_action_lines(action))
+            return lines
         if not locator:
             lines.append("    # No stable locator was recorded for this manual action.")
             return lines
@@ -494,7 +508,26 @@ class TraceSkillCompiler:
             return {}
         selected = next((item for item in candidates if item.get("selected")), candidates[0])
         locator = selected.get("locator") if isinstance(selected, dict) else None
-        return locator if isinstance(locator, dict) else selected
+        normalized = normalize_locator(locator if isinstance(locator, dict) else selected)
+        return normalized if has_valid_locator(normalized) else {}
+
+    def _effective_manual_action(self, trace: RPAAcceptedTrace) -> str:
+        action = trace.action or ""
+        if action in {"click", "press"}:
+            navigation_signal = trace.signals.get("navigation") if isinstance(trace.signals, dict) else None
+            if isinstance(navigation_signal, dict) and str(navigation_signal.get("url") or "").strip():
+                return f"navigate_{action}"
+        return action
+
+    @staticmethod
+    def _invalid_manual_action_lines(action: str) -> List[str]:
+        return [
+            (
+                f"    raise RuntimeError("
+                f"{('Recorded ' + action + ' action is missing a valid target locator; ' + 're-record or reselect the target element')!r}"
+                f")"
+            )
+        ]
 
     def _dynamic_url_expression(self, url: str, previous_traces: List[RPAAcceptedTrace]) -> str:
         if not url:
@@ -617,12 +650,18 @@ def _locator_expression(scope: str, locator: Dict[str, Any]) -> str:
         return f"{scope}.get_by_label({locator.get('value', '')!r})"
     if method == "placeholder":
         return f"{scope}.get_by_placeholder({locator.get('value', '')!r})"
+    if method == "alt":
+        return f"{scope}.get_by_alt_text({locator.get('value', '')!r})"
+    if method == "title":
+        return f"{scope}.get_by_title({locator.get('value', '')!r})"
     if method == "nested":
         parent = _locator_expression(scope, locator.get("parent") or {})
         return _locator_expression(parent, locator.get("child") or {})
     if method == "nth":
         base = _locator_expression(scope, locator.get("locator") or locator.get("base") or {"method": "css", "value": "body"})
         return f"{base}.nth({int(locator.get('index') or 0)})"
+    if method == "css":
+        return f"{scope}.locator({locator.get('value', '')!r}).first"
     return f"{scope}.locator({locator.get('value', 'body')!r}).first"
 
 

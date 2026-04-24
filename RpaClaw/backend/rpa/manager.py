@@ -941,6 +941,7 @@ class RPASessionManager:
                 step.validation["status"] = "ok" if strict_match_count == 1 else "fallback"
             if selected_candidate.get("reason"):
                 step.validation["details"] = selected_candidate["reason"]
+        await self._record_manual_trace_for_step(session_id, step)
         await self._broadcast_step(session_id, step)
         return step
 
@@ -1038,12 +1039,14 @@ class RPASessionManager:
                             last_step.action = "navigate_click"
                             last_step.url = evt.get("url", last_step.url)
                             last_step.description = f"{last_step.description} 并跳转页面"
+                            await self._record_manual_trace_for_step(session_id, last_step)
                             await self._broadcast_step(session_id, last_step)
                             logger.debug(f"[RPA] Upgraded click to navigate_click: {evt.get('url', '')[:60]}")
                             return
                         if last_step.action == "press":
                             last_step.action = "navigate_press"
                             last_step.url = evt.get("url", last_step.url)
+                            await self._record_manual_trace_for_step(session_id, last_step)
                             await self._broadcast_step(session_id, last_step)
                             logger.debug(f"[RPA] Upgraded press to navigate_press: {evt.get('url', '')[:60]}")
                             return

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
+from .trace_locator_utils import normalize_locator, normalize_locator_candidates
 from .trace_models import (
     RPAAcceptedTrace,
     RPADataflowMapping,
@@ -33,9 +34,11 @@ def _parse_target_locator(raw_target: Any) -> Dict[str, Any]:
 
 def _locator_candidates(step: Dict[str, Any]) -> List[Dict[str, Any]]:
     candidates = _step_get(step, "locator_candidates", []) or []
-    if isinstance(candidates, list) and candidates:
-        return candidates
     target = _parse_target_locator(_step_get(step, "target", ""))
+    normalized = normalize_locator_candidates(candidates, target=target)
+    if normalized:
+        return normalized
+    target = normalize_locator(target)
     if target:
         return [{"kind": target.get("method", "locator"), "locator": target, "selected": True}]
     return []
@@ -69,6 +72,8 @@ def manual_step_to_trace(step: Dict[str, Any]) -> RPAAcceptedTrace:
         before_page=RPAPageState(url=str(_step_get(step, "before_url", "") or "")),
         after_page=after_page,
         locator_candidates=_locator_candidates(step),
+        validation=dict(_step_get(step, "validation", {}) or {}),
+        signals=dict(_step_get(step, "signals", {}) or {}),
         value=_step_get(step, "value"),
         output_key=_step_get(step, "result_key"),
         output=_step_get(step, "output"),
@@ -85,7 +90,7 @@ def infer_dataflow_for_fill(trace: RPAAcceptedTrace, runtime_results: RPARuntime
     selected_locator = {}
     if trace.locator_candidates:
         selected = next((item for item in trace.locator_candidates if item.get("selected")), trace.locator_candidates[0])
-        selected_locator = selected.get("locator") or selected
+        selected_locator = normalize_locator(selected.get("locator") or selected)
 
     trace.dataflow = RPADataflowMapping(
         target_field=RPATargetField(locator_candidates=list(trace.locator_candidates or [])),
