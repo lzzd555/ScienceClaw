@@ -180,6 +180,25 @@ async def screencast_ws(websocket: WebSocket, session_id: str):
         await screencast.stop()
 
 
+async def _resolve_user_model_config(user_id: str) -> Optional[dict]:
+    """Resolve the user's model config, same logic as RPA recorder."""
+    docs = await get_repository("models").find_many(
+        {"$or": [{"user_id": user_id}, {"is_system": True}], "is_active": True, "api_key": {"$nin": ["", None]}},
+        sort=[("is_system", 1), ("updated_at", -1)],
+        limit=1,
+    )
+    doc = docs[0] if docs else None
+    if doc:
+        return {
+            "model_name": doc.get("model_name"),
+            "base_url": doc.get("base_url"),
+            "api_key": doc.get("api_key"),
+            "context_window": doc.get("context_window"),
+            "provider": doc.get("provider", ""),
+        }
+    return None
+
+
 # ── Analysis (SSE) ──────────────────────────────────────────────────
 
 
@@ -191,8 +210,10 @@ async def analyze_session(
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
 
+    model_config = await _resolve_user_model_config(str(current_user.id))
+
     async def event_generator():
-        async for event in api_monitor_manager.analyze_page(session_id):
+        async for event in api_monitor_manager.analyze_page(session_id, model_config=model_config):
             yield event
 
     return EventSourceResponse(event_generator())
