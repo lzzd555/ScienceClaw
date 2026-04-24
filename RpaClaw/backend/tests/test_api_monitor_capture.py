@@ -30,20 +30,20 @@ class TestNormalizeUrlForDedup:
     def test_removes_empty_query_params(self):
         assert _normalize_url_for_dedup("/api/orders?&") == "/api/orders"
 
-    def test_sorts_query_params(self):
+    def test_ignores_query_params(self):
         result = _normalize_url_for_dedup("/api/orders?b=2&a=1")
-        assert result == "/api/orders?a=1&b=2"
+        assert result == "/api/orders"
 
-    def test_removes_empty_value_params(self):
+    def test_ignores_empty_value_params(self):
         result = _normalize_url_for_dedup("/api/orders?name=&id=123")
-        assert result == "/api/orders?id=123"
+        assert result == "/api/orders"
 
     def test_plain_path_unchanged(self):
         assert _normalize_url_for_dedup("/api/orders") == "/api/orders"
 
-    def test_full_url_strips_to_path_and_sorted_query(self):
+    def test_full_url_strips_to_path_only(self):
         result = _normalize_url_for_dedup("https://example.com/api/orders?page=1&name=test")
-        assert result == "/api/orders?name=test&page=1"
+        assert result == "/api/orders"
 
     def test_preserves_path_with_param_placeholders(self):
         result = _normalize_url_for_dedup("/api/users/{id}/orders")
@@ -59,6 +59,11 @@ class TestDedupKeyNormalization:
     def test_same_endpoint_different_param_order(self):
         call1 = _make_call("GET", "https://example.com/api/orders?b=2&a=1")
         call2 = _make_call("GET", "https://example.com/api/orders?a=1&b=2")
+        assert dedup_key(call1) == dedup_key(call2)
+
+    def test_same_endpoint_different_query_values_deduped(self):
+        call1 = _make_call("GET", "https://example.com/api/orders?page=1")
+        call2 = _make_call("GET", "https://example.com/api/orders?page=2")
         assert dedup_key(call1) == dedup_key(call2)
 
     def test_same_endpoint_with_empty_params_deduped(self):

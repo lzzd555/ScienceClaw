@@ -105,19 +105,9 @@ def parameterize_url(url: str) -> str:
 
 
 def _normalize_url_for_dedup(url: str) -> str:
-    """Normalize a URL for deduplication: strip empty params, sort remaining."""
+    """Normalize a URL for deduplication using only the URL path."""
     parsed = urlparse(url)
-    path = parsed.path
-
-    if parsed.query:
-        qs = parse_qs(parsed.query, keep_blank_values=True)
-        # 过滤掉所有值为空的参数
-        filtered = {k: v for k, v in qs.items() if any(vv.strip() for vv in v)}
-        if filtered:
-            sorted_params = sorted(filtered.items())
-            query = urlencode(sorted_params, doseq=True)
-            return f"{path}?{query}"
-    return path
+    return parsed.path
 
 
 def dedup_key(call: CapturedApiCall) -> str:
@@ -125,8 +115,7 @@ def dedup_key(call: CapturedApiCall) -> str:
     if call.url_pattern:
         normalized = _normalize_url_for_dedup(call.url_pattern)
     else:
-        # Normalize the raw URL first (strip empty params, sort),
-        # then parameterize numeric/UUID path segments.
+        # Normalize the raw URL first, then parameterize numeric/UUID path segments.
         normalized = _normalize_url_for_dedup(call.request.url)
         normalized = parameterize_url(normalized)
     return f"{call.request.method} {normalized}"
