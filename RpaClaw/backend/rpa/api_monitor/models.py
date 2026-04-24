@@ -2,13 +2,16 @@
 
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
 def _gen_id() -> str:
     return str(uuid.uuid4())
+
+
+ConfidenceLevel = Literal["high", "medium", "low"]
 
 
 # ── Captured request/response ────────────────────────────────────────
@@ -41,6 +44,7 @@ class CapturedApiCall(BaseModel):
     trigger_element: Optional[Dict] = None
     url_pattern: Optional[str] = None
     duration_ms: Optional[float] = None
+    source_evidence: Dict = Field(default_factory=dict)
 
 
 # ── Tool definition ──────────────────────────────────────────────────
@@ -60,6 +64,10 @@ class ApiToolDefinition(BaseModel):
     yaml_definition: str
     source_calls: List[str] = Field(default_factory=list)
     source: str = "auto"  # "auto" or "manual"
+    confidence: ConfidenceLevel = "medium"
+    selected: bool = False
+    confidence_reasons: List[str] = Field(default_factory=list)
+    source_evidence: Dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -99,3 +107,7 @@ class PublishMcpRequest(BaseModel):
     mcp_name: str
     description: str = ""
     confirm_overwrite: bool = False
+
+
+class UpdateToolSelectionRequest(BaseModel):
+    selected: bool
