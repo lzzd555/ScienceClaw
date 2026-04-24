@@ -253,6 +253,9 @@ const connectScreencast = (sid: string) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'frame') {
         drawFrame(msg.data, msg.metadata);
+      } else if (msg.type === 'monitor_log') {
+        const level = msg.level === 'ERROR' ? 'ERROR' : 'RECV';
+        addLog(level, msg.message);
       } else if (msg.type === 'preview_error') {
         error.value = msg.message || 'Screencast error';
       }

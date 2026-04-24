@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from .models import CapturedApiCall, CapturedRequest, CapturedResponse
@@ -141,6 +141,9 @@ class NetworkCaptureEngine:
     def __init__(self) -> None:
         self._in_flight: Dict[int, Dict] = {}
         self._captured_calls: List[CapturedApiCall] = []
+        # Optional callback invoked when a request/response is captured or skipped.
+        # Signature: (level: str, message: str) -> None
+        self.on_log: Optional[Callable[[str, str], None]] = None
 
     @property
     def captured_calls(self) -> List[CapturedApiCall]:
@@ -153,7 +156,21 @@ class NetworkCaptureEngine:
     def on_request(self, request) -> None:
         """Called by page.on('request')."""
         if not should_capture(request.url, request.resource_type):
+            logger.debug(
+                "[ApiMonitor] Skipped request: resource_type=%s url=%s",
+                request.resource_type,
+                request.url[:120],
+            )
             return
+
+        logger.info(
+            "[ApiMonitor] Detected API request: %s %s (resource_type=%s)",
+            request.method,
+            request.url[:120],
+            request.resource_type,
+        )
+        if self.on_log:
+            self.on_log("RECV", f"检测到请求: {request.method} {request.url[:100]}")
 
         body = None
         content_type = None
@@ -162,8 +179,10 @@ class NetworkCaptureEngine:
                 body = request.post_data
                 if body and len(body) > MAX_REQUEST_BODY_SIZE:
                     body = body[:MAX_REQUEST_BODY_SIZE] + "...[truncated]"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[ApiMonitor] Failed to read request body: %s", exc)
+                if self.on_log:
+                    self.on_log("ERROR", f"读取请求体失败: {exc}")
             content_type = request.headers.get("content-type")
 
         captured_req = CapturedRequest(
@@ -199,8 +218,13 @@ class NetworkCaptureEngine:
             resp_body = await response.text()
             if resp_body and len(resp_body) > MAX_RESPONSE_BODY_SIZE:
                 resp_body = resp_body[:MAX_RESPONSE_BODY_SIZE] + "...[truncated]"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[ApiMonitor] Failed to read response body for %s %s: %s",
+                captured_req.method,
+                captured_req.url[:80],
+                exc,
+            )
 
         captured_resp = CapturedResponse(
             status=response.status,
@@ -219,13 +243,19 @@ class NetworkCaptureEngine:
         )
 
         self._captured_calls.append(call)
-        logger.debug(
+        logger.info(
             "[ApiMonitor] Captured %s %s -> %d (%.0fms)",
             captured_req.method,
             captured_req.url[:80],
             response.status,
             duration_ms,
         )
+        if self.on_log:
+            status_label = response.status
+            self.on_log(
+                "RECV",
+                f"已捕获: {captured_req.method} {captured_req.url[:80]} -> {status_label} ({duration_ms:.0f}ms)",
+            )
 
     def drain_new_calls(self) -> List[CapturedApiCall]:
         """Return all captured calls and clear the internal list."""

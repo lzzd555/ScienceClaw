@@ -324,6 +324,15 @@ class SessionScreencastController:
         except Exception:
             self._running = False
 
+    async def send_monitor_log(self, level: str, message: str) -> None:
+        """Send a monitor log event to the frontend via WebSocket."""
+        if not self._ws or not self._running:
+            return
+        try:
+            await self._ws.send_json({"type": "monitor_log", "level": level, "message": message})
+        except Exception:
+            pass
+
     async def _recv_loop(self) -> None:
         while self._running:
             try:

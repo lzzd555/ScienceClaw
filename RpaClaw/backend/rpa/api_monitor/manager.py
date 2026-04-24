@@ -16,6 +16,7 @@ from playwright.async_api import BrowserContext, Page
 
 from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.playwright_security import get_context_kwargs
+from backend.rpa.screencast import SessionScreencastController
 
 from .llm_analyzer import analyze_elements, generate_tool_definition
 from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall
@@ -199,6 +200,33 @@ class ApiMonitorSessionManager:
         self._contexts: Dict[str, BrowserContext] = {}
         self._pages: Dict[str, Page] = {}
         self._captures: Dict[str, NetworkCaptureEngine] = {}
+        self._screencasts: Dict[str, SessionScreencastController] = {}
+
+    def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
+        """Register an active screencast controller so capture logs can be forwarded."""
+        self._screencasts[session_id] = controller
+        # Wire up capture engine's on_log callback
+        capture = self._captures.get(session_id)
+        if capture and not capture.on_log:
+            capture.on_log = self._make_log_forwarder(session_id)
+
+    def unregister_screencast(self, session_id: str) -> None:
+        self._screencasts.pop(session_id, None)
+
+    def _make_log_forwarder(self, session_id: str):
+        """Create a callback that forwards capture logs to the screencast WS."""
+        import asyncio as _asyncio
+
+        def _forward(level: str, message: str) -> None:
+            ctrl = self._screencasts.get(session_id)
+            if ctrl:
+                try:
+                    loop = _asyncio.get_running_loop()
+                    loop.create_task(ctrl.send_monitor_log(level, message))
+                except RuntimeError:
+                    pass
+
+        return _forward
 
     # ── Session lifecycle ────────────────────────────────────────────
 
@@ -260,6 +288,7 @@ class ApiMonitorSessionManager:
 
         self._captures.pop(session_id, None)
         self._pages.pop(session_id, None)
+        self._screencasts.pop(session_id, None)
 
         context = self._contexts.pop(session_id, None)
         if context:
@@ -667,16 +696,26 @@ class ApiMonitorSessionManager:
         """Install page.on('request') and page.on('response') listeners."""
 
         def on_request(request) -> None:
+            logger.debug(
+                "[ApiMonitor] page.on('request') fired: resource_type=%s url=%s",
+                request.resource_type,
+                request.url[:120],
+            )
             if should_process_request(request):
                 capture.on_request(request)
 
         async def on_response(response) -> None:
+            logger.debug(
+                "[ApiMonitor] page.on('response') fired: status=%d url=%s",
+                response.status,
+                response.url[:120],
+            )
             await capture.on_response(response)
 
         page.on("request", on_request)
         page.on("response", on_response)
 
-        logger.debug("[ApiMonitor] Network listeners installed for session %s", session_id)
+        logger.info("[ApiMonitor] Network listeners installed for session %s", session_id)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

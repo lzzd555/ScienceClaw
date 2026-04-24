@@ -166,6 +166,7 @@ async def screencast_ws(websocket: WebSocket, session_id: str):
         tabs_provider=lambda: api_monitor_manager.list_tabs(session_id),
     )
 
+    api_monitor_manager.register_screencast(session_id, screencast)
     try:
         await screencast.start(websocket)
     except WebSocketDisconnect:
@@ -177,6 +178,7 @@ async def screencast_ws(websocket: WebSocket, session_id: str):
         except Exception:
             pass
     finally:
+        api_monitor_manager.unregister_screencast(session_id)
         await screencast.stop()
 
 
