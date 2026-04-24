@@ -128,3 +128,37 @@ class TestShouldCaptureNoiseFilter:
 
     def test_capture_without_page_url_keeps_existing_behavior(self):
         assert should_capture("https://analytics.example.net/collect", "fetch") is True
+
+
+class _Request:
+    url = "https://example.com/api/orders"
+    method = "GET"
+    headers = {"accept": "application/json"}
+    resource_type = "fetch"
+    post_data = None
+
+
+class TestCaptureEvidence:
+    def test_on_request_stores_source_evidence(self):
+        from backend.rpa.api_monitor.network_capture import NetworkCaptureEngine
+
+        engine = NetworkCaptureEngine(
+            page_url_provider=lambda: "https://example.com/app",
+            evidence_provider=lambda request: {
+                "initiator_type": "script",
+                "initiator_urls": ["https://example.com/app/assets/main.js"],
+                "js_stack_urls": ["https://example.com/app/assets/main.js"],
+                "frame_url": "https://example.com/app",
+                "action_window_matched": True,
+            },
+        )
+
+        request = _Request()
+        engine.on_request(request)
+
+        stored = engine._in_flight[id(request)]["request"]
+        evidence = engine._in_flight[id(request)]["source_evidence"]
+
+        assert stored.url == "https://example.com/api/orders"
+        assert evidence["initiator_type"] == "script"
+        assert evidence["action_window_matched"] is True

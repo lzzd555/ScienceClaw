@@ -160,10 +160,15 @@ def dedup_key(call: CapturedApiCall) -> str:
 class NetworkCaptureEngine:
     """Manages in-flight request tracking and creates CapturedApiCall objects."""
 
-    def __init__(self, page_url_provider: Optional[Callable[[], str]] = None) -> None:
+    def __init__(
+        self,
+        page_url_provider: Optional[Callable[[], str]] = None,
+        evidence_provider: Optional[Callable[[object], Dict]] = None,
+    ) -> None:
         self._in_flight: Dict[int, Dict] = {}
         self._captured_calls: List[CapturedApiCall] = []
         self._page_url_provider = page_url_provider
+        self._evidence_provider = evidence_provider
         # Optional callback invoked when a request/response is captured or skipped.
         # Signature: (level: str, message: str) -> None
         self.on_log: Optional[Callable[[str, str], None]] = None
@@ -221,9 +226,12 @@ class NetworkCaptureEngine:
             resource_type=request.resource_type,
         )
 
+        source_evidence = self._source_evidence(request)
+
         self._in_flight[id(request)] = {
             "request": captured_req,
             "start_time": time.monotonic(),
+            "source_evidence": source_evidence,
         }
 
     def _current_page_url(self) -> Optional[str]:
@@ -234,6 +242,15 @@ class NetworkCaptureEngine:
         except Exception as exc:
             logger.debug("[ApiMonitor] Failed to read page URL for capture filter: %s", exc)
             return None
+
+    def _source_evidence(self, request) -> Dict:
+        if not self._evidence_provider:
+            return {}
+        try:
+            return self._evidence_provider(request) or {}
+        except Exception as exc:
+            logger.debug("[ApiMonitor] Failed to read request evidence: %s", exc)
+            return {}
 
     async def on_response(self, response) -> None:
         """Called by page.on('response')."""
@@ -269,11 +286,14 @@ class NetworkCaptureEngine:
             timestamp=datetime.now(),
         )
 
+        source_evidence: Dict = info.get("source_evidence") or {}
+
         call = CapturedApiCall(
             request=captured_req,
             response=captured_resp,
             url_pattern=parameterize_url(captured_req.url),
             duration_ms=round(duration_ms, 1),
+            source_evidence=source_evidence,
         )
 
         self._captured_calls.append(call)

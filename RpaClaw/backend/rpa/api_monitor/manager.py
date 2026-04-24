@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+import time
 from collections import defaultdict
 from datetime import datetime
 from typing import AsyncGenerator, Dict, List, Optional
@@ -201,6 +202,8 @@ class ApiMonitorSessionManager:
         self._pages: Dict[str, Page] = {}
         self._captures: Dict[str, NetworkCaptureEngine] = {}
         self._screencasts: Dict[str, SessionScreencastController] = {}
+        self._request_evidence: Dict[str, Dict[str, Dict]] = {}
+        self._last_action_at: Dict[str, float] = {}
 
     def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
         """Register an active screencast controller so capture logs can be forwarded."""
@@ -257,6 +260,7 @@ class ApiMonitorSessionManager:
         page.set_default_timeout(PAGE_TIMEOUT_MS)
         page.set_default_navigation_timeout(PAGE_TIMEOUT_MS)
 
+        self._request_evidence[session_id] = {}
         self._contexts[session_id] = context
         self._pages[session_id] = page
 
@@ -268,7 +272,10 @@ class ApiMonitorSessionManager:
                 return current_url
             return session.target_url or target_url
 
-        capture = NetworkCaptureEngine(page_url_provider=_capture_page_url)
+        capture = NetworkCaptureEngine(
+            page_url_provider=_capture_page_url,
+            evidence_provider=lambda request: self._evidence_for_request(session_id, request),
+        )
         self._captures[session_id] = capture
         self._install_listeners(session_id, page, capture)
 
@@ -294,6 +301,8 @@ class ApiMonitorSessionManager:
             session.status = "stopped"
 
         self._captures.pop(session_id, None)
+        self._request_evidence.pop(session_id, None)
+        self._last_action_at.pop(session_id, None)
         self._pages.pop(session_id, None)
         self._screencasts.pop(session_id, None)
 
@@ -351,6 +360,8 @@ class ApiMonitorSessionManager:
         capture = self._captures.get(session_id)
         if capture:
             capture.clear()
+
+        self._mark_action(session_id)
 
         session = self.sessions[session_id]
         session.captured_calls.clear()
@@ -663,6 +674,8 @@ class ApiMonitorSessionManager:
                 locator = page.locator(f"{tag} >> nth={index}")
 
             if locator:
+                session_id = self._session_id_from_page(page) or ""
+                self._mark_action(session_id)
                 # Brief wait to settle
                 await page.wait_for_timeout(300)
 
@@ -746,6 +759,20 @@ class ApiMonitorSessionManager:
             if p is page:
                 return sid
         return None
+
+    def _mark_action(self, session_id: str) -> None:
+        self._last_action_at[session_id] = time.monotonic()
+
+    def _action_window_matched(self, session_id: str, window_seconds: float = 2.0) -> bool:
+        last_action_at = self._last_action_at.get(session_id)
+        return last_action_at is not None and (time.monotonic() - last_action_at) <= window_seconds
+
+    def _evidence_for_request(self, session_id: str, request) -> Dict:
+        by_url = self._request_evidence.get(session_id, {})
+        evidence = dict(by_url.get(request.url) or {})
+        evidence.setdefault("frame_url", self.sessions.get(session_id).target_url if self.sessions.get(session_id) else "")
+        evidence["action_window_matched"] = self._action_window_matched(session_id)
+        return evidence
 
     @staticmethod
     def _parse_yaml_metadata(yaml_str: str) -> tuple:
