@@ -78,6 +78,15 @@ describe('formatMcpServerDescription', () => {
       ),
     ).toBe('PubMed search access');
   });
+
+  it('uses API Monitor fallback copy for API Monitor MCP servers', () => {
+    expect(
+      formatMcpServerDescription(
+        { id: 'mcp_api_monitor', scope: 'user', transport: 'api_monitor', source_type: 'api_monitor' },
+        (key) => `translated:${key}`,
+      ),
+    ).toBe('translated:API Monitor MCP description');
+  });
 });
 
 describe('computeEffectiveMcpEnabled', () => {
@@ -260,6 +269,15 @@ describe('formatMcpToolDisplayName', () => {
 });
 
 describe('formatMcpServerEndpoint', () => {
+  it('shows internal origin for API Monitor MCP servers', () => {
+    expect(
+      formatMcpServerEndpoint({
+        transport: 'api_monitor',
+        endpoint_config: {},
+      }),
+    ).toBe('Internal API Monitor MCP');
+  });
+
   it('shows the command for stdio MCP servers', () => {
     expect(
       formatMcpServerEndpoint({

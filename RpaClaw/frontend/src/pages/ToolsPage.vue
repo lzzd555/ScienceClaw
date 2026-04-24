@@ -181,10 +181,10 @@
                   </span>
                 </button>
                 <button class="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-white/[0.06]" @click="openApiMonitor">
-                  <span class="mt-0.5 material-symbols-outlined text-[18px] text-teal-500 dark:text-teal-300">fiber_manual_record</span>
+                  <Activity :size="18" class="mt-0.5 text-teal-600 dark:text-teal-300" />
                   <span>
-                    <span class="block font-bold text-[var(--text-primary)]">{{ t('API Monitor') }}</span>
-                    <span class="mt-0.5 block text-xs leading-5 text-[var(--text-tertiary)]">{{ t('Capture API requests from a website and auto-generate MCP tool definitions.') }}</span>
+                    <span class="block font-bold text-[var(--text-primary)]">API 监控</span>
+                    <span class="mt-0.5 block text-xs leading-5 text-[var(--text-tertiary)]">实时捕获网站请求并将其快速生成为 MCP 工具。</span>
                   </span>
                 </button>
               </div>
@@ -646,6 +646,7 @@ import {
   Trash2,
   Wrench,
   X,
+  Activity,
 } from 'lucide-vue-next';
 import { useRoute, useRouter } from 'vue-router';
 import ApiMonitorMcpDetailDialog from '@/components/tools/ApiMonitorMcpDetailDialog.vue';
@@ -952,7 +953,7 @@ const startCreateRpaMcpTool = () => {
 
 const openApiMonitor = () => {
   createChoiceOpen.value = false;
-  router.push('/rpa/api-monitor');
+  router.push('/chat/api-monitor');
 };
 
 const openEditDialog = (server: McpServerItem) => {

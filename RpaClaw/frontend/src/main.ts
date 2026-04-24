@@ -84,6 +84,11 @@ export const router = createRouter({
           meta: { requiresAuth: true }
         },
         {
+          path: 'api-monitor',
+          component: ApiMonitorPage,
+          meta: { requiresAuth: true }
+        },
+        {
           path: 'tasks',
           component: TasksPage,
           meta: { requiresAuth: true }
@@ -115,10 +120,6 @@ export const router = createRouter({
         {
           path: 'convert-mcp',
           component: McpConvertPage,
-        },
-        {
-          path: 'api-monitor',
-          component: ApiMonitorPage,
         }
       ]
     },
