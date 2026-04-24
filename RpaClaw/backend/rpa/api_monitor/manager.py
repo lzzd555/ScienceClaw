@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -186,6 +187,82 @@ def should_process_request(request) -> bool:
     return should_capture(request.url, request.resource_type)
 
 
+_FETCH_XHR_STACK_CAPTURE_JS = r"""
+(() => {
+  if (window.__apiMonitorStackCaptureInstalled) return;
+  window.__apiMonitorStackCaptureInstalled = true;
+  window.__apiMonitorStacks = [];
+
+  const record = (method, url) => {
+    try {
+      window.__apiMonitorStacks.push({
+        method: String(method || 'GET').toUpperCase(),
+        url: String(url || ''),
+        timestamp: Date.now(),
+        stack: new Error().stack || '',
+        frameUrl: window.location.href,
+      });
+      if (window.__apiMonitorStacks.length > 500) {
+        window.__apiMonitorStacks.splice(0, window.__apiMonitorStacks.length - 500);
+      }
+    } catch (_) {}
+  };
+
+  const originalFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const url = typeof input === 'string' ? input : input && input.url;
+    const method = init && init.method ? init.method : input && input.method ? input.method : 'GET';
+    record(method, url);
+    return originalFetch.apply(this, arguments);
+  };
+
+  const originalOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this.__apiMonitorMethod = method;
+    this.__apiMonitorUrl = url;
+    return originalOpen.apply(this, arguments);
+  };
+
+  const originalSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function() {
+    record(this.__apiMonitorMethod || 'GET', this.__apiMonitorUrl || '');
+    return originalSend.apply(this, arguments);
+  };
+})();
+"""
+
+_STACK_URL_RE = re.compile(
+    r"((?:https?|chrome-extension|moz-extension|safari-extension)://[^\s)]+?)(?::\d+)*(:\d+)?(?:\))"
+)
+
+
+def _initiator_to_evidence(initiator: Dict) -> Dict:
+    urls: List[str] = []
+    stack = initiator.get("stack") or {}
+    for frame in stack.get("callFrames") or []:
+        url = frame.get("url")
+        if url:
+            urls.append(url)
+    return {
+        "initiator_type": initiator.get("type") or "",
+        "initiator_urls": _dedupe_strings(urls),
+    }
+
+
+def _stack_to_urls(stack: str) -> List[str]:
+    return _dedupe_strings([m.group(1) for m in _STACK_URL_RE.finditer(stack or "")])
+
+
+def _dedupe_strings(values: List[str]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
 # ── Manager ──────────────────────────────────────────────────────────
 
 
@@ -275,9 +352,12 @@ class ApiMonitorSessionManager:
         capture = NetworkCaptureEngine(
             page_url_provider=_capture_page_url,
             evidence_provider=lambda request: self._evidence_for_request(session_id, request),
+            async_evidence_provider=lambda request: self._async_evidence_for_request(session_id, request),
         )
         self._captures[session_id] = capture
         self._install_listeners(session_id, page, capture)
+
+        await self._install_source_evidence_capture(session_id, context, page)
 
         # Navigate in background — don't block the HTTP response
         if target_url:
@@ -774,6 +854,51 @@ class ApiMonitorSessionManager:
         evidence["action_window_matched"] = self._action_window_matched(session_id)
         return evidence
 
+    async def _install_source_evidence_capture(self, session_id: str, context, page: Page) -> None:
+        try:
+            cdp = await context.new_cdp_session(page)
+            await cdp.send("Network.enable")
+
+            def on_request_will_be_sent(event: Dict) -> None:
+                request = event.get("request") or {}
+                url = request.get("url") or ""
+                if not url:
+                    return
+                evidence = _initiator_to_evidence(event.get("initiator") or {})
+                evidence["frame_url"] = page.url
+                self._request_evidence.setdefault(session_id, {})[url] = evidence
+
+            cdp.on("Network.requestWillBeSent", on_request_will_be_sent)
+        except Exception as exc:
+            logger.debug("[ApiMonitor] CDP source evidence capture unavailable: %s", exc)
+
+        try:
+            await page.add_init_script(_FETCH_XHR_STACK_CAPTURE_JS)
+        except Exception as exc:
+            logger.debug("[ApiMonitor] Fetch/XHR stack capture injection failed: %s", exc)
+
+    async def _async_evidence_for_request(self, session_id: str, request) -> Dict:
+        page = self._pages.get(session_id)
+        if not page:
+            return {}
+        stack_record = await page.evaluate(
+            """({url, method}) => {
+              const records = window.__apiMonitorStacks || [];
+              for (let i = records.length - 1; i >= 0; i--) {
+                const item = records[i];
+                if (item.url === url && item.method === method.toUpperCase()) return item;
+              }
+              return null;
+            }""",
+            {"url": request.url, "method": request.method},
+        )
+        if not stack_record:
+            return {}
+        return {
+            "js_stack_urls": _stack_to_urls(stack_record.get("stack") or ""),
+            "frame_url": stack_record.get("frameUrl") or page.url,
+        }
+
     @staticmethod
     def _parse_yaml_metadata(yaml_str: str) -> tuple:
         """Extract name and description from generated YAML.
@@ -784,7 +909,6 @@ class ApiMonitorSessionManager:
         description = "Auto-generated API tool"
 
         try:
-            import re
             # Extract name field
             name_match = re.search(r"^name:\s*(.+)$", yaml_str, re.MULTILINE)
             if name_match:

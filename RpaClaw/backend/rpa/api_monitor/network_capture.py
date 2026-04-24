@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Set
+from typing import Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse, parse_qs, urlencode
 
 from .models import CapturedApiCall, CapturedRequest, CapturedResponse
@@ -164,11 +164,13 @@ class NetworkCaptureEngine:
         self,
         page_url_provider: Optional[Callable[[], str]] = None,
         evidence_provider: Optional[Callable[[object], Dict]] = None,
+        async_evidence_provider: Optional[Callable[[object], Awaitable[Dict]]] = None,
     ) -> None:
         self._in_flight: Dict[int, Dict] = {}
         self._captured_calls: List[CapturedApiCall] = []
         self._page_url_provider = page_url_provider
         self._evidence_provider = evidence_provider
+        self._async_evidence_provider = async_evidence_provider
         # Optional callback invoked when a request/response is captured or skipped.
         # Signature: (level: str, message: str) -> None
         self.on_log: Optional[Callable[[str, str], None]] = None
@@ -252,6 +254,15 @@ class NetworkCaptureEngine:
             logger.debug("[ApiMonitor] Failed to read request evidence: %s", exc)
             return {}
 
+    async def _async_source_evidence(self, request) -> Dict:
+        if not self._async_evidence_provider:
+            return {}
+        try:
+            return await self._async_evidence_provider(request) or {}
+        except Exception as exc:
+            logger.debug("[ApiMonitor] Failed to read async request evidence: %s", exc)
+            return {}
+
     async def on_response(self, response) -> None:
         """Called by page.on('response')."""
         req = response.request
@@ -286,7 +297,16 @@ class NetworkCaptureEngine:
             timestamp=datetime.now(),
         )
 
-        source_evidence: Dict = info.get("source_evidence") or {}
+        source_evidence: Dict = dict(info.get("source_evidence") or {})
+        async_evidence = await self._async_source_evidence(req)
+        for key, value in async_evidence.items():
+            if key in ("initiator_urls", "js_stack_urls"):
+                source_evidence[key] = list(dict.fromkeys([
+                    *source_evidence.get(key, []),
+                    *value,
+                ]))
+            elif value and not source_evidence.get(key):
+                source_evidence[key] = value
 
         call = CapturedApiCall(
             request=captured_req,

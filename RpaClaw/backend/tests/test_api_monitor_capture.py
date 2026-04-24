@@ -162,3 +162,36 @@ class TestCaptureEvidence:
         assert stored.url == "https://example.com/api/orders"
         assert evidence["initiator_type"] == "script"
         assert evidence["action_window_matched"] is True
+
+
+class TestSourceEvidenceHelpers:
+    def test_extract_initiator_urls_from_cdp_stack(self):
+        from backend.rpa.api_monitor.manager import _initiator_to_evidence
+
+        evidence = _initiator_to_evidence({
+            "type": "script",
+            "stack": {
+                "callFrames": [
+                    {"url": "https://example.com/app/assets/main.js", "functionName": "load"},
+                    {"url": "chrome-extension://abc/injected.js", "functionName": "run"},
+                ]
+            },
+        })
+
+        assert evidence["initiator_type"] == "script"
+        assert evidence["initiator_urls"] == [
+            "https://example.com/app/assets/main.js",
+            "chrome-extension://abc/injected.js",
+        ]
+
+    def test_extract_stack_urls_from_js_error_stack(self):
+        from backend.rpa.api_monitor.manager import _stack_to_urls
+
+        urls = _stack_to_urls(
+            "Error\n"
+            " at fetchData (https://example.com/app/assets/main.js:10:1)\n"
+            " at run (chrome-extension://abc/injected.js:2:3)\n"
+        )
+
+        assert "https://example.com/app/assets/main.js" in urls
+        assert "chrome-extension://abc/injected.js" in urls
