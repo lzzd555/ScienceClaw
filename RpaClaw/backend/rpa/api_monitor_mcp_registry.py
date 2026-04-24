@@ -35,6 +35,7 @@ class ApiMonitorMcpRegistry:
         existing_server_id: str | None = None,
     ) -> dict[str, Any]:
         now = datetime.now()
+        selected_tools = [tool for tool in session.tool_definitions if getattr(tool, "selected", False)]
         server_id = existing_server_id or f"mcp_{uuid.uuid4().hex[:12]}"
         existing_server = None
         if existing_server_id:
@@ -52,7 +53,7 @@ class ApiMonitorMcpRegistry:
             "endpoint_config": endpoint_config,
             "credential_binding": credential_binding,
             "tool_policy": (existing_server or {}).get("tool_policy") or {},
-            "tool_count": len(session.tool_definitions),
+            "tool_count": len(selected_tools),
             "updated_at": now,
         }
         await self._servers.update_one(
@@ -69,13 +70,13 @@ class ApiMonitorMcpRegistry:
             mcp_server_id=server_id,
             user_id=user_id,
             base_url=_origin_from_url(session.target_url or ""),
-            session_tools=[tool.model_dump(mode="python") for tool in session.tool_definitions],
+            session_tools=[tool.model_dump(mode="python") for tool in selected_tools],
         )
         return {
             "saved": True,
             "server_id": server_id,
             "server": {"_id": server_id, **server_doc},
-            "tool_count": len(session.tool_definitions),
+            "tool_count": len(selected_tools),
             "overwritten": overwrite,
         }
 

@@ -21,6 +21,7 @@ from backend.rpa.api_monitor.models import (
     NavigateRequest,
     PublishMcpRequest,
     UpdateToolRequest,
+    UpdateToolSelectionRequest,
 )
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.screencast import SessionScreencastController
@@ -279,6 +280,26 @@ async def update_tool(
     for tool in session.tool_definitions:
         if tool.id == tool_id:
             tool.yaml_definition = request.yaml_definition
+            from datetime import datetime
+            tool.updated_at = datetime.now()
+            return {"status": "success", "tool": tool.model_dump()}
+
+    raise HTTPException(status_code=404, detail="Tool not found")
+
+
+@router.patch("/session/{session_id}/tools/{tool_id}/selection")
+async def update_tool_selection(
+    session_id: str,
+    tool_id: str,
+    request: UpdateToolSelectionRequest,
+    current_user: User = Depends(get_current_user),
+):
+    session = api_monitor_manager.get_session(session_id)
+    _verify_session_owner(session, current_user)
+
+    for tool in session.tool_definitions:
+        if tool.id == tool_id:
+            tool.selected = request.selected
             from datetime import datetime
             tool.updated_at = datetime.now()
             return {"status": "success", "tool": tool.model_dump()}

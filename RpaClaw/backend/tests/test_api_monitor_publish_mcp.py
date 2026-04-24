@@ -100,6 +100,7 @@ request:
 response:
   type: object
 """,
+                selected=True,
             ),
             ApiToolDefinition(
                 id="tool_2",
@@ -110,6 +111,7 @@ response:
                 url_pattern="/api/users",
                 request_body_schema={"type": "object", "properties": {"name": {"type": "string"}}},
                 yaml_definition="name: create_user",
+                selected=True,
             ),
         ],
     )
@@ -363,3 +365,49 @@ async def test_publish_marks_duplicate_tool_names_invalid():
     errors = [error for tool in tool_repo.docs.values() for error in tool["validation_errors"]]
     assert statuses == ["invalid", "invalid"]
     assert "duplicate tool name 'search_orders' in this API Monitor MCP" in errors
+
+
+@pytest.mark.anyio
+async def test_publish_session_includes_selected_tools_only():
+    server_repo = _MemoryRepo([])
+    tool_repo = _MemoryRepo([])
+    registry = ApiMonitorMcpRegistry(server_repository=server_repo, tool_repository=tool_repo)
+    session = _build_session()
+    session.tool_definitions[0].selected = True
+    session.tool_definitions[1].selected = False
+    skipped = session.tool_definitions[0].model_copy(deep=True)
+    skipped.id = "tool_skipped"
+    skipped.name = "skipped_tool"
+    skipped.selected = False
+    session.tool_definitions.append(skipped)
+
+    result = await registry.publish_session(
+        session=session,
+        user_id="user_1",
+        mcp_name="Example MCP",
+        description="",
+        overwrite=False,
+    )
+
+    tools = await tool_repo.find_many({"mcp_server_id": result["server_id"], "user_id": "user_1"})
+    assert len(tools) == 1
+    assert tools[0]["name"] == session.tool_definitions[0].name
+    assert result["tool_count"] == 1
+
+
+def test_update_tool_selection(monkeypatch):
+    session = _build_session()
+    session.tool_definitions[0].selected = True
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: session)
+
+    app = _build_app()
+    client = TestClient(app)
+
+    response = client.patch(
+        f"/api/v1/api-monitor/session/{session.id}/tools/{session.tool_definitions[0].id}/selection",
+        json={"selected": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tool"]["selected"] is False
+    assert session.tool_definitions[0].selected is False
