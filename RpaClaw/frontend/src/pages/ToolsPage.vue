@@ -241,7 +241,11 @@
                 </div>
                 <div v-if="item.kind === 'server'" class="mcp-actions">
                   <span class="status-pill" :class="item.server.enabled ? 'status-on' : 'status-warn'">{{ item.server.enabled ? t('Enabled') : t('Disabled') }}</span>
-                  <button v-if="item.server.transport !== 'api_monitor'" class="action-muted" @click="openEditDialog(item.server)">
+                  <button v-if="item.server.transport === 'api_monitor'" class="action-muted" @click="openApiMonitorEditDialog(item.server)">
+                    <Pencil :size="14" class="inline" />
+                    {{ t('Edit') }}
+                  </button>
+                  <button v-else class="action-muted" @click="openEditDialog(item.server)">
                     <Pencil :size="14" class="inline" />
                     {{ t('Edit') }}
                   </button>
@@ -274,6 +278,12 @@
       <ApiMonitorMcpDetailDialog
         v-model:open="apiMonitorDetailOpen"
         :server="selectedApiMonitorServer"
+        @server-updated="handleApiMonitorServerUpdated"
+      />
+
+      <ApiMonitorMcpEditDialog
+        v-model:open="apiMonitorEditOpen"
+        :server="selectedApiMonitorEditServer"
         @server-updated="handleApiMonitorServerUpdated"
       />
 
@@ -650,6 +660,7 @@ import {
 } from 'lucide-vue-next';
 import { useRoute, useRouter } from 'vue-router';
 import ApiMonitorMcpDetailDialog from '@/components/tools/ApiMonitorMcpDetailDialog.vue';
+import ApiMonitorMcpEditDialog from '@/components/tools/ApiMonitorMcpEditDialog.vue';
 import { getTools, blockTool, deleteTool as apiDeleteTool } from '../api/agent';
 import type { ExternalToolItem } from '../types/response';
 import { listCredentials, type Credential } from '../api/credential';
@@ -706,6 +717,8 @@ const toolsDialogOpen = ref(false);
 const selectedServer = ref<McpServerItem | null>(null);
 const apiMonitorDetailOpen = ref(false);
 const selectedApiMonitorServer = ref<McpServerItem | null>(null);
+const apiMonitorEditOpen = ref(false);
+const selectedApiMonitorEditServer = ref<McpServerItem | null>(null);
 const discoveredTools = ref<McpToolDiscoveryItem[]>([]);
 const rpaMcpTools = ref<RpaMcpToolItem[]>([]);
 const gatewayTestDialogOpen = ref(false);
@@ -1099,6 +1112,11 @@ const handleApiMonitorServerUpdated = (updatedServer: McpServerItem) => {
   mcpServers.value = mcpServers.value.map((server) => (
     server.id === updatedServer.id ? updatedServer : server
   ));
+};
+
+const openApiMonitorEditDialog = (server: McpServerItem) => {
+  selectedApiMonitorEditServer.value = server;
+  apiMonitorEditOpen.value = true;
 };
 
 

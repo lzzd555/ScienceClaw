@@ -136,6 +136,36 @@ def parse_api_monitor_tool_yaml(yaml_definition: str) -> ApiMonitorToolContract:
     query_mapping, query_errors = _validate_mapping_section("request.query", request.get("query"), properties)
     body_mapping, body_errors = _validate_mapping_section("request.body", request.get("body"), properties)
     header_mapping, headers_errors = _validate_mapping_section("request.headers", request.get("headers"), properties)
+
+    # Auto-derive mappings from parameter "in" annotations when request mappings are absent.
+    if not request:
+        auto_path: dict[str, Any] = {}
+        auto_query: dict[str, Any] = {}
+        auto_body: dict[str, Any] = {}
+        auto_header: dict[str, Any] = {}
+        for prop_name, prop_value in properties.items():
+            if not isinstance(prop_value, dict):
+                continue
+            location = _string_value(prop_value.get("in")).lower()
+            template = "{{" + prop_name + "}}"
+            if location == "path":
+                auto_path[prop_name] = template
+            elif location == "query":
+                auto_query[prop_name] = template
+            elif location == "body":
+                auto_body[prop_name] = template
+            elif location == "header":
+                auto_header[prop_name] = template
+            else:
+                # Default: query for GET/DELETE, body for POST/PUT/PATCH
+                if method in ("POST", "PUT", "PATCH"):
+                    auto_body[prop_name] = template
+                else:
+                    auto_query[prop_name] = template
+        path_mapping = auto_path
+        query_mapping = auto_query
+        body_mapping = auto_body
+        header_mapping = auto_header
     errors.extend(path_errors)
     errors.extend(query_errors)
     errors.extend(body_errors)

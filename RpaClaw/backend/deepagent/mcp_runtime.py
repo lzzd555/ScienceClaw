@@ -233,6 +233,19 @@ class ApiMonitorMcpRuntime:
 
         method = str(doc.get("method") or "GET").upper()
         rendered_arguments = dict(arguments)
+
+        # Resolve mappings: use stored mappings if present, otherwise auto-derive from input_schema.
+        query_mapping = doc.get("query_mapping") or {}
+        body_mapping = doc.get("body_mapping") or {}
+        header_mapping = doc.get("header_mapping") or {}
+        path_mapping = doc.get("path_mapping") or {}
+        has_explicit_mapping = query_mapping or body_mapping or header_mapping or path_mapping
+
+        if not has_explicit_mapping:
+            query_mapping, body_mapping, header_mapping, path_mapping = _auto_derive_mappings(
+                method, doc.get("input_schema") or {},
+            )
+
         url = _build_api_monitor_url(
             _api_monitor_request_base_url(self._server, doc),
             _api_monitor_tool_url(doc),
@@ -242,10 +255,10 @@ class ApiMonitorMcpRuntime:
             return {"success": False, "error": f"API Monitor tool '{tool_name}' has no callable URL"}
 
         request_query = _api_monitor_base_query(self._server)
-        request_query.update(render_mapping(doc.get("query_mapping"), rendered_arguments))
+        request_query.update(render_mapping(query_mapping, rendered_arguments))
         request_headers: dict[str, Any] = dict(self._server.headers)
-        request_headers.update(render_mapping(doc.get("header_mapping"), rendered_arguments))
-        request_body = render_mapping(doc.get("body_mapping"), rendered_arguments)
+        request_headers.update(render_mapping(header_mapping, rendered_arguments))
+        request_body = render_mapping(body_mapping, rendered_arguments)
         json_body = request_body or None
 
         request_kwargs: dict[str, Any] = {
@@ -340,6 +353,43 @@ def _api_monitor_request_base_url(server: McpServerDefinition, doc: Mapping[str,
     if base_url:
         return base_url
     return str(doc.get("base_url") or "")
+
+
+def _auto_derive_mappings(
+    method: str,
+    input_schema: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Auto-derive query/body/header/path mappings from input_schema parameter 'in' annotations."""
+    properties = input_schema.get("properties") if isinstance(input_schema, dict) else None
+    if not isinstance(properties, dict):
+        return {}, {}, {}, {}
+
+    auto_query: dict[str, Any] = {}
+    auto_body: dict[str, Any] = {}
+    auto_header: dict[str, Any] = {}
+    auto_path: dict[str, Any] = {}
+
+    for prop_name, prop_value in properties.items():
+        if not isinstance(prop_value, dict):
+            continue
+        location = str(prop_value.get("in", "")).lower().strip()
+        template = "{{" + prop_name + "}}"
+        if location == "path":
+            auto_path[prop_name] = template
+        elif location == "query":
+            auto_query[prop_name] = template
+        elif location == "body":
+            auto_body[prop_name] = template
+        elif location == "header":
+            auto_header[prop_name] = template
+        else:
+            # Default: query for GET/DELETE, body for POST/PUT/PATCH
+            if method in ("POST", "PUT", "PATCH"):
+                auto_body[prop_name] = template
+            else:
+                auto_query[prop_name] = template
+
+    return auto_query, auto_body, auto_header, auto_path
 
 
 def _api_monitor_base_query(server: McpServerDefinition) -> dict[str, Any]:

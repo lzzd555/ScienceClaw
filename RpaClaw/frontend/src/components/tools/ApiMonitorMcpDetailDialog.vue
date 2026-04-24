@@ -23,74 +23,34 @@
 
         <div v-else-if="detail" class="space-y-6">
           <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
-            <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-              <div class="space-y-3">
-                <div>
-                  <div class="text-xs font-black uppercase tracking-[0.14em] text-teal-600 dark:text-teal-300">{{ t('MCP Overview') }}</div>
-                  <h3 class="mt-2 text-2xl font-black text-[var(--text-primary)]">{{ detail.server.name }}</h3>
-                  <p class="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">{{ detail.server.description || t('No description') }}</p>
-                </div>
-                <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <div class="detail-chip">
-                    <span class="detail-chip-label">{{ t('Base URL') }}</span>
-                    <span class="font-mono text-xs text-[var(--text-primary)]">{{ detail.server.endpoint_config?.url || '-' }}</span>
-                  </div>
-                  <div class="detail-chip">
-                    <span class="detail-chip-label">{{ t('Enabled') }}</span>
-                    <span :class="detail.server.enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
-                      {{ detail.server.enabled ? t('Enabled') : t('Disabled') }}
-                    </span>
-                  </div>
-                  <div class="detail-chip">
-                    <span class="detail-chip-label">{{ t('Default enabled') }}</span>
-                    <span :class="detail.server.default_enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-600 dark:text-slate-300'">
-                      {{ detail.server.default_enabled ? t('Yes') : t('No') }}
-                    </span>
-                  </div>
-                  <div class="detail-chip">
-                    <span class="detail-chip-label">{{ t('Tool count') }}</span>
-                    <span class="text-[var(--text-primary)]">{{ detail.tools.length }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <button
-                class="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-[#0f8f88] to-[#0b6ee6] px-4 py-2.5 text-sm font-bold text-white shadow-lg transition disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="savingConfig"
-                @click="saveSharedConfig"
-              >
-                <Loader2 v-if="savingConfig" class="animate-spin" :size="16" />
-                {{ savingConfig ? t('Saving...') : t('Save shared config') }}
-              </button>
-            </div>
-          </section>
-
-          <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
-            <div class="mb-5 flex items-center gap-3">
-              <ShieldCheck :size="18" class="text-violet-600 dark:text-violet-300" />
+            <div class="space-y-3">
               <div>
-                <h3 class="text-base font-black text-[var(--text-primary)]">{{ t('Shared authentication') }}</h3>
-                <p class="mt-1 text-sm text-[var(--text-tertiary)]">{{ t('Shared API Monitor auth hint') }}</p>
+                <div class="text-xs font-black uppercase tracking-[0.14em] text-teal-600 dark:text-teal-300">{{ t('MCP Overview') }}</div>
+                <h3 class="mt-2 text-2xl font-black text-[var(--text-primary)]">{{ detail.server.name }}</h3>
+                <p class="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">{{ detail.server.description || t('No description') }}</p>
               </div>
-            </div>
-
-            <div class="grid gap-4 lg:grid-cols-2">
-              <label class="field">
-                <span>{{ t('Shared headers JSON') }}</span>
-                <textarea v-model="configForm.headersText" rows="6" class="tools-input min-h-[140px] resize-y font-mono text-xs" spellcheck="false"></textarea>
-              </label>
-              <label class="field">
-                <span>{{ t('Shared query JSON') }}</span>
-                <textarea v-model="configForm.queryText" rows="6" class="tools-input min-h-[140px] resize-y font-mono text-xs" spellcheck="false"></textarea>
-              </label>
-              <label class="field">
-                <span>{{ t('Credential headers JSON') }}</span>
-                <textarea v-model="configForm.credentialHeadersText" rows="6" class="tools-input min-h-[140px] resize-y font-mono text-xs" spellcheck="false"></textarea>
-              </label>
-              <label class="field">
-                <span>{{ t('Timeout (ms)') }}</span>
-                <input v-model.number="configForm.timeoutMs" type="number" min="1" class="tools-input font-mono" />
-              </label>
+              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div class="detail-chip">
+                  <span class="detail-chip-label">{{ t('Base URL') }}</span>
+                  <span class="font-mono text-xs text-[var(--text-primary)]">{{ detail.server.endpoint_config?.url || '-' }}</span>
+                </div>
+                <div class="detail-chip">
+                  <span class="detail-chip-label">{{ t('Enabled') }}</span>
+                  <span :class="detail.server.enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
+                    {{ detail.server.enabled ? t('Enabled') : t('Disabled') }}
+                  </span>
+                </div>
+                <div class="detail-chip">
+                  <span class="detail-chip-label">{{ t('Default enabled') }}</span>
+                  <span :class="detail.server.default_enabled ? 'text-emerald-700 dark:text-emerald-300' : 'text-slate-600 dark:text-slate-300'">
+                    {{ detail.server.default_enabled ? t('Yes') : t('No') }}
+                  </span>
+                </div>
+                <div class="detail-chip">
+                  <span class="detail-chip-label">{{ t('Tool count') }}</span>
+                  <span class="text-[var(--text-primary)]">{{ detail.tools.length }}</span>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -166,6 +126,20 @@
                     </ul>
                   </div>
 
+                  <!-- Test arguments editor -->
+                  <div class="mt-5">
+                    <label class="field">
+                      <span>{{ t('Test arguments') }}</span>
+                      <textarea
+                        :value="toolStates[tool.id]?.testArgumentsText ?? '{}'"
+                        rows="6"
+                        class="tools-input min-h-[140px] resize-y font-mono text-xs"
+                        spellcheck="false"
+                        @input="updateTestArguments(tool.id, ($event.target as HTMLTextAreaElement).value)"
+                      ></textarea>
+                    </label>
+                  </div>
+
                   <div class="mt-4 flex flex-wrap items-center gap-3">
                     <button
                       class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-[var(--text-secondary)] transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10"
@@ -199,10 +173,6 @@
                     <div class="preview-card">
                       <div class="preview-title">{{ t('Input schema') }}</div>
                       <pre class="preview-code"><code>{{ prettyJson(toolStates[tool.id]?.previewInputSchema ?? {}) }}</code></pre>
-                    </div>
-                    <div class="preview-card">
-                      <div class="preview-title">{{ t('Sample arguments') }}</div>
-                      <pre class="preview-code"><code>{{ prettyJson(toolStates[tool.id]?.sampleArguments ?? {}) }}</code></pre>
                     </div>
                     <div class="preview-card">
                       <div class="preview-title">{{ t('Path mapping') }}</div>
@@ -242,12 +212,11 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronDown, Loader2, Server, ShieldCheck } from 'lucide-vue-next';
+import { ChevronDown, Loader2, Server } from 'lucide-vue-next';
 import { parse as parseYaml } from 'yaml';
 import {
   getApiMonitorMcpDetail,
   testApiMonitorMcpTool,
-  updateApiMonitorMcpConfig,
   updateApiMonitorMcpTool,
   type ApiMonitorMcpDetail,
   type ApiMonitorMcpToolDetail,
@@ -270,6 +239,7 @@ type ToolState = {
   previewInputSchema: Record<string, unknown>;
   savedInputSchema: Record<string, unknown>;
   sampleArguments: unknown;
+  testArgumentsText: string;
   testResult: unknown;
   saving: boolean;
   testing: boolean;
@@ -289,35 +259,13 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const loading = ref(false);
-const savingConfig = ref(false);
 const detail = ref<ApiMonitorMcpDetail | null>(null);
 const expandedToolIds = ref<Set<string>>(new Set());
 const toolStates = reactive<Record<string, ToolState>>({});
 const activeLoadToken = ref(0);
-const configForm = reactive({
-  headersText: '{}',
-  queryText: '{}',
-  credentialHeadersText: '{}',
-  timeoutMs: 20000,
-});
 
 function handleOpenChange(value: boolean) {
   emit('update:open', value);
-}
-
-function safeJsonStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value ?? {}, null, 2);
-  } catch {
-    return '{}';
-  }
-}
-
-function resetConfigForm() {
-  configForm.headersText = '{}';
-  configForm.queryText = '{}';
-  configForm.credentialHeadersText = '{}';
-  configForm.timeoutMs = 20000;
 }
 
 function resetToolStates() {
@@ -330,7 +278,6 @@ function clearDetailState() {
   detail.value = null;
   expandedToolIds.value = new Set();
   resetToolStates();
-  resetConfigForm();
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -353,13 +300,12 @@ function parseYamlDraft(yamlText: string): { name?: string; description?: string
   }
 }
 
-function getServerBaseUrl(server: McpServerItem | null | undefined): string {
-  const endpointConfig = server?.endpoint_config;
-  if (!isPlainObject(endpointConfig)) return '';
-  const baseUrl = endpointConfig.base_url;
-  if (typeof baseUrl === 'string' && baseUrl.trim()) return baseUrl;
-  const url = endpointConfig.url;
-  return typeof url === 'string' ? url : '';
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return '{}';
+  }
 }
 
 function syncToolStateFromYaml(toolId: string) {
@@ -380,6 +326,7 @@ function clearToolTestResult(toolId: string) {
 }
 
 function applyToolState(tool: ApiMonitorMcpToolDetail) {
+  const sampleArgs = buildSampleArguments(tool.input_schema as Record<string, unknown>);
   toolStates[tool.id] = {
     name: tool.name || '',
     description: tool.description || '',
@@ -387,7 +334,8 @@ function applyToolState(tool: ApiMonitorMcpToolDetail) {
     savedYamlDefinition: tool.yaml_definition || '',
     previewInputSchema: (tool.input_schema as Record<string, unknown>) || {},
     savedInputSchema: (tool.input_schema as Record<string, unknown>) || {},
-    sampleArguments: buildSampleArguments(tool.input_schema as Record<string, unknown>),
+    sampleArguments: sampleArgs,
+    testArgumentsText: safeJsonStringify(sampleArgs),
     testResult: toolStates[tool.id]?.testResult ?? null,
     saving: false,
     testing: false,
@@ -398,10 +346,6 @@ function applyToolState(tool: ApiMonitorMcpToolDetail) {
 
 function applyDetail(nextDetail: ApiMonitorMcpDetail) {
   detail.value = nextDetail;
-  configForm.headersText = safeJsonStringify(nextDetail.server.endpoint_config?.headers || {});
-  configForm.queryText = safeJsonStringify(nextDetail.server.credential_binding?.query || {});
-  configForm.credentialHeadersText = safeJsonStringify(nextDetail.server.credential_binding?.headers || {});
-  configForm.timeoutMs = nextDetail.server.endpoint_config?.timeout_ms || 20000;
   resetToolStates();
   nextDetail.tools.forEach((tool) => applyToolState(tool));
   expandedToolIds.value = new Set(nextDetail.tools.length > 0 ? [nextDetail.tools[0].id] : []);
@@ -428,20 +372,6 @@ async function loadDetail() {
   }
 }
 
-function parseJsonObject(text: string, fieldLabel: string): Record<string, unknown> {
-  const trimmed = text.trim();
-  if (!trimmed) return {};
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(fieldLabel);
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    throw new Error(t('JSON field invalid', { field: fieldLabel }));
-  }
-}
-
 function updateToolField(toolId: string, field: 'name' | 'description', value: string) {
   const state = toolStates[toolId];
   if (!state) return;
@@ -457,6 +387,16 @@ function updateToolYaml(toolId: string, value: string) {
   state.yamlDefinition = value;
   clearToolTestResult(toolId);
   syncToolStateFromYaml(toolId);
+  // Update test arguments when YAML parameters change
+  const newSample = buildSampleArguments(state.previewInputSchema);
+  state.sampleArguments = newSample;
+  state.testArgumentsText = safeJsonStringify(newSample);
+}
+
+function updateTestArguments(toolId: string, value: string) {
+  const state = toolStates[toolId];
+  if (!state) return;
+  state.testArgumentsText = value;
 }
 
 function toggleExpanded(toolId: string) {
@@ -480,37 +420,14 @@ function statusClass(status?: string | null) {
   return 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-300';
 }
 
-async function saveSharedConfig() {
-  if (!detail.value?.server.server_key) return;
-  savingConfig.value = true;
+function parseTestArguments(text: string): Record<string, unknown> {
   try {
-    const currentEndpointConfig = isPlainObject(detail.value.server.endpoint_config)
-      ? detail.value.server.endpoint_config
-      : {};
-    const currentCredentialBinding = isPlainObject(detail.value.server.credential_binding)
-      ? detail.value.server.credential_binding
-      : {};
-    const result = await updateApiMonitorMcpConfig(detail.value.server.server_key, {
-      endpoint_config: {
-        ...currentEndpointConfig,
-        headers: parseJsonObject(configForm.headersText, t('Shared headers JSON')),
-        timeout_ms: configForm.timeoutMs,
-      },
-      credential_binding: {
-        ...currentCredentialBinding,
-        query: parseJsonObject(configForm.queryText, t('Shared query JSON')),
-        headers: parseJsonObject(configForm.credentialHeadersText, t('Credential headers JSON')),
-      },
-    });
-    detail.value.server = result.server;
-    emit('server-updated', result.server);
-    showSuccessToast(t('API Monitor shared config saved'));
-  } catch (error: any) {
-    console.error(error);
-    showErrorToast(error?.message || t('Failed to save API Monitor config'));
-  } finally {
-    savingConfig.value = false;
+    const parsed = JSON.parse(text.trim() || '{}');
+    if (isPlainObject(parsed)) return parsed;
+  } catch {
+    // fall through
   }
+  return {};
 }
 
 async function saveTool(toolId: string) {
@@ -542,12 +459,12 @@ async function saveTool(toolId: string) {
 async function testTool(toolId: string) {
   if (!detail.value?.server.server_key) return;
   const state = toolStates[toolId];
-  const tool = detail.value.tools.find((item) => item.id === toolId);
-  if (!state || !tool) return;
+  if (!state) return;
   state.testing = true;
   try {
+    const args = parseTestArguments(state.testArgumentsText);
     const result = await testApiMonitorMcpTool(detail.value.server.server_key, toolId, {
-      arguments: buildSampleArguments(tool.input_schema as Record<string, unknown>) as Record<string, unknown>,
+      arguments: args,
     });
     state.testResult = result;
     showSuccessToast(result.success ? t('API Monitor tool test succeeded') : t('API Monitor tool test finished'));
