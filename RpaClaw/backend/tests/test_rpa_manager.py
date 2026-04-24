@@ -782,7 +782,14 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_page.expose_function_calls, [])
         self.assertEqual(first_page.evaluate_calls, [])
         self.assertEqual(second_page.expose_function_calls, [])
-        self.assertEqual(second_page.evaluate_calls, [])
+        self.assertEqual(
+            second_page.evaluate_calls,
+            [
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_JS,
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_JS,
+                MANAGER_MODULE.CAPTURE_JS,
+            ],
+        )
 
     async def test_context_binding_callback_derives_frame_path_from_source_frame(self):
         context = _FakeContext()
@@ -1398,6 +1405,22 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.steps[-1].source_tab_id, source_tab_id)
         self.assertEqual(self.session.steps[-1].target_tab_id, target_tab_id)
         self.assertEqual(self.session.steps[-1].signals["popup"]["target_tab_id"], target_tab_id)
+
+    async def test_register_context_page_bootstraps_current_page_recorder_runtime(self):
+        source_page = _FakePage("https://example.com", "Example")
+        target_page = _FakePage("https://example.com/new", "Popup", context=source_page.context)
+
+        await self.manager.register_page(self.session.id, source_page, make_active=True)
+        await self.manager.register_context_page(self.session.id, target_page, make_active=True)
+
+        self.assertEqual(
+            target_page.evaluate_calls,
+            [
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_JS,
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_JS,
+                MANAGER_MODULE.CAPTURE_JS,
+            ],
+        )
 
     async def test_navigation_after_popup_signal_click_is_skipped(self):
         source_page = _FakePage("https://example.com", "Example")
