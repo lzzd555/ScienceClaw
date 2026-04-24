@@ -240,7 +240,8 @@ async def stop_recording(
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
-    tools = await api_monitor_manager.stop_recording(session_id)
+    model_config = await _resolve_user_model_config(str(current_user.id))
+    tools = await api_monitor_manager.stop_recording(session_id, model_config=model_config)
     return {
         "status": "success",
         "tools": [t.model_dump() for t in tools],
