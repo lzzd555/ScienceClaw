@@ -4,6 +4,8 @@ import { apiClient, createSSEConnection } from '@/api/client'
 // Types
 // ---------------------------------------------------------------------------
 
+export type ApiToolConfidence = 'high' | 'medium' | 'low'
+
 export interface CapturedRequest {
   request_id: string
   url: string
@@ -43,6 +45,10 @@ export interface ApiToolDefinition {
   yaml_definition: string
   source_calls: string[]
   source: 'auto' | 'manual'
+  confidence: ApiToolConfidence
+  selected: boolean
+  confidence_reasons: string[]
+  source_evidence: Record<string, unknown>
   created_at: string
   updated_at: string
 }
@@ -197,6 +203,21 @@ export async function updateTool(
  */
 export async function deleteTool(sessionId: string, toolId: string): Promise<void> {
   await apiClient.delete(`/api-monitor/session/${sessionId}/tools/${toolId}`)
+}
+
+/**
+ * Toggle tool selection (adopted/not-adopted).
+ */
+export async function updateToolSelection(
+  sessionId: string,
+  toolId: string,
+  selected: boolean,
+): Promise<ApiToolDefinition> {
+  const response = await apiClient.patch(
+    `/api-monitor/session/${sessionId}/tools/${toolId}/selection`,
+    { selected },
+  )
+  return response.data.tool
 }
 
 /**
