@@ -70,6 +70,19 @@ export interface AnalyzeEvent {
   data: unknown
 }
 
+export interface PublishMcpPayload {
+  mcp_name: string
+  description: string
+  confirm_overwrite: boolean
+}
+
+export interface PublishMcpResult {
+  saved: boolean
+  server_id: string
+  tool_count: number
+  overwritten: boolean
+}
+
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
@@ -79,7 +92,7 @@ export interface AnalyzeEvent {
  */
 export async function startSession(url: string): Promise<ApiMonitorSession> {
   const response = await apiClient.post('/api-monitor/session/start', { url })
-  return response.data.data
+  return response.data.session
 }
 
 /**
@@ -87,7 +100,7 @@ export async function startSession(url: string): Promise<ApiMonitorSession> {
  */
 export async function getSession(sessionId: string): Promise<ApiMonitorSession> {
   const response = await apiClient.get(`/api-monitor/session/${sessionId}`)
-  return response.data.data
+  return response.data.session
 }
 
 /**
@@ -109,7 +122,7 @@ export async function navigateSession(sessionId: string, url: string): Promise<v
  */
 export async function listTabs(sessionId: string): Promise<TabInfo[]> {
   const response = await apiClient.get(`/api-monitor/session/${sessionId}/tabs`)
-  return response.data.data
+  return response.data.tabs
 }
 
 /**
@@ -153,7 +166,7 @@ export async function startRecording(sessionId: string): Promise<void> {
  */
 export async function stopRecording(sessionId: string): Promise<ApiToolDefinition[]> {
   const response = await apiClient.post(`/api-monitor/session/${sessionId}/record/stop`)
-  return response.data.data
+  return response.data.tools
 }
 
 /**
@@ -161,7 +174,7 @@ export async function stopRecording(sessionId: string): Promise<ApiToolDefinitio
  */
 export async function listTools(sessionId: string): Promise<ApiToolDefinition[]> {
   const response = await apiClient.get(`/api-monitor/session/${sessionId}/tools`)
-  return response.data.data
+  return response.data.tools
 }
 
 /**
@@ -176,7 +189,7 @@ export async function updateTool(
     `/api-monitor/session/${sessionId}/tools/${toolId}`,
     { yaml_definition: yamlDefinition },
   )
-  return response.data.data
+  return response.data.tool
 }
 
 /**
@@ -187,11 +200,12 @@ export async function deleteTool(sessionId: string, toolId: string): Promise<voi
 }
 
 /**
- * Export all tool definitions as a YAML file bundle.
+ * Publish the current session tool definitions as one MCP server.
  */
-export async function exportTools(
+export async function publishMcpToolBundle(
   sessionId: string,
-): Promise<{ content: string; filename: string }> {
-  const response = await apiClient.post(`/api-monitor/session/${sessionId}/export`)
+  payload: PublishMcpPayload,
+): Promise<PublishMcpResult> {
+  const response = await apiClient.post(`/api-monitor/session/${sessionId}/publish-mcp`, payload)
   return response.data.data
 }

@@ -1,23 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import {
   startSession,
-  getSession,
   stopSession,
-  navigateSession,
   analyzeSession,
   startRecording as apiStartRecording,
   stopRecording as apiStopRecording,
   listTools,
   updateTool as apiUpdateTool,
   deleteTool as apiDeleteTool,
-  exportTools,
+  publishMcpToolBundle,
   type ApiMonitorSession,
   type ApiToolDefinition,
-  type CapturedRequest,
-  type CapturedResponse,
-  type CapturedApiCall,
 } from '@/api/apiMonitor';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
@@ -45,6 +40,13 @@ const expandedToolId = ref<string | null>(null);
 const toolEdits = reactive<Record<string, string>>({});
 const loading = ref(false);
 const error = ref<string | null>(null);
+const publishDialogOpen = ref(false);
+const overwriteDialogOpen = ref(false);
+const isPublishing = ref(false);
+const publishForm = reactive({
+  mcpName: '',
+  description: '',
+});
 
 // Screencast
 let screencastWs: WebSocket | null = null;
@@ -323,34 +325,43 @@ const startAnalysis = async () => {
   addLog('INFO', 'Starting analysis...');
 
   const cleanup = analyzeSession(sessionId.value, (evt) => {
-    const data = evt.data as any;
+    let data: any;
+    try { data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data; } catch { data = evt.data; }
     switch (evt.event) {
       case 'analysis_started':
         addLog('INFO', `Analyzing: ${data.url}`);
         break;
+      case 'progress':
+        if (data.step === 'scanning') {
+          addLog('INFO', data.message);
+        } else if (data.step === 'classifying') {
+          addLog('ANALYZE', data.message);
+        } else if (data.step === 'probing') {
+          addLog('ANALYZE', `${data.message} (${data.current}/${data.total})`);
+        } else if (data.step === 'generating') {
+          addLog('BUILD', data.message);
+        } else {
+          addLog('INFO', data.message || 'Processing...');
+        }
+        break;
       case 'elements_found':
         addLog('INFO', `Found ${data.count} interactive elements`);
         break;
-      case 'probing_element':
-        addLog('ANALYZE', `Probing ${data.index}/${data.total}: ${data.element?.text || data.element?.tag}`);
+      case 'elements_classified':
+        addLog('ANALYZE', `Classified: ${data.safe} safe, ${data.skipped} skipped`);
         break;
       case 'calls_captured':
-        addLog('RECV', `Captured ${data.count} API calls`);
-        break;
-      case 'generating_tools':
-        addLog('BUILD', `Generating tool definitions...`);
-        break;
-      case 'tool_generated':
-        tools.value.push(data as ApiToolDefinition);
-        addLog('BUILD', `Generated tool: ${data.name}`);
+        addLog('RECV', `Captured ${data.calls} API calls from element ${data.element_index}`);
         break;
       case 'analysis_complete':
-        addLog('INFO', `Analysis complete: ${data.total_tools} tools, ${data.total_calls} calls`);
+        addLog('INFO', `Analysis complete: ${data.tools_generated} tools, ${data.total_calls} calls`);
         isAnalyzing.value = false;
+        // Refresh tools from session
+        listTools(sessionId.value).then((t) => { tools.value = t; }).catch(() => {});
         cleanup();
         break;
-      case 'error':
-        addLog('ERROR', data.message);
+      case 'analysis_error':
+        addLog('ERROR', data.error);
         isAnalyzing.value = false;
         cleanup();
         break;
@@ -406,21 +417,23 @@ const toggleToolExpand = (toolId: string) => {
   }
 };
 
-const handleSaveTool = async (toolId: string) => {
+const saveToolEdit = async (toolId: string) => {
   if (!sessionId.value) return;
   const yaml = toolEdits[toolId];
   if (yaml === undefined) return;
-  try {
-    addLog('INFO', `Saving tool: ${toolId}`);
-    const updated = await apiUpdateTool(sessionId.value, toolId, yaml);
-    const idx = tools.value.findIndex((t) => t.id === toolId);
-    if (idx >= 0) {
-      tools.value[idx] = updated;
-    }
-    addLog('INFO', `Tool saved: ${updated.name}`);
-    expandedToolId.value = null;
-  } catch (err: any) {
-    addLog('ERROR', `Failed to save tool: ${err.message}`);
+  const current = tools.value.find((t) => t.id === toolId);
+  if (current?.yaml_definition === yaml) return;
+  const updated = await apiUpdateTool(sessionId.value, toolId, yaml);
+  const idx = tools.value.findIndex((t) => t.id === toolId);
+  if (idx >= 0) {
+    tools.value[idx] = updated;
+  }
+};
+
+const flushToolEdits = async () => {
+  const editedToolIds = Object.keys(toolEdits);
+  for (const toolId of editedToolIds) {
+    await saveToolEdit(toolId);
   }
 };
 
@@ -441,24 +454,49 @@ const handleDeleteTool = async (toolId: string) => {
 };
 
 // ---------------------------------------------------------------------------
-// Export
+// Publish as MCP
 // ---------------------------------------------------------------------------
 
-const handleExport = async () => {
-  if (!sessionId.value || !tools.value.length) return;
+const getDefaultMcpName = () => {
+  const target = session.value?.target_url || urlInput.value;
   try {
-    addLog('INFO', 'Exporting tools...');
-    const result = await exportTools(sessionId.value);
-    const blob = new Blob([result.content], { type: 'text/yaml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = result.filename;
-    a.click();
-    URL.revokeObjectURL(url);
-    addLog('INFO', `Exported to ${result.filename}`);
+    const host = new URL(target).hostname;
+    return host ? `${host} API MCP` : 'API Monitor MCP';
+  } catch {
+    return 'API Monitor MCP';
+  }
+};
+
+const openPublishDialog = () => {
+  if (!sessionId.value || !tools.value.length) return;
+  publishForm.mcpName = publishForm.mcpName || getDefaultMcpName();
+  publishForm.description = publishForm.description || session.value?.target_url || urlInput.value || '';
+  publishDialogOpen.value = true;
+};
+
+const submitPublish = async (confirmOverwrite = false) => {
+  if (!sessionId.value || !tools.value.length || !publishForm.mcpName.trim()) return;
+  isPublishing.value = true;
+  try {
+    addLog('INFO', 'Publishing MCP tools...');
+    await flushToolEdits();
+    const result = await publishMcpToolBundle(sessionId.value, {
+      mcp_name: publishForm.mcpName.trim(),
+      description: publishForm.description.trim(),
+      confirm_overwrite: confirmOverwrite,
+    });
+    publishDialogOpen.value = false;
+    overwriteDialogOpen.value = false;
+    addLog('INFO', `Saved MCP "${publishForm.mcpName}" with ${result.tool_count} tools`);
   } catch (err: any) {
-    addLog('ERROR', `Failed to export: ${err.message}`);
+    if (err?.response?.status === 409 && err?.response?.data?.needs_confirmation) {
+      overwriteDialogOpen.value = true;
+      addLog('INFO', 'Existing MCP found. Waiting for overwrite confirmation.');
+      return;
+    }
+    addLog('ERROR', `Failed to save MCP: ${err.message}`);
+  } finally {
+    isPublishing.value = false;
   }
 };
 
@@ -551,12 +589,12 @@ onBeforeUnmount(() => {
           {{ isRecording ? 'Stop' : 'Record' }}
         </button>
         <button
-          @click="handleExport"
-          :disabled="!sessionId || !tools.length"
+          @click="openPublishDialog"
+          :disabled="!sessionId || !tools.length || isPublishing"
           class="px-3 py-1.5 bg-[#57f1db]/20 text-[#57f1db] border border-[#57f1db]/30 rounded-lg text-sm font-medium hover:bg-[#57f1db]/30 transition-colors disabled:opacity-50 whitespace-nowrap flex items-center gap-1"
         >
-          <span class="material-symbols-outlined text-base">download</span>
-          Export
+          <span class="material-symbols-outlined text-base">save</span>
+          Save as MCP Tool
         </button>
       </div>
     </header>
@@ -693,12 +731,6 @@ onBeforeUnmount(() => {
                   >
                     Delete
                   </button>
-                  <button
-                    @click="handleSaveTool(tool.id)"
-                    class="px-2 py-1 text-[10px] bg-[#57f1db]/20 text-[#57f1db] border border-[#57f1db]/30 rounded hover:bg-[#57f1db]/30 transition-colors"
-                  >
-                    Save
-                  </button>
                 </div>
               </div>
             </div>
@@ -726,5 +758,79 @@ onBeforeUnmount(() => {
       <div class="flex-1"></div>
       <span v-if="sessionId" class="font-mono">{{ sessionId.slice(0, 8) }}...</span>
     </footer>
+
+    <div
+      v-if="publishDialogOpen"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 px-4"
+    >
+      <div class="w-full max-w-md rounded-xl border border-[#3c4a46] bg-[#0f1d30] p-5 shadow-2xl">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-bold text-[#dae2fd]">Save as MCP Tool</h2>
+          <button
+            class="text-[#5a6a65] hover:text-[#dae2fd]"
+            @click="publishDialogOpen = false"
+          >
+            <span class="material-symbols-outlined text-lg">close</span>
+          </button>
+        </div>
+        <label class="mt-4 block text-xs font-semibold text-[#bacac5]">
+          MCP Name
+          <input
+            v-model="publishForm.mcpName"
+            class="mt-1 w-full rounded-lg border border-[#3c4a46] bg-[#0b1326] px-3 py-2 text-sm text-[#dae2fd] outline-none focus:border-[#57f1db]/60"
+            type="text"
+          />
+        </label>
+        <label class="mt-3 block text-xs font-semibold text-[#bacac5]">
+          Description
+          <textarea
+            v-model="publishForm.description"
+            class="mt-1 h-20 w-full resize-none rounded-lg border border-[#3c4a46] bg-[#0b1326] px-3 py-2 text-sm text-[#dae2fd] outline-none focus:border-[#57f1db]/60"
+          ></textarea>
+        </label>
+        <div class="mt-5 flex justify-end gap-2">
+          <button
+            class="rounded-lg border border-[#3c4a46] px-3 py-2 text-sm text-[#bacac5] hover:bg-white/5"
+            @click="publishDialogOpen = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="rounded-lg border border-[#57f1db]/30 bg-[#57f1db]/20 px-3 py-2 text-sm font-semibold text-[#57f1db] hover:bg-[#57f1db]/30 disabled:opacity-50"
+            :disabled="isPublishing || !publishForm.mcpName.trim()"
+            @click="submitPublish(false)"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="overwriteDialogOpen"
+      class="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 px-4"
+    >
+      <div class="w-full max-w-md rounded-xl border border-[#ffb4ab]/30 bg-[#0f1d30] p-5 shadow-2xl">
+        <h2 class="text-base font-bold text-[#dae2fd]">Replace existing MCP tools?</h2>
+        <p class="mt-3 text-sm leading-6 text-[#bacac5]">
+          An MCP named "{{ publishForm.mcpName }}" already exists. Replacing it will overwrite all tools under that MCP with the current API Monitor results.
+        </p>
+        <div class="mt-5 flex justify-end gap-2">
+          <button
+            class="rounded-lg border border-[#3c4a46] px-3 py-2 text-sm text-[#bacac5] hover:bg-white/5"
+            @click="overwriteDialogOpen = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="rounded-lg border border-[#ffb4ab]/30 bg-[#ffb4ab]/20 px-3 py-2 text-sm font-semibold text-[#ffb4ab] hover:bg-[#ffb4ab]/30 disabled:opacity-50"
+            :disabled="isPublishing"
+            @click="submitPublish(true)"
+          >
+            Replace Tools
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

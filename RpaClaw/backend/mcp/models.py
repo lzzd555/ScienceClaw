@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Literal
 from pydantic import BaseModel, Field
 
 
-McpTransport = Literal["stdio", "streamable_http", "sse"]
+McpTransport = Literal["stdio", "streamable_http", "sse", "api_monitor"]
 McpScope = Literal["system", "user"]
 McpSessionMode = Literal["inherit", "enabled", "disabled"]
 

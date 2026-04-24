@@ -42,6 +42,7 @@ async def init_storage() -> None:
             "users", "user_sessions", "sessions", "models",
             "skills", "blocked_tools", "task_settings", "session_events",
             "session_runtimes", "credentials", "rpa_mcp_tools",
+            "api_monitor_mcp_tools", "user_mcp_servers", "session_mcp_bindings",
         ):
             repo = FileRepository(name)
             await repo.load()
@@ -64,4 +65,3 @@ async def close_storage() -> None:
     _repositories.clear()
     global _initialized
     _initialized = False
-

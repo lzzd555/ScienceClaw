@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from backend.config import settings
@@ -18,8 +19,10 @@ from backend.rpa.api_monitor.models import (
     ApiMonitorSession,
     StartSessionRequest,
     NavigateRequest,
+    PublishMcpRequest,
     UpdateToolRequest,
 )
+from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.screencast import SessionScreencastController
 
 logger = logging.getLogger(__name__)
@@ -274,18 +277,36 @@ async def delete_tool(
     return {"status": "success"}
 
 
-@router.post("/session/{session_id}/export")
-async def export_tools(
+@router.post("/session/{session_id}/publish-mcp")
+async def publish_mcp(
     session_id: str,
+    request: PublishMcpRequest,
     current_user: User = Depends(get_current_user),
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
 
-    tools_yaml = [t.yaml_definition for t in session.tool_definitions]
-    export_content = "---\n" + "\n---\n".join(tools_yaml)
-    return {
-        "status": "success",
-        "content": export_content,
-        "filename": f"api-monitor-tools-{session_id[:8]}.yaml",
-    }
+    registry = ApiMonitorMcpRegistry()
+    existing = await registry.find_by_name(
+        user_id=str(current_user.id),
+        mcp_name=request.mcp_name,
+    )
+    if existing and not request.confirm_overwrite:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "MCP with the same name already exists",
+                "needs_confirmation": True,
+                "server_id": str(existing["_id"]),
+            },
+        )
+
+    result = await registry.publish_session(
+        session=session,
+        user_id=str(current_user.id),
+        mcp_name=request.mcp_name,
+        description=request.description,
+        overwrite=bool(existing),
+        existing_server_id=str(existing["_id"]) if existing else None,
+    )
+    return {"status": "success", "data": result}

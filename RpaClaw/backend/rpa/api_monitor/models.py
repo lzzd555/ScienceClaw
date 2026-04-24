@@ -93,3 +93,9 @@ class NavigateRequest(BaseModel):
 
 class UpdateToolRequest(BaseModel):
     yaml_definition: str
+
+
+class PublishMcpRequest(BaseModel):
+    mcp_name: str
+    description: str = ""
+    confirm_overwrite: bool = False

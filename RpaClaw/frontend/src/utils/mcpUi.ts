@@ -3,6 +3,8 @@ type McpServerLike = {
   scope?: string;
   server_key?: string;
   description?: string;
+  transport?: string;
+  source_type?: string;
   enabled?: boolean;
   default_enabled?: boolean;
   session_mode?: 'inherit' | 'enabled' | 'disabled';
@@ -88,6 +90,9 @@ export function isRpaGatewayServer(server?: McpServerLike | null): boolean {
 export function formatMcpServerDescription(server: McpServerLike, t: (key: string) => string): string {
   if (isRpaGatewayServer(server)) {
     return t('RPA gateway platform description');
+  }
+  if (server.source_type === 'api_monitor' || server.transport === 'api_monitor') {
+    return server.description || t('API Monitor MCP description');
   }
   return server.description || t('No description');
 }
@@ -269,6 +274,9 @@ export function formatMcpToolDisplayName(input: McpToolDisplayInput): string {
 
 export function formatMcpServerEndpoint(server: McpServerEndpointInput): string {
   const endpoint = server.endpoint_config || {};
+  if (server.transport === 'api_monitor') {
+    return 'Internal API Monitor MCP';
+  }
   if (server.transport === 'stdio') {
     const command = endpoint.command?.trim();
     const args = (endpoint.args || []).map((arg) => arg.trim()).filter(Boolean);
