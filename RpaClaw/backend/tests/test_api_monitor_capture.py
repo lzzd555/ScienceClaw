@@ -102,3 +102,29 @@ class TestShouldCaptureNoiseFilter:
 
     def test_normal_api_not_filtered(self):
         assert should_capture("https://example.com/api/orders", "fetch") is True
+
+    def test_same_origin_api_not_filtered(self):
+        assert (
+            should_capture(
+                "https://example.com/api/orders",
+                "fetch",
+                page_url="https://example.com/app",
+            )
+            is True
+        )
+
+    def test_relative_api_not_filtered_with_page_url(self):
+        assert should_capture("/api/orders", "fetch", page_url="https://example.com/app") is True
+
+    def test_third_party_api_filtered_with_page_url(self):
+        assert (
+            should_capture(
+                "https://analytics.example.net/collect",
+                "fetch",
+                page_url="https://example.com/app",
+            )
+            is False
+        )
+
+    def test_capture_without_page_url_keeps_existing_behavior(self):
+        assert should_capture("https://analytics.example.net/collect", "fetch") is True

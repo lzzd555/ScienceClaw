@@ -260,8 +260,15 @@ class ApiMonitorSessionManager:
         self._contexts[session_id] = context
         self._pages[session_id] = page
 
-        # Install network capture
-        capture = NetworkCaptureEngine()
+        # Install network capture. During initial navigation page.url can still be
+        # about:blank, so fall back to the intended target URL for origin filtering.
+        def _capture_page_url() -> str:
+            current_url = page.url
+            if current_url and current_url != "about:blank":
+                return current_url
+            return session.target_url or target_url
+
+        capture = NetworkCaptureEngine(page_url_provider=_capture_page_url)
         self._captures[session_id] = capture
         self._install_listeners(session_id, page, capture)
 

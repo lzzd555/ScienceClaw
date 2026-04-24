@@ -36,7 +36,7 @@ MAX_RESPONSE_BODY_SIZE = 50 * 1024  # 50KB
 RESPONSE_BODY_TIMEOUT_S = 5.0
 
 
-def should_capture(url: str, resource_type: str) -> bool:
+def should_capture(url: str, resource_type: str, page_url: Optional[str] = None) -> bool:
     """Return True if this request should be captured."""
     if resource_type not in CAPTURE_RESOURCE_TYPES:
         return False
@@ -50,11 +50,44 @@ def should_capture(url: str, resource_type: str) -> bool:
     if parsed.scheme in ("ws", "wss"):
         return False
 
+    if page_url and not _is_same_origin_or_relative(parsed, page_url):
+        return False
+
     for ext in STATIC_EXTENSIONS:
         if path_lower.endswith(ext):
             return False
 
     return True
+
+
+def _is_same_origin_or_relative(parsed_url, page_url: str) -> bool:
+    """Return True when a request URL is relative or matches the page origin."""
+    if not parsed_url.scheme and not parsed_url.netloc:
+        return True
+
+    page = urlparse(page_url)
+    if not page.scheme or not page.hostname or not parsed_url.hostname:
+        return True
+
+    return (
+        parsed_url.scheme.lower(),
+        parsed_url.hostname.lower(),
+        _normalized_port(parsed_url),
+    ) == (
+        page.scheme.lower(),
+        page.hostname.lower(),
+        _normalized_port(page),
+    )
+
+
+def _normalized_port(parsed_url) -> Optional[int]:
+    if parsed_url.port is not None:
+        return parsed_url.port
+    if parsed_url.scheme == "http":
+        return 80
+    if parsed_url.scheme == "https":
+        return 443
+    return None
 
 
 # ── URL pattern parameterization ─────────────────────────────────────
@@ -127,9 +160,10 @@ def dedup_key(call: CapturedApiCall) -> str:
 class NetworkCaptureEngine:
     """Manages in-flight request tracking and creates CapturedApiCall objects."""
 
-    def __init__(self) -> None:
+    def __init__(self, page_url_provider: Optional[Callable[[], str]] = None) -> None:
         self._in_flight: Dict[int, Dict] = {}
         self._captured_calls: List[CapturedApiCall] = []
+        self._page_url_provider = page_url_provider
         # Optional callback invoked when a request/response is captured or skipped.
         # Signature: (level: str, message: str) -> None
         self.on_log: Optional[Callable[[str, str], None]] = None
@@ -144,10 +178,12 @@ class NetworkCaptureEngine:
 
     def on_request(self, request) -> None:
         """Called by page.on('request')."""
-        if not should_capture(request.url, request.resource_type):
+        page_url = self._current_page_url()
+        if not should_capture(request.url, request.resource_type, page_url=page_url):
             logger.debug(
-                "[ApiMonitor] Skipped request: resource_type=%s url=%s",
+                "[ApiMonitor] Skipped request: resource_type=%s page_url=%s url=%s",
                 request.resource_type,
+                page_url,
                 request.url[:120],
             )
             return
@@ -189,6 +225,15 @@ class NetworkCaptureEngine:
             "request": captured_req,
             "start_time": time.monotonic(),
         }
+
+    def _current_page_url(self) -> Optional[str]:
+        if not self._page_url_provider:
+            return None
+        try:
+            return self._page_url_provider()
+        except Exception as exc:
+            logger.debug("[ApiMonitor] Failed to read page URL for capture filter: %s", exc)
+            return None
 
     async def on_response(self, response) -> None:
         """Called by page.on('response')."""
