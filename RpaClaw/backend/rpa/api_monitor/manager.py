@@ -20,6 +20,7 @@ from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.playwright_security import get_context_kwargs
 from backend.rpa.screencast import SessionScreencastController
 
+from .confidence import classify_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
 from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall
 from .network_capture import NetworkCaptureEngine, dedup_key
@@ -264,6 +265,18 @@ def _dedupe_strings(values: List[str]) -> List[str]:
 
 
 # ── Manager ──────────────────────────────────────────────────────────
+
+
+def _apply_confidence_to_tool(
+    tool: ApiToolDefinition,
+    calls: List[CapturedApiCall],
+) -> ApiToolDefinition:
+    result = classify_api_candidate(calls)
+    tool.confidence = result.confidence
+    tool.selected = result.selected
+    tool.confidence_reasons = result.reasons
+    tool.source_evidence = result.evidence_summary
+    return tool
 
 
 class ApiMonitorSessionManager:
@@ -680,6 +693,7 @@ class ApiMonitorSessionManager:
                     source_calls=[c.id for c in samples],
                     source=source,
                 )
+                tool = _apply_confidence_to_tool(tool, samples)
 
                 session.tool_definitions.append(tool)
                 tools.append(tool)

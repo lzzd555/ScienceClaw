@@ -76,3 +76,29 @@ def test_missing_source_evidence_is_medium_and_not_selected():
     assert result.confidence == "medium"
     assert result.selected is False
     assert "缺少 initiator 或 JS 调用栈" in result.reasons
+
+
+def test_apply_confidence_to_tool_definition():
+    from backend.rpa.api_monitor.manager import _apply_confidence_to_tool
+    from backend.rpa.api_monitor.models import ApiToolDefinition
+
+    tool = ApiToolDefinition(
+        session_id="session_1",
+        name="list_orders",
+        description="List orders",
+        method="GET",
+        url_pattern="/api/orders",
+        yaml_definition="name: list_orders\nmethod: GET\nurl: /api/orders\n",
+        source_calls=["call_1"],
+    )
+
+    call = _call(
+        "https://example.com/api/orders",
+        initiator_urls=["https://example.com/app/assets/main.js"],
+    )
+    updated = _apply_confidence_to_tool(tool, [call])
+
+    assert updated.confidence == "high"
+    assert updated.selected is True
+    assert updated.confidence_reasons
+    assert updated.source_evidence["action_window_matched"] is True
