@@ -1,38 +1,38 @@
-# API Monitor Confidence and Selection Design
+# API Monitor 置信度与采用状态设计
 
-## Purpose
+## 目的
 
-API Monitor should help users turn captured network traffic into useful MCP tools without letting injected scripts, telemetry, configuration probes, or background requests pollute the final tool set.
+API Monitor 的目标是把网页里的网络请求整理成可用的 MCP 工具，同时避免注入脚本、埋点、配置查询、后台轮询等请求污染最终工具列表。
 
-The current capture pipeline can filter static resources, non-XHR/fetch requests, cross-origin requests, and duplicate endpoints by URL path. That is not enough for same-origin injected requests. For example, a page-owned business API and an injected same-origin configuration query can share the same host, referer, cookies, and fetch metadata. URL and headers alone cannot reliably distinguish them.
+当前采集链路已经能过滤静态资源、非 XHR/fetch 请求、跨 origin 请求，并且去重时只按 URL path 判断重复。但这些规则无法处理同源注入请求。例如，网页自身的业务 API 和注入代码发出的同源配置查询，可能拥有相同 host、referer、cookie 和 fetch 元数据。仅靠 URL 和 header 不能稳定区分它们。
 
-This design keeps capture reversible: collect candidate APIs, attach confidence and evidence, default-select only high-confidence candidates, and publish only user-selected APIs.
+本设计采用可逆流程：保留候选 API，为每个候选项附加置信度和证据，高置信项默认采用，最终只发布用户采用的 API。
 
-## Goals
+## 目标
 
-- Preserve all captured API candidates so users can recover false negatives.
-- Mark every generated API candidate with `confidence`, `confidence_reasons`, and `selected`.
-- Default `selected=true` only for high-confidence business APIs.
-- Let users toggle whether each candidate is adopted.
-- Publish MCP tools only for adopted candidates.
-- Use request source attribution, not only URL/header heuristics, to handle same-origin injected requests.
+- 保留所有采集到的 API 候选项，避免误判后无法找回。
+- 为每个生成的 API 候选项标注 `confidence`、`confidence_reasons` 和 `selected`。
+- 只有高置信业务 API 默认 `selected=true`。
+- 用户可以手动切换每个候选 API 是否采用。
+- 发布 MCP 工具时只发布已采用的候选 API。
+- 对同源注入请求，使用请求来源归因，而不是只依赖 URL/header 启发式规则。
 
-## Non-Goals
+## 非目标
 
-- Do not permanently delete low-confidence requests during capture.
-- Do not build a user-trained rule system in the first version.
-- Do not rely on LLM classification for real-time request filtering.
-- Do not block recording or analysis on slow post-processing.
+- 第一版不在采集阶段永久删除低置信请求。
+- 第一版不做用户训练规则系统。
+- 不依赖 LLM 做实时请求过滤。
+- 不因为复杂后处理阻塞录制或分析流程。
 
-## Recommended Approach
+## 推荐方案
 
-Use a candidate-management model:
+使用候选项管理模型：
 
 ```text
-CapturedApiCall -> grouped API candidate -> confidence classification -> user selection -> MCP publish
+CapturedApiCall -> 分组后的 API 候选项 -> 置信度分类 -> 用户选择 -> MCP 发布
 ```
 
-Every candidate has:
+每个候选 API 包含：
 
 ```text
 confidence: high | medium | low
@@ -46,7 +46,7 @@ source_evidence:
   action_window_matched
 ```
 
-Default selection:
+默认采用规则：
 
 ```text
 high   -> selected = true
@@ -54,77 +54,77 @@ medium -> selected = false
 low    -> selected = false
 ```
 
-The conservative principle is: uncertain requests are visible but not adopted by default.
+保守原则是：不确定的请求可见，但默认不采用。
 
-## Request Source Evidence
+## 请求来源证据
 
 ### CDP Initiator
 
-Subscribe to Chrome DevTools Protocol `Network.requestWillBeSent` for each monitored page. Store initiator metadata keyed by request identity, including:
+为每个被监控页面订阅 Chrome DevTools Protocol 的 `Network.requestWillBeSent` 事件。按请求身份保存 initiator 元数据，包括：
 
 - `initiator.type`
-- stack call frame URLs
-- function names and line/column numbers when available
-- request timestamp
+- 调用栈中的脚本 URL
+- 可用时保存 function name、line number、column number
+- 请求时间戳
 
-This identifies whether a request was triggered by page scripts, injected scripts, extensions, eval-like sources, or unknown browser activity.
+这些信息用于判断请求是由页面脚本、注入脚本、浏览器扩展、eval 类来源，还是未知浏览器行为触发。
 
-### Page-Level Fetch/XHR Stack
+### 页面级 Fetch/XHR Stack
 
-Inject a lightweight script before page scripts run. It wraps:
+在页面脚本运行前注入一段轻量脚本，包装：
 
 - `window.fetch`
 - `XMLHttpRequest.prototype.open`
 - `XMLHttpRequest.prototype.send`
 
-For each fetch/XHR, record:
+每次 fetch/XHR 记录：
 
 - method
 - URL
 - timestamp
 - `Error().stack`
-- current frame URL
+- 当前 frame URL
 
-Then correlate this record with captured requests by method, URL, and a small timestamp window. This complements CDP when initiator stacks are incomplete.
+随后用 method、URL 和一个很小的时间窗口，把这条 JS 层记录与实际捕获到的请求关联起来。它用于补充 CDP initiator 不完整的情况。
 
-### Action Window
+### 动作时间窗口
 
-During automatic probing and manual recording, record the current user or probe action timestamp. Requests that occur within a short action window, initially 0-2 seconds after the action, receive a positive confidence signal. Requests outside action windows are not automatically discarded; they are downgraded unless other evidence strongly marks them as business APIs.
+自动探测和手动录制时，记录当前用户动作或探测动作的时间戳。请求如果发生在动作后的短窗口内，初始建议为 0-2 秒，就获得一个正向置信度信号。窗口外请求不会被直接丢弃，但除非有其他强证据证明是业务 API，否则会被降权。
 
-## Confidence Classification
+## 置信度分类
 
-Classification is rule-based and explainable in the first version.
+第一版使用可解释的规则分类，不使用黑盒判断。
 
-High confidence:
+高置信：
 
-- Same origin or explicitly allowed by existing capture rules.
-- Occurs inside a user/probe action window.
-- CDP initiator or JS stack points to current page business scripts.
-- Path or response shape looks like business data, such as `/api`, `/biz`, `/v1`, list/detail/status payloads.
+- 同 origin，或被现有采集规则明确允许。
+- 发生在用户动作或自动探测动作窗口内。
+- CDP initiator 或 JS stack 指向当前页面业务脚本。
+- URL 路径或响应结构像业务数据，例如 `/api`、`/biz`、`/v1`、列表、详情、状态类响应。
 
-Medium confidence:
+中置信：
 
-- Same origin and action-window matched.
-- Initiator or JS stack is missing or incomplete.
-- Request and response look plausible, but source cannot be proven.
+- 同 origin，并且匹配动作时间窗口。
+- initiator 或 JS stack 缺失、不完整。
+- 请求和响应看起来像业务请求，但来源证据不足。
 
-Low confidence:
+低置信：
 
-- Initiator or stack points to extension, userscript, injected script, eval, generic SDK, or unrelated frame.
-- Path looks like configuration, telemetry, logging, heartbeat, tracking, or model/alias probes.
-- Request appears periodically or outside action windows.
+- initiator 或 stack 指向 extension、userscript、injected script、eval、通用 SDK 或无关 frame。
+- 路径像配置、埋点、日志、心跳、追踪、模型别名探测等请求。
+- 请求周期性出现，或明显不在动作窗口内。
 
-Each candidate stores short user-facing reasons, for example:
+每个候选 API 保存简短的用户可读原因，例如：
 
-- `Triggered by user action`
-- `Initiated by page script`
-- `Initiator stack unavailable`
-- `Path looks like configuration query`
-- `Outside action window`
+- `由用户动作触发`
+- `由页面业务脚本发起`
+- `缺少 initiator 调用栈`
+- `路径疑似配置查询`
+- `不在动作时间窗口内`
 
-## Data Model Changes
+## 数据模型变化
 
-Extend captured calls or grouped tool definitions with:
+在采集请求或分组后的工具定义上扩展：
 
 ```text
 confidence: high | medium | low
@@ -133,121 +133,121 @@ confidence_reasons: list[str]
 source_evidence: dict
 ```
 
-The preferred boundary is the grouped API candidate/tool-definition level because users decide whether to adopt an endpoint, not individual raw samples. Raw samples can still carry evidence for debugging and scoring.
+推荐把这些字段放在分组后的 API 候选项或工具定义层级，因为用户决定是否采用的是一个接口候选项，而不是单条原始请求样本。原始请求样本仍然可以保存证据，用于调试和评分。
 
-## Backend Flow
+## 后端流程
 
-### Capture
+### 采集
 
-1. Keep the existing network filters.
-2. Capture all remaining XHR/fetch requests.
-3. Attach CDP initiator evidence when available.
-4. Attach page-level fetch/XHR stack evidence when available.
-5. Attach action-window metadata.
+1. 保留现有网络过滤规则。
+2. 捕获过滤后剩余的 XHR/fetch 请求。
+3. 可用时附加 CDP initiator 证据。
+4. 可用时附加页面级 fetch/XHR stack 证据。
+5. 附加动作时间窗口元数据。
 
-### Candidate Generation
+### 候选项生成
 
-1. Group captured calls using the existing dedup key.
-2. Generate candidate tool definitions.
-3. Score each candidate from its samples and evidence.
-4. Set default `selected` from confidence.
-5. Return candidates to the frontend with reasons and evidence summary.
+1. 使用现有 dedup key 对采集请求分组。
+2. 生成候选工具定义。
+3. 根据每组样本和证据计算置信度。
+4. 根据置信度设置默认 `selected`。
+5. 把候选项、原因和证据摘要返回前端。
 
-### Selection Updates
+### 采用状态更新
 
-Add a backend endpoint to update candidate selection state:
+新增一个后端接口，用于更新候选项采用状态：
 
 ```text
 PATCH /api/v1/api-monitor/session/{session_id}/tools/{tool_id}/selection
 body: { selected: boolean }
 ```
 
-This persists the user's choice in the session tool definition.
+该接口把用户选择保存到 session 的工具定义中，避免刷新页面后丢失状态。
 
-### MCP Publish
+### MCP 发布
 
-When publishing API Monitor MCP tools, include only candidates with:
+发布 API Monitor MCP 工具时，只包含：
 
 ```text
 selected == true
 ```
 
-Medium or low confidence candidates are ignored unless the user adopts them.
+中置信和低置信候选项只有在用户手动采用后才会进入 MCP。
 
-## Frontend Flow
+## 前端流程
 
-The API Monitor page shows two groups:
+API Monitor 页面把候选项分为两组：
 
 ```text
-Adopted
-Not Adopted
+采用
+不采用
 ```
 
-Each API row shows:
+每条 API 展示：
 
 - method
 - URL pattern
-- confidence badge
-- concise confidence reasons
-- selection toggle
+- confidence 标签
+- 简短置信度原因
+- 采用状态开关
 
-Default layout:
+默认布局：
 
-- high confidence candidates appear in Adopted.
-- medium and low confidence candidates appear in Not Adopted.
-- users can move any API between groups with the toggle.
+- 高置信候选项显示在“采用”组。
+- 中置信和低置信候选项显示在“不采用”组。
+- 用户可以通过开关在两组之间移动任意 API。
 
-The UI should avoid destructive language. A low-confidence API is not "deleted"; it is simply "not adopted".
+UI 文案避免使用破坏性表达。低置信 API 不是“删除”，只是“未采用”。
 
-## Error Handling
+## 错误处理
 
-- If CDP initiator capture fails, continue recording and mark source evidence as unavailable.
-- If fetch/XHR stack injection fails, continue with CDP and heuristic signals.
-- If confidence scoring cannot classify a candidate, mark it `medium` and `selected=false`.
-- If selection update fails, keep the current UI state unchanged and show a normal API error.
+- 如果 CDP initiator 捕获失败，继续录制，并把来源证据标记为不可用。
+- 如果 fetch/XHR stack 注入失败，继续使用 CDP 和启发式信号。
+- 如果置信度评分无法分类候选项，标记为 `medium` 且 `selected=false`。
+- 如果采用状态更新失败，前端保持当前 UI 状态不变，并显示普通 API 错误。
 
-## Performance
+## 性能
 
-The design avoids additional network requests and avoids LLM calls during capture classification. CDP events and JS stack capture are collected as requests occur. The primary overhead is metadata storage and light rule evaluation.
+该设计不增加额外网络请求，也不在采集分类阶段调用 LLM。CDP 事件和 JS stack 都是在请求发生时顺手记录。主要开销是元数据存储和轻量规则评分。
 
-The existing probing wait can remain unchanged initially. Action-window matching uses existing timing rather than adding extra waits.
+第一版可以保持现有探测等待时间不变。动作时间窗口使用已有时序，不额外增加等待。
 
-## Testing
+## 测试
 
-Backend tests:
+后端测试：
 
-- same-origin business request can be high confidence and selected by default.
-- same-origin injected/config-like request can be low confidence and not selected by default.
-- missing initiator evidence produces medium confidence and not selected by default.
-- user selection update persists.
-- MCP publishing includes selected candidates only.
-- existing URL dedup and origin/static filtering continue to pass.
+- 同源业务请求可以被标记为高置信，并默认采用。
+- 同源注入或配置类请求可以被标记为低置信，并默认不采用。
+- 缺少 initiator 证据时生成中置信，并默认不采用。
+- 用户采用状态更新可以持久保存。
+- MCP 发布只包含已采用候选项。
+- 现有 URL 去重、origin 过滤和静态资源过滤继续通过。
 
-Frontend tests:
+前端测试：
 
-- candidates render in Adopted and Not Adopted groups.
-- confidence badges and reasons display.
-- toggling selection calls the update endpoint.
-- publish flow excludes non-adopted candidates.
+- 候选 API 分别渲染到“采用”和“不采用”分组。
+- 正确显示置信度标签和原因。
+- 切换采用状态会调用更新接口。
+- 发布流程排除未采用候选项。
 
-## Rollout Plan
+## 实施顺序
 
-1. Add data fields and backend scoring helpers.
-2. Add CDP initiator capture.
-3. Add page fetch/XHR stack capture and correlation.
-4. Apply confidence scoring during candidate generation.
-5. Add selection update endpoint.
-6. Update MCP publish filtering.
-7. Update frontend candidate grouping and toggles.
-8. Add tests around classification, selection, and publish filtering.
+1. 添加数据字段和后端评分 helper。
+2. 添加 CDP initiator 捕获。
+3. 添加页面 fetch/XHR stack 捕获和关联逻辑。
+4. 在候选项生成时应用置信度评分。
+5. 添加采用状态更新接口。
+6. 更新 MCP 发布过滤逻辑。
+7. 更新前端候选项分组和开关。
+8. 补充分类、选择和发布过滤测试。
 
-## Future Extension
+## 后续扩展
 
-A later version can add user-defined rules:
+后续版本可以加入用户自定义规则：
 
-- always adopt matching URL pattern
-- never adopt matching URL pattern
-- trust specific script bundles
-- ignore specific initiator URLs
+- 总是采用匹配某个 URL pattern 的请求。
+- 永不采用匹配某个 URL pattern 的请求。
+- 信任某些脚本 bundle。
+- 忽略某些 initiator URL。
 
-This should come after the candidate-selection workflow is stable.
+这部分应在候选项采用流程稳定后再实现。
