@@ -546,13 +546,17 @@ const confidenceLabels: Record<string, string> = {
   low: '低置信',
 };
 
+const getConfidenceLabelWithScore = (confidence: string, score: number) => {
+  const label = confidenceLabels[confidence] || '中置信';
+  return `${score} ${label}`;
+};
+
 const confidenceClasses: Record<string, string> = {
   high: 'bg-emerald-500/15 text-emerald-600 border-emerald-500/25 dark:text-emerald-300',
   medium: 'bg-amber-500/15 text-amber-600 border-amber-500/25 dark:text-amber-300',
   low: 'bg-slate-500/15 text-slate-600 border-slate-500/25 dark:text-slate-300',
 };
 
-const getConfidenceLabel = (confidence: string) => confidenceLabels[confidence] || '中置信';
 const getConfidenceClass = (confidence: string) => confidenceClasses[confidence] || confidenceClasses.medium;
 
 // ---------------------------------------------------------------------------
@@ -785,7 +789,7 @@ onBeforeUnmount(() => {
                     </span>
                     <span class="text-[11px] font-mono text-[var(--text-primary)] flex-1 truncate">{{ tool.url_pattern }}</span>
                     <span class="shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold" :class="getConfidenceClass(tool.confidence)">
-                      {{ getConfidenceLabel(tool.confidence) }}
+                      {{ getConfidenceLabelWithScore(tool.confidence, tool.score) }}
                     </span>
                     <ChevronDown :size="16" class="text-[var(--text-tertiary)] transition-transform" :class="expandedToolId === tool.id ? 'rotate-180' : ''" />
                   </div>

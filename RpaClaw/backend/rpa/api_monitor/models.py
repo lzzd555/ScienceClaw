@@ -65,6 +65,7 @@ class ApiToolDefinition(BaseModel):
     source_calls: List[str] = Field(default_factory=list)
     source: str = "auto"  # "auto" or "manual"
     confidence: ConfidenceLevel = "medium"
+    score: int = 0
     selected: bool = False
     confidence_reasons: List[str] = Field(default_factory=list)
     source_evidence: Dict = Field(default_factory=dict)

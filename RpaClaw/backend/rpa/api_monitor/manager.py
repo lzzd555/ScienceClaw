@@ -20,7 +20,7 @@ from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.playwright_security import get_context_kwargs
 from backend.rpa.screencast import SessionScreencastController
 
-from .confidence import classify_api_candidate
+from .confidence import dedup_key_for_tool, score_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
 from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall
 from .network_capture import NetworkCaptureEngine, dedup_key
@@ -271,12 +271,22 @@ def _apply_confidence_to_tool(
     tool: ApiToolDefinition,
     calls: List[CapturedApiCall],
 ) -> ApiToolDefinition:
-    result = classify_api_candidate(calls)
+    result = score_api_candidate(calls)
     tool.confidence = result.confidence
+    tool.score = result.score
     tool.selected = result.selected
     tool.confidence_reasons = result.reasons
     tool.source_evidence = result.evidence_summary
     return tool
+
+
+def _richness_score(tool: ApiToolDefinition) -> int:
+    evidence = tool.source_evidence or {}
+    breakdown = evidence.get("breakdown") or {}
+    try:
+        return int(breakdown.get("response_richness", 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
 
 
 class ApiMonitorSessionManager:
@@ -709,7 +719,42 @@ class ApiMonitorSessionManager:
                     key, exc,
                 )
 
+        self._dedup_session_tools(session_id, tools)
+
         return tools
+
+    def _dedup_session_tools(
+        self,
+        session_id: str,
+        new_tools: List[ApiToolDefinition],
+    ) -> None:
+        """Keep only the best scoring tool for each method + parameterized path."""
+        session = self.sessions.get(session_id)
+        if not session:
+            return
+
+        new_ids = {tool.id for tool in new_tools}
+        existing_tools = [tool for tool in session.tool_definitions if tool.id not in new_ids]
+        grouped: Dict[str, List[ApiToolDefinition]] = defaultdict(list)
+
+        for tool in [*existing_tools, *new_tools]:
+            grouped[dedup_key_for_tool(tool.method, tool.url_pattern)].append(tool)
+
+        deduped: List[ApiToolDefinition] = []
+        for group in grouped.values():
+            group.sort(
+                key=lambda tool: (
+                    tool.score,
+                    _richness_score(tool),
+                    tool.created_at.isoformat() if tool.created_at else "",
+                ),
+                reverse=True,
+            )
+            deduped.append(group[0])
+
+        session.tool_definitions = deduped
+        survivor_ids = {tool.id for tool in deduped}
+        new_tools[:] = [tool for tool in new_tools if tool.id in survivor_ids]
 
     # ── DOM scanning ─────────────────────────────────────────────────
 

@@ -46,6 +46,7 @@ export interface ApiToolDefinition {
   source_calls: string[]
   source: 'auto' | 'manual'
   confidence: ApiToolConfidence
+  score: number
   selected: boolean
   confidence_reasons: string[]
   source_evidence: Record<string, unknown>
