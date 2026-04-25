@@ -535,7 +535,7 @@ export default {
   'New Credential': 'New Credential',
   'Edit Credential': 'Edit Credential',
   'Credential Name': 'Credential Name',
-  'Credential page description': 'Securely store and manage credentials for automated recording. All data is encrypted with bank-grade encryption.',
+  'Credential page description': 'Securely store and manage credentials for automated recording. All data is encrypted.',
   'Credential list': 'Credential List',
   'Credential name placeholder': 'e.g. GitHub Deploy Key',
   'Total credentials': 'Total Credentials',

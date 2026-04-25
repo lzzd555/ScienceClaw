@@ -577,7 +577,7 @@ export default {
   'New Credential': '新增凭据',
   'Edit Credential': '编辑凭据',
   'Credential Name': '凭据名称',
-  'Credential page description': '安全地存储和管理用于自动化录制的各类系统凭据。所有数据均经过银行级加密处理。',
+  'Credential page description': '安全地存储和管理用于自动化录制的各类系统凭据。所有数据均经过加密处理。',
   'Credential list': '凭据列表',
   'Credential name placeholder': '例如：GitHub 部署密钥',
   'Total credentials': '总凭据数量',
