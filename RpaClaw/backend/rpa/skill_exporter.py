@@ -33,17 +33,20 @@ class SkillExporter:
         skill_name: str,
         description: str,
         params: Dict[str, Any],
-        steps: list[Dict[str, Any]],
+        recording_meta: Dict[str, Any],
     ) -> dict[str, Any]:
+        legacy_steps = recording_meta.get("legacy_steps", [])
         return {
-            "version": 1,
+            "version": 2,
             "kind": "rpa-recording",
             "name": skill_name,
             "description": description,
             "entry_script": "skill.py",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "params": params,
-            "steps": steps,
+            "recording_source": recording_meta.get("recording_source", "trace"),
+            "recording": recording_meta,
+            "steps": legacy_steps,
             "artifacts": ["SKILL.md", "params.json", "skill.py"],
         }
 
@@ -54,7 +57,8 @@ class SkillExporter:
         description: str,
         script: str,
         params: Dict[str, Any],
-        steps: list[Dict[str, Any]],
+        recording_meta: Dict[str, Any] | None = None,
+        steps: list[Dict[str, Any]] | None = None,
     ) -> str:
         """Export skill to MongoDB or local filesystem based on storage_backend.
 
@@ -136,7 +140,16 @@ The skill is implemented in `skill.py` using Playwright for browser automation.
             skill_name=skill_name,
             description=description,
             params=params,
-            steps=steps,
+            recording_meta=recording_meta
+            or {
+                "recording_source": "legacy_step",
+                "traces": [],
+                "recorded_actions": [],
+                "legacy_steps": steps or [],
+                "runtime_results": {},
+                "trace_diagnostics": [],
+                "recording_diagnostics": [],
+            },
         )
 
         if settings.storage_backend == "local":

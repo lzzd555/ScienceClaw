@@ -18,7 +18,7 @@ from backend.rpa.executor import ScriptExecutor
 from backend.rpa.skill_exporter import SkillExporter
 from backend.rpa.assistant import RPAAssistant, RPAReActAgent, _active_agents
 from backend.rpa.recording_runtime_agent import RecordingRuntimeAgent, RecordingAgentResult
-from backend.rpa.trace_recorder import recorded_action_to_trace
+from backend.rpa.trace_recorder import manual_step_to_trace, recorded_action_to_trace
 from backend.rpa.trace_models import RPAAcceptedTrace
 from backend.rpa.trace_skill_compiler import TraceSkillCompiler
 from backend.rpa.cdp_connector import get_cdp_connector
@@ -108,6 +108,140 @@ def _generate_session_script(session, params: Dict[str, Any], *, test_mode: bool
     )
 
 
+def _model_dump_json(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
+
+
+def _step_tab_signal(step) -> Dict[str, Any]:
+    tab_signal: Dict[str, Any] = {}
+    for key in ("tab_id", "source_tab_id", "target_tab_id"):
+        value = getattr(step, key, None)
+        if value:
+            tab_signal[key] = value
+    return tab_signal
+
+
+def _step_recording_signal(step) -> Dict[str, Any]:
+    recording_signal: Dict[str, Any] = {}
+    for key in ("sequence", "event_timestamp_ms"):
+        value = getattr(step, key, None)
+        if value is not None:
+            recording_signal[key] = value
+    return recording_signal
+
+
+def _step_evidence_signal(step) -> Dict[str, Any]:
+    evidence_signal: Dict[str, Any] = {}
+    for key in (
+        "frame_path",
+        "element_snapshot",
+        "screenshot_url",
+        "tag",
+        "label",
+        "sensitive",
+        "collection_hint",
+        "item_hint",
+        "ordinal",
+        "assistant_diagnostics",
+    ):
+        value = getattr(step, key, None)
+        if value not in (None, "", [], {}):
+            evidence_signal[key] = value
+    return evidence_signal
+
+
+def _merge_step_metadata_into_trace(trace: RPAAcceptedTrace, step) -> None:
+    step_trace = manual_step_to_trace(step.model_dump(mode="json"))
+
+    if step_trace.locator_candidates:
+        trace.locator_candidates = step_trace.locator_candidates
+    if step_trace.validation:
+        merged_validation = dict(trace.validation or {})
+        merged_validation.update(step_trace.validation)
+        trace.validation = merged_validation
+    if not trace.value and step_trace.value is not None:
+        trace.value = step_trace.value
+    if not trace.output_key and step_trace.output_key:
+        trace.output_key = step_trace.output_key
+    if trace.output is None and step_trace.output is not None:
+        trace.output = step_trace.output
+
+    if not trace.before_page.url and step_trace.before_page.url:
+        trace.before_page = step_trace.before_page
+    if not trace.after_page.url and step_trace.after_page.url:
+        trace.after_page = step_trace.after_page
+
+    merged_signals: Dict[str, Any] = {}
+    if isinstance(trace.signals, dict):
+        merged_signals.update(trace.signals)
+    if isinstance(step.signals, dict):
+        merged_signals.update(step.signals)
+
+    tab_signal = _step_tab_signal(step)
+    if tab_signal:
+        existing = merged_signals.get("tab") if isinstance(merged_signals.get("tab"), dict) else {}
+        merged_signals["tab"] = {**existing, **tab_signal}
+
+    recording_signal = _step_recording_signal(step)
+    if recording_signal:
+        existing = merged_signals.get("recording") if isinstance(merged_signals.get("recording"), dict) else {}
+        merged_signals["recording"] = {**existing, **recording_signal}
+
+    evidence_signal = _step_evidence_signal(step)
+    if evidence_signal:
+        existing = merged_signals.get("evidence") if isinstance(merged_signals.get("evidence"), dict) else {}
+        merged_signals["evidence"] = {**existing, **evidence_signal}
+
+    trace.signals = merged_signals
+
+
+def _session_traces_for_compile(session) -> list[RPAAcceptedTrace]:
+    if getattr(session, "recorded_actions", None):
+        derived_manual_traces = {
+            trace.trace_id: trace
+            for trace in (recorded_action_to_trace(action) for action in session.recorded_actions)
+        }
+        _merge_recorded_action_trace_metadata(session, derived_manual_traces)
+        traces_for_compile = []
+        for trace in getattr(session, "traces", None) or []:
+            if trace.source == "manual" and trace.trace_id in derived_manual_traces:
+                traces_for_compile.append(derived_manual_traces.pop(trace.trace_id))
+            else:
+                traces_for_compile.append(trace)
+        traces_for_compile.extend(derived_manual_traces.values())
+        return traces_for_compile
+    return list(getattr(session, "traces", None) or [])
+
+
+def _build_session_recording_meta(session) -> Dict[str, Any]:
+    traces = _session_traces_for_compile(session)
+    source = "trace" if traces else "legacy_step"
+    if not traces and getattr(session, "steps", None):
+        traces = []
+        for step in session.steps:
+            trace = manual_step_to_trace(step.model_dump(mode="json"))
+            _merge_step_metadata_into_trace(trace, step)
+            traces.append(trace)
+
+    legacy_steps = [_model_dump_json(step) for step in getattr(session, "steps", None) or []]
+    recorded_actions = [_model_dump_json(action) for action in getattr(session, "recorded_actions", None) or []]
+    trace_diagnostics = [_model_dump_json(item) for item in getattr(session, "trace_diagnostics", None) or []]
+    recording_diagnostics = [_model_dump_json(item) for item in getattr(session, "recording_diagnostics", None) or []]
+    runtime_results = _model_dump_json(getattr(session, "runtime_results", {})) or {}
+
+    return {
+        "recording_source": source,
+        "traces": [trace.model_dump(mode="json") for trace in traces],
+        "recorded_actions": recorded_actions,
+        "legacy_steps": legacy_steps,
+        "runtime_results": runtime_results,
+        "trace_diagnostics": trace_diagnostics,
+        "recording_diagnostics": recording_diagnostics,
+    }
+
+
 def _merge_recorded_action_trace_metadata(session, derived_manual_traces: Dict[str, RPAAcceptedTrace]) -> None:
     original_traces = {
         trace.trace_id: trace
@@ -122,16 +256,20 @@ def _merge_recorded_action_trace_metadata(session, derived_manual_traces: Dict[s
     for trace_id, derived in derived_manual_traces.items():
         original = original_traces.get(trace_id)
         step = steps_by_trace_id.get(trace_id)
-        merged_signals: Dict[str, Any] = {}
-        if original and isinstance(original.signals, dict):
-            merged_signals.update(original.signals)
-        if step and isinstance(step.signals, dict):
-            merged_signals.update(step.signals)
-        if merged_signals:
-            derived.signals = merged_signals
         if original:
             derived.before_page = original.before_page
             derived.after_page = original.after_page
+            derived.signals = dict(original.signals or {})
+            if original.locator_candidates:
+                derived.locator_candidates = original.locator_candidates
+            if original.validation:
+                derived.validation = original.validation
+            if original.output_key:
+                derived.output_key = original.output_key
+            if original.output is not None:
+                derived.output = original.output
+        if step:
+            _merge_step_metadata_into_trace(derived, step)
 
 
 def _ensure_no_unresolved_manual_diagnostics(session) -> None:
@@ -601,7 +739,9 @@ async def save_skill(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    _ensure_no_unresolved_manual_diagnostics(session)
     script = _generate_session_script(session, request.params)
+    recording_meta = _build_session_recording_meta(session)
 
     skill_name = await exporter.export_skill(
         user_id=str(current_user.id),
@@ -609,7 +749,7 @@ async def save_skill(
         description=request.description,
         script=script,
         params=request.params,
-        steps=steps,
+        recording_meta=recording_meta,
     )
 
     session.status = "saved"

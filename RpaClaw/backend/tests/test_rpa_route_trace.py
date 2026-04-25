@@ -79,6 +79,7 @@ def test_generate_session_script_preserves_step_signals_on_recorded_actions():
     assert 'tabs["tab-export"] = new_page' in script
     assert "current_page = new_page" in script
 
+
 def test_generate_session_script_keeps_ai_traces_when_recorded_actions_replace_manual_traces():
     session = RPASession(id="s3", user_id="u3", sandbox_session_id="sandbox")
     session.recorded_actions.append(
@@ -119,6 +120,122 @@ def test_generate_session_script_keeps_ai_traces_when_recorded_actions_replace_m
     assert "get_by_role('button'" in script or 'get_by_role(\"button\"' in script
 
 
+def test_build_session_recording_meta_preserves_step_fields_in_trace_and_legacy_steps():
+    session = RPASession(id="route-meta-trace", user_id="u1", sandbox_session_id="sandbox")
+    session.steps.append(
+        RPAStep(
+            id="step-export",
+            action="click",
+            target='{"method": "text", "value": "Export all"}',
+            description='click text("Export all")',
+            locator_candidates=[
+                {
+                    "kind": "text",
+                    "locator": {"method": "text", "value": "Export all"},
+                    "selected": True,
+                }
+            ],
+            validation={"status": "ok"},
+            signals={"popup": {"source_tab_id": "tab-main", "target_tab_id": "tab-export"}},
+            tab_id="tab-main",
+            source_tab_id="tab-main",
+            target_tab_id="tab-export",
+            sequence=7,
+            event_timestamp_ms=12345,
+        )
+    )
+    session.recorded_actions.append(
+        ManualRecordedAction(
+            step_id="step-export",
+            action_kind=ManualActionKind.CLICK,
+            description='click text("Export all")',
+            target={"method": "text", "value": "Export all"},
+            validation={"status": "ok"},
+        )
+    )
+
+    meta = ROUTE_MODULE._build_session_recording_meta(session)
+
+    assert meta["recording_source"] == "trace"
+    assert meta["legacy_steps"][0]["sequence"] == 7
+    trace = meta["traces"][0]
+    assert trace["trace_id"] == "trace-step-export"
+    assert trace["locator_candidates"][0]["locator"]["value"] == "Export all"
+    assert trace["signals"]["popup"]["target_tab_id"] == "tab-export"
+    assert trace["signals"]["tab"]["tab_id"] == "tab-main"
+    assert trace["validation"]["status"] == "ok"
+
+
+def test_build_session_recording_meta_derives_traces_for_legacy_step_only_session():
+    session = RPASession(id="route-meta-legacy", user_id="u1", sandbox_session_id="sandbox")
+    session.steps.append(
+        RPAStep(
+            id="step-open",
+            action="goto",
+            target="https://example.com/dashboard",
+            description="Open dashboard",
+            validation={"status": "ok"},
+            sequence=1,
+        )
+    )
+
+    meta = ROUTE_MODULE._build_session_recording_meta(session)
+
+    assert meta["recording_source"] == "legacy_step"
+    assert meta["legacy_steps"][0]["id"] == "step-open"
+    assert meta["traces"][0]["trace_id"] == "trace-step-open"
+    assert meta["traces"][0]["action"] == "goto"
+    assert meta["traces"][0]["after_page"]["url"] == "https://example.com/dashboard"
+    assert meta["traces"][0]["signals"]["recording"]["sequence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_save_skill_exports_trace_first_recording_meta(monkeypatch):
+    manager = ROUTE_MODULE.rpa_manager
+    session = RPASession(id="route-save-trace", user_id="u1", sandbox_session_id="sandbox")
+    session.traces.append(
+        RPAAcceptedTrace(
+            trace_id="trace-ai-1",
+            trace_type=RPATraceType.AI_OPERATION,
+            source="ai",
+            user_instruction="collect result",
+            output_key="result",
+            output={"name": "demo"},
+            ai_execution=RPAAIExecution(code="async def run(page, results):\n    return {'name': 'demo'}"),
+        )
+    )
+    session.steps.append(RPAStep(id="legacy-step", action="goto", target="https://example.com"))
+    manager.sessions[session.id] = session
+    captured: dict = {}
+
+    async def fake_wait_for_pending_events(target_session_id: str, timeout_ms: int = 1500):
+        assert target_session_id == session.id
+        return True
+
+    async def fake_export_skill(**kwargs):
+        captured.update(kwargs)
+        return kwargs["skill_name"]
+
+    monkeypatch.setattr(manager, "wait_for_pending_events", fake_wait_for_pending_events)
+    monkeypatch.setattr(ROUTE_MODULE, "_generate_session_script", lambda *args, **kwargs: "print('ok')\n")
+    monkeypatch.setattr(ROUTE_MODULE.exporter, "export_skill", fake_export_skill)
+
+    try:
+        user = type("User", (), {"id": "u1"})()
+        response = await ROUTE_MODULE.save_skill(
+            session.id,
+            ROUTE_MODULE.SaveSkillRequest(skill_name="saved_trace", description="Saved trace"),
+            user,
+        )
+        assert response == {"status": "success", "skill_name": "saved_trace"}
+        assert captured["recording_meta"]["recording_source"] == "trace"
+        assert captured["recording_meta"]["traces"][0]["trace_id"] == "trace-ai-1"
+        assert captured["recording_meta"]["legacy_steps"][0]["id"] == "legacy-step"
+        assert "steps" not in captured
+    finally:
+        manager.sessions.pop(session.id, None)
+
+
 @pytest.mark.asyncio
 async def test_generate_script_blocks_when_recording_diagnostics_exist():
     manager = ROUTE_MODULE.rpa_manager
@@ -137,6 +254,39 @@ async def test_generate_script_blocks_when_recording_diagnostics_exist():
             await ROUTE_MODULE.generate_script(session.id, ROUTE_MODULE.GenerateRequest(), user)
         assert exc_info.value.status_code == 400
         assert "diagnostic" in exc_info.value.detail
+    finally:
+        manager.sessions.pop(session.id, None)
+
+
+@pytest.mark.asyncio
+async def test_generate_script_waits_for_pending_events(monkeypatch):
+    manager = ROUTE_MODULE.rpa_manager
+    session = RPASession(id="route-generate-wait", user_id="u1", sandbox_session_id="sandbox")
+    manager.sessions[session.id] = session
+
+    called: dict[str, bool] = {"waited": False}
+
+    async def fake_wait_for_pending_events(target_session_id: str, timeout_ms: int = 1500):
+        assert target_session_id == session.id
+        called["waited"] = True
+        session.recorded_actions.append(
+            ManualRecordedAction(
+                step_id="step-search",
+                action_kind=ManualActionKind.CLICK,
+                description='点击 button("Search")',
+                target={"method": "role", "role": "button", "name": "Search"},
+                validation={"status": "ok"},
+            )
+        )
+        return True
+
+    monkeypatch.setattr(manager, "wait_for_pending_events", fake_wait_for_pending_events)
+
+    try:
+        user = type("User", (), {"id": "u1"})()
+        response = await ROUTE_MODULE.generate_script(session.id, ROUTE_MODULE.GenerateRequest(), user)
+        assert called["waited"] is True
+        assert "Search" in response["script"]
     finally:
         manager.sessions.pop(session.id, None)
 
