@@ -356,6 +356,7 @@ class ApiMonitorSessionManager:
             user_id=user_id,
         )
         context = await browser.new_context(**get_context_kwargs())
+        await context.grant_permissions(["clipboard-read", "clipboard-write"])
         page = await context.new_page()
         page.set_default_timeout(PAGE_TIMEOUT_MS)
         page.set_default_navigation_timeout(PAGE_TIMEOUT_MS)

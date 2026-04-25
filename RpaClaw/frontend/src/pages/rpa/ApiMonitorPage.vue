@@ -214,6 +214,10 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   } else if (e instanceof KeyboardEvent) {
+    const isPasteShortcut = e.type === 'keydown' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v';
+    if (!isPasteShortcut) {
+      e.preventDefault();
+    }
     const action = e.type === 'keydown' ? 'keyDown' : 'keyUp';
     screencastWs.send(JSON.stringify({
       type: 'keyboard',
@@ -224,6 +228,13 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   }
+};
+
+const handlePaste = (e: ClipboardEvent) => {
+  if (!screencastWs || screencastWs.readyState !== WebSocket.OPEN) return;
+  const text = e.clipboardData?.getData('text');
+  if (!text) return;
+  screencastWs.send(JSON.stringify({ type: 'paste', text }));
 };
 
 const disconnectScreencast = () => {
@@ -669,8 +680,9 @@ onBeforeUnmount(() => {
             @mouseup="sendInputEvent"
             @mousemove="sendInputEvent"
             @wheel.prevent="sendInputEvent"
-            @keydown.prevent="sendInputEvent"
+            @keydown="sendInputEvent"
             @keyup.prevent="sendInputEvent"
+            @paste.prevent="handlePaste"
             @contextmenu.prevent
           />
           <div

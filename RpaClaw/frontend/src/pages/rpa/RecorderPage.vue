@@ -543,6 +543,10 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   } else if (e instanceof KeyboardEvent) {
+    const isPasteShortcut = e.type === 'keydown' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v';
+    if (!isPasteShortcut) {
+      e.preventDefault();
+    }
     const action = e.type === 'keydown' ? 'keyDown' : 'keyUp';
     screencastWs.send(JSON.stringify({
       type: 'keyboard',
@@ -553,6 +557,13 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   }
+};
+
+const handlePaste = (e: ClipboardEvent) => {
+  if (!screencastWs || screencastWs.readyState !== WebSocket.OPEN) return;
+  const text = e.clipboardData?.getData('text');
+  if (!text) return;
+  screencastWs.send(JSON.stringify({ type: 'paste', text }));
 };
 
 const stopRecording = async () => {
@@ -899,8 +910,9 @@ const sendMessage = async () => {
               @mouseup="sendInputEvent"
               @mousemove="sendInputEvent"
               @wheel.prevent="sendInputEvent"
-              @keydown.prevent="sendInputEvent"
+              @keydown="sendInputEvent"
               @keyup.prevent="sendInputEvent"
+              @paste.prevent="handlePaste"
               @contextmenu.prevent
             />
             <div v-else class="absolute inset-0 flex items-center justify-center flex-col gap-4 text-white/50">

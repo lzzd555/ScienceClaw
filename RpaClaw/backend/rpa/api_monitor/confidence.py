@@ -105,7 +105,8 @@ def score_api_candidate(calls: list[CapturedApiCall]) -> ConfidenceResult:
         else:
             reasons.append("由页面业务脚本发起")
     else:
-        breakdown["has_source"] = 0
+        score -= 10
+        breakdown["has_source"] = -10
         reasons.append("缺少 initiator 或 JS 调用栈")
 
     richness_score, richness_reason = _score_response_richness(body)
@@ -130,7 +131,7 @@ def score_api_candidate(calls: list[CapturedApiCall]) -> ConfidenceResult:
 
     score = max(0, min(100, score))
 
-    if score >= 75:
+    if score >= 80:
         confidence: ConfidenceLevel = "high"
         selected = True
     elif score >= 40:
