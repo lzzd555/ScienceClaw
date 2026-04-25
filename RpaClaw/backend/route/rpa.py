@@ -49,6 +49,12 @@ class GenerateRequest(BaseModel):
     params: Dict[str, Any] = {}
 
 
+class DeleteTimelineItemRequest(BaseModel):
+    kind: str
+    step_id: str | None = None
+    trace_id: str | None = None
+
+
 class SaveSkillRequest(BaseModel):
     skill_name: str
     description: str
@@ -579,6 +585,30 @@ async def delete_step(
     success = await rpa_manager.delete_step(session_id, step_index)
     if not success:
         raise HTTPException(status_code=400, detail="Invalid step index")
+    return {"status": "success"}
+
+
+@router.delete("/session/{session_id}/timeline-item")
+async def delete_timeline_item(
+    session_id: str,
+    request: DeleteTimelineItemRequest,
+    current_user: User = Depends(get_current_user),
+):
+    session = await rpa_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    if request.kind == "manual_step":
+        success = await rpa_manager.delete_step_by_id(session_id, request.step_id or "")
+    elif request.kind == "trace":
+        success = await rpa_manager.delete_trace(session_id, request.trace_id or "")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid timeline item kind")
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid timeline item")
     return {"status": "success"}
 
 

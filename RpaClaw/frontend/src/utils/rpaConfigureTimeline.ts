@@ -16,6 +16,7 @@ export interface RpaConfigureStep {
   source?: string;
   configurable?: boolean;
   stepId?: string;
+  traceId?: string;
 }
 
 export interface RpaRecordingDiagnosticItem {
@@ -46,6 +47,11 @@ const TRACE_LABELS: Record<string, string> = {
 export const formatRpaTraceType = (traceType?: string) => {
   if (!traceType) return 'Trace';
   return TRACE_LABELS[traceType] || traceType;
+};
+
+export const isRpaTimelineStepDeletable = (step: Pick<RpaConfigureStep, 'source' | 'traceId'>): boolean => {
+  if (step.source === 'ai') return !!step.traceId;
+  return true;
 };
 
 const formatDiagnosticReason = (reason?: string) => {
@@ -103,11 +109,10 @@ const manualActionSourceLabel = (action: any) => (
   action?.validation?.details || 'Accepted manual action'
 );
 
-const mapRecordedActions = (session: any): RpaConfigureStep[] => {
-  const actions = Array.isArray(session?.recorded_actions) ? session.recorded_actions : [];
-  return actions.map((action: any, index: number) => ({
+const mapRecordedAction = (action: any, index: number): RpaConfigureStep => ({
     id: String(action?.step_id || `recorded-action-${index}`),
     stepId: String(action?.step_id || ''),
+    traceId: action?.step_id ? `trace-${action.step_id}` : undefined,
     action: action?.action_kind || 'record',
     target: action?.target || null,
     locator_candidates: buildAcceptedActionCandidates(action),
@@ -122,26 +127,20 @@ const mapRecordedActions = (session: any): RpaConfigureStep[] => {
     url: action?.page_state?.url || '',
     source: 'record',
     configurable: false,
-  }));
+});
+
+const mapRecordedActions = (session: any): RpaConfigureStep[] => {
+  const actions = Array.isArray(session?.recorded_actions) ? session.recorded_actions : [];
+  return actions.map(mapRecordedAction);
 };
 
-export const mapRpaConfigureDisplaySteps = (session: any): RpaConfigureStep[] => {
-  const recordedActions = Array.isArray(session?.recorded_actions) ? session.recorded_actions : [];
-  if (recordedActions.length > 0) {
-    return mapRecordedActions(session);
-  }
-
-  const traces = Array.isArray(session?.traces) ? session.traces : [];
-  if (traces.length === 0) {
-    return getLegacyRpaSteps(session);
-  }
-
-  return traces.map((trace: any, index: number) => {
+const mapTrace = (trace: any, index: number): RpaConfigureStep => {
     const traceTypeLabel = formatRpaTraceType(trace?.trace_type);
     const locator = firstLocatorCandidate(trace);
     const afterUrl = trace?.after_page?.url || '';
     return {
       id: String(trace?.trace_id || `trace-${index}`),
+      traceId: String(trace?.trace_id || ''),
       action: traceAction(trace),
       target: locator,
       locator_candidates: normalizeTraceCandidates(trace),
@@ -157,7 +156,45 @@ export const mapRpaConfigureDisplaySteps = (session: any): RpaConfigureStep[] =>
       source: trace?.source === 'ai' || trace?.trace_type === 'ai_operation' ? 'ai' : 'record',
       configurable: false,
     };
+};
+
+export const mapRpaConfigureDisplaySteps = (session: any): RpaConfigureStep[] => {
+  const recordedActions = Array.isArray(session?.recorded_actions) ? session.recorded_actions : [];
+  const traces = Array.isArray(session?.traces) ? session.traces : [];
+
+  if (recordedActions.length === 0 && traces.length === 0) {
+    return getLegacyRpaSteps(session);
+  }
+
+  if (traces.length === 0) {
+    return mapRecordedActions(session);
+  }
+
+  const recordedByTraceId = new Map<string, { action: any; index: number }>();
+  recordedActions.forEach((action: any, index: number) => {
+    if (action?.step_id) {
+      recordedByTraceId.set(`trace-${action.step_id}`, { action, index });
+    }
   });
+
+  const usedRecordedActionIndexes = new Set<number>();
+  const displaySteps = traces.map((trace: any, index: number) => {
+    const traceId = String(trace?.trace_id || '');
+    const recorded = recordedByTraceId.get(traceId);
+    if (recorded && (trace?.source === 'manual' || trace?.trace_type === 'manual_action')) {
+      usedRecordedActionIndexes.add(recorded.index);
+      return mapRecordedAction(recorded.action, recorded.index);
+    }
+    return mapTrace(trace, index);
+  });
+
+  recordedActions.forEach((action: any, index: number) => {
+    if (!usedRecordedActionIndexes.has(index)) {
+      displaySteps.push(mapRecordedAction(action, index));
+    }
+  });
+
+  return displaySteps;
 };
 
 export const getLegacyRpaSteps = (session: any): RpaConfigureStep[] => (

@@ -3,26 +3,27 @@ import {
   getLegacyRpaSteps,
   getManualRecordingDiagnostics,
   hasManualRecordingDiagnostics,
+  isRpaTimelineStepDeletable,
   mapRpaConfigureDisplaySteps,
 } from './rpaConfigureTimeline';
 
 describe('rpaConfigureTimeline', () => {
-  it('prefers recorded actions over traces and legacy steps when present', () => {
+  it('deduplicates recorded actions and their derived manual traces', () => {
     const session = {
       steps: [
         {
-          id: 'legacy-1',
+          id: 'step-search',
           action: 'click',
           description: 'legacy click should only remain for parameterization',
         },
       ],
       traces: [
         {
-          trace_id: 'trace-manual',
+          trace_id: 'trace-step-search',
           trace_type: 'manual_action',
-          source: 'record',
+          source: 'manual',
           action: 'click',
-          description: 'legacy manual trace',
+          description: 'derived manual trace should not duplicate recorded action',
         },
       ],
       recorded_actions: [
@@ -42,6 +43,8 @@ describe('rpaConfigureTimeline', () => {
     expect(displaySteps).toHaveLength(1);
     expect(displaySteps[0]).toMatchObject({
       id: 'step-search',
+      stepId: 'step-search',
+      traceId: 'trace-step-search',
       action: 'click',
       description: '点击 button("Search")',
       source: 'record',
@@ -49,6 +52,51 @@ describe('rpaConfigureTimeline', () => {
       validation: { status: 'ok', details: 'Accepted manual action' },
     });
     expect(displaySteps[0].target).toEqual({ method: 'role', role: 'button', name: 'Search' });
+  });
+
+  it('keeps AI traces visible when recorded actions are present', () => {
+    const session = {
+      steps: [
+        { id: 'step-search', action: 'click', description: 'legacy click' },
+      ],
+      traces: [
+        {
+          trace_id: 'trace-step-search',
+          trace_type: 'manual_action',
+          source: 'manual',
+          action: 'click',
+          description: 'derived manual trace should be deduplicated',
+        },
+        {
+          trace_id: 'trace-ai-project',
+          trace_type: 'ai_operation',
+          source: 'ai',
+          user_instruction: '抓取第一个项目的信息',
+          description: '抓取第一个项目的信息',
+          output_key: 'selected_project',
+        },
+      ],
+      recorded_actions: [
+        {
+          step_id: 'step-search',
+          action_kind: 'click',
+          description: 'click search',
+          target: { method: 'role', role: 'button', name: 'Search' },
+          validation: { status: 'ok' },
+        },
+      ],
+    };
+
+    const displaySteps = mapRpaConfigureDisplaySteps(session);
+
+    expect(displaySteps).toHaveLength(2);
+    expect(displaySteps.map((step) => step.id)).toEqual(['step-search', 'trace-ai-project']);
+    expect(displaySteps[1]).toMatchObject({
+      traceId: 'trace-ai-project',
+      source: 'ai',
+      action: 'ai_operation',
+      description: '抓取第一个项目的信息',
+    });
   });
 
   it('keeps accepted traces as fallback when recorded actions are absent', () => {
@@ -65,7 +113,13 @@ describe('rpaConfigureTimeline', () => {
       ],
     };
 
-    expect(mapRpaConfigureDisplaySteps(session)).toHaveLength(1);
+    const displaySteps = mapRpaConfigureDisplaySteps(session);
+
+    expect(displaySteps).toHaveLength(1);
+    expect(displaySteps[0]).toMatchObject({
+      id: 'trace-fill',
+      traceId: 'trace-fill',
+    });
     expect(getLegacyRpaSteps(session)).toEqual(session.steps);
   });
 
@@ -116,5 +170,11 @@ describe('rpaConfigureTimeline', () => {
       url: 'https://example.test/search',
     });
     expect(hasManualRecordingDiagnostics(session)).toBe(true);
+  });
+
+  it('allows deleting AI timeline items only when they have stable trace ids', () => {
+    expect(isRpaTimelineStepDeletable({ source: 'ai', traceId: 'trace-ai-project' })).toBe(true);
+    expect(isRpaTimelineStepDeletable({ source: 'ai' })).toBe(false);
+    expect(isRpaTimelineStepDeletable({ source: 'record', stepId: 'step-search' })).toBe(true);
   });
 });

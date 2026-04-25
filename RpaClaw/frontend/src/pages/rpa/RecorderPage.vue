@@ -26,6 +26,7 @@ import {
 } from '@/utils/rpaAgentProgress';
 import {
   getManualRecordingDiagnostics,
+  isRpaTimelineStepDeletable,
   mapRpaConfigureDisplaySteps,
 } from '@/utils/rpaConfigureTimeline';
 
@@ -165,13 +166,17 @@ const mapServerTraces = (serverTraces: any[]) => ([
   { id: '0', title: 'Environment ready', description: 'Playwright browser is ready', status: 'completed', deletable: false },
   ...serverTraces.map((t: any, i: number) => ({
     id: String(i + 1),
+    traceId: t.trace_id || '',
     title: t.description || t.user_instruction || formatTraceType(t.trace_type),
     description: t.user_instruction || t.action || formatTraceType(t.trace_type),
     status: 'completed',
     source: t.source === 'ai' || t.trace_type === 'ai_operation' ? 'ai' : 'record',
     traceType: t.trace_type,
     sensitive: false,
-    deletable: false,
+    deletable: isRpaTimelineStepDeletable({
+      source: t.source === 'ai' || t.trace_type === 'ai_operation' ? 'ai' : 'record',
+      traceId: t.trace_id || '',
+    }),
     locatorSummary: t.locator_candidates?.length ? formatLocator(t.locator_candidates[0]?.locator || t.locator_candidates[0]) : '',
     frameSummary: t.after_page?.url || '',
     validationStatus: t.accepted === false ? 'warning' : 'ok',
@@ -183,12 +188,14 @@ const mapConfigureTimelineSteps = (session: any) => ([
   { id: '0', title: 'Environment ready', description: 'Playwright browser is ready', status: 'completed', deletable: false },
   ...mapRpaConfigureDisplaySteps(session).map((step: any, index: number) => ({
     id: String(index + 1),
+    stepId: step.stepId || '',
+    traceId: step.traceId || '',
     title: step.description || step.action,
     description: step.description || step.action,
     status: 'completed',
     source: step.source || 'record',
     sensitive: step.sensitive || false,
-    deletable: step.source !== 'ai',
+    deletable: isRpaTimelineStepDeletable({ source: step.source || 'record', traceId: step.traceId || '' }),
     locatorSummary: formatLocator(step.target),
     frameSummary: formatFramePath(step.frame_path),
     validationStatus: step.validation?.status || '',
@@ -660,10 +667,20 @@ const goToSkills = () => {
   router.push('/chat/skills');
 };
 
-const deleteStep = async (stepIndex: number) => {
+const deleteStep = async (step: any, fallbackStepIndex: number) => {
   if (!sessionId.value) return;
   try {
-    await apiClient.delete(`/rpa/session/${sessionId.value}/step/${stepIndex}`);
+    if (step.stepId) {
+      await apiClient.delete(`/rpa/session/${sessionId.value}/timeline-item`, {
+        data: { kind: 'manual_step', step_id: step.stepId },
+      });
+    } else if (step.traceId) {
+      await apiClient.delete(`/rpa/session/${sessionId.value}/timeline-item`, {
+        data: { kind: 'trace', trace_id: step.traceId },
+      });
+    } else {
+      await apiClient.delete(`/rpa/session/${sessionId.value}/step/${fallbackStepIndex}`);
+    }
     const resp = await apiClient.get(`/rpa/session/${sessionId.value}`);
     refreshTimeline(resp.data.session || {});
   } catch (err) {
@@ -920,7 +937,7 @@ const sendMessage = async () => {
               <div class="flex items-center gap-1">
                 <button
                   v-if="index > 0 && step.deletable !== false"
-                  @click="deleteStep(index - 1)"
+                  @click="deleteStep(step, index - 1)"
                   class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
                   title="删除步骤"
                 >

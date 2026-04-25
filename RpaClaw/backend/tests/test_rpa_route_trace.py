@@ -292,6 +292,138 @@ async def test_generate_script_waits_for_pending_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_timeline_manual_step_removes_generate_input():
+    manager = ROUTE_MODULE.rpa_manager
+    session = RPASession(id="route-delete-manual-step", user_id="u1", sandbox_session_id="sandbox")
+    session.steps.append(
+        RPAStep(
+            id="step-search",
+            action="click",
+            target='{"method": "role", "role": "button", "name": "Search"}',
+            description='click button("Search")',
+            validation={"status": "ok"},
+        )
+    )
+    session.recorded_actions.append(
+        ManualRecordedAction(
+            step_id="step-search",
+            action_kind=ManualActionKind.CLICK,
+            description='click button("Search")',
+            target={"method": "role", "role": "button", "name": "Search"},
+            validation={"status": "ok"},
+        )
+    )
+    session.traces.extend(
+        [
+            RPAAcceptedTrace(
+                trace_id="trace-step-search",
+                trace_type=RPATraceType.MANUAL_ACTION,
+                source="manual",
+                action="click",
+                description='click button("Search")',
+            ),
+            RPAAcceptedTrace(
+                trace_id="trace-ai-keep",
+                trace_type=RPATraceType.AI_OPERATION,
+                source="ai",
+                user_instruction="collect title",
+                output_key="page_title",
+                ai_execution=RPAAIExecution(code="async def run(page, results):\n    return 'ok'"),
+            ),
+        ]
+    )
+    manager.sessions[session.id] = session
+
+    try:
+        user = type("User", (), {"id": "u1"})()
+        response = await ROUTE_MODULE.delete_timeline_item(
+            session.id,
+            ROUTE_MODULE.DeleteTimelineItemRequest(kind="manual_step", step_id="step-search"),
+            user,
+        )
+        script = ROUTE_MODULE._generate_session_script(session, {}, test_mode=True)
+
+        assert response["status"] == "success"
+        assert "Search" not in script
+        assert "page_title" in script
+        assert [trace.trace_id for trace in session.traces] == ["trace-ai-keep"]
+    finally:
+        manager.sessions.pop(session.id, None)
+
+
+@pytest.mark.asyncio
+async def test_delete_timeline_trace_removes_ai_trace_without_touching_steps():
+    manager = ROUTE_MODULE.rpa_manager
+    session = RPASession(id="route-delete-ai-trace", user_id="u1", sandbox_session_id="sandbox")
+    session.steps.append(RPAStep(id="step-keep", action="goto", target="https://example.test"))
+    session.traces.append(
+        RPAAcceptedTrace(
+            trace_id="trace-ai-delete",
+            trace_type=RPATraceType.AI_OPERATION,
+            source="ai",
+            user_instruction="collect title",
+            output_key="page_title",
+            ai_execution=RPAAIExecution(code="async def run(page, results):\n    return 'ok'"),
+        )
+    )
+    manager.sessions[session.id] = session
+
+    try:
+        user = type("User", (), {"id": "u1"})()
+        response = await ROUTE_MODULE.delete_timeline_item(
+            session.id,
+            ROUTE_MODULE.DeleteTimelineItemRequest(kind="trace", trace_id="trace-ai-delete"),
+            user,
+        )
+
+        assert response["status"] == "success"
+        assert session.traces == []
+        assert [step.id for step in session.steps] == ["step-keep"]
+    finally:
+        manager.sessions.pop(session.id, None)
+
+
+@pytest.mark.asyncio
+async def test_delete_timeline_manual_trace_removes_legacy_step_fallback():
+    manager = ROUTE_MODULE.rpa_manager
+    session = RPASession(id="route-delete-manual-trace", user_id="u1", sandbox_session_id="sandbox")
+    session.steps.append(
+        RPAStep(
+            id="step-search",
+            action="click",
+            target='{"method": "role", "role": "button", "name": "Search"}',
+            description='click button("Search")',
+            validation={"status": "ok"},
+        )
+    )
+    session.traces.append(
+        RPAAcceptedTrace(
+            trace_id="trace-step-search",
+            trace_type=RPATraceType.MANUAL_ACTION,
+            source="manual",
+            action="click",
+            description='click button("Search")',
+        )
+    )
+    manager.sessions[session.id] = session
+
+    try:
+        user = type("User", (), {"id": "u1"})()
+        await ROUTE_MODULE.delete_timeline_item(
+            session.id,
+            ROUTE_MODULE.DeleteTimelineItemRequest(kind="trace", trace_id="trace-step-search"),
+            user,
+        )
+        script = ROUTE_MODULE._generate_session_script(session, {}, test_mode=True)
+
+        assert session.traces == []
+        assert session.steps == []
+        assert "Search" not in script
+    finally:
+        manager.sessions.pop(session.id, None)
+
+
+@pytest.mark.asyncio
 async def test_test_script_blocks_when_recording_diagnostics_exist():
     manager = ROUTE_MODULE.rpa_manager
     session = RPASession(id="route-diagnostic-test", user_id="u1", sandbox_session_id="sandbox")

@@ -646,6 +646,30 @@ class RPASessionManager:
         ]
         return True
 
+    async def delete_step_by_id(self, session_id: str, step_id: str) -> bool:
+        """Delete a recorded step by stable ID and remove its derived manual trace."""
+        session = self.sessions.get(session_id)
+        if not session or not step_id:
+            return False
+        for index, step in enumerate(session.steps):
+            if step.id == step_id:
+                return await self.delete_step(session_id, index)
+        return False
+
+    async def delete_trace(self, session_id: str, trace_id: str) -> bool:
+        """Delete an accepted trace by stable ID without relying on legacy step indexes."""
+        session = self.sessions.get(session_id)
+        if not session or not trace_id:
+            return False
+        target_trace = next((trace for trace in session.traces if trace.trace_id == trace_id), None)
+        if target_trace and target_trace.source == "manual" and trace_id.startswith("trace-"):
+            step_id = trace_id.removeprefix("trace-")
+            if any(step.id == step_id for step in session.steps):
+                return await self.delete_step_by_id(session_id, step_id)
+        original_count = len(session.traces)
+        session.traces = [trace for trace in session.traces if trace.trace_id != trace_id]
+        return len(session.traces) != original_count
+
     @staticmethod
     def _unescape_playwright_literal(value: str) -> str:
         return value.replace('\\"', '"').replace("\\\\", "\\")
