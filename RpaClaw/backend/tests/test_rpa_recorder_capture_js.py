@@ -128,6 +128,13 @@ def _run_capture_probe(scenario: str) -> dict:
               nextElementSibling: menu,
             }});
             installedOptions.emitAction('hover', button, {{}});
+          }} else if (scenario === 'hover-list-popup-trigger') {{
+            const button = makeElement({{
+              tagName: 'BUTTON',
+              textContent: 'Download',
+              attributes: {{ role: 'button', 'aria-haspopup': 'list' }},
+            }});
+            installedOptions.emitAction('hover', button, {{}});
           }} else if (scenario === 'plain-button-hover') {{
             const button = makeElement({{
               tagName: 'BUTTON',
@@ -194,6 +201,14 @@ def test_menu_item_click_keeps_menu_context_signal():
 
 def test_hover_menu_trigger_keeps_trigger_signal():
     payload = _run_capture_probe("hover-menu-trigger")
+
+    event = payload["emitted"][0]
+    assert event["action"] == "hover"
+    assert event["signals"]["hover"]["is_menu_trigger_candidate"] is True
+
+
+def test_hover_list_popup_trigger_keeps_trigger_signal():
+    payload = _run_capture_probe("hover-list-popup-trigger")
 
     event = payload["emitted"][0]
     assert event["action"] == "hover"

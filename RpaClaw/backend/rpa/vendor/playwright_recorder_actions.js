@@ -43,7 +43,7 @@
     }
 
     function hoverMenuTriggerTarget(node, retarget) {
-        var target = retarget(node);
+        var target = closestElement(node, 'button, a, [role="button"], [role="link"]') || retarget(node);
         if (!isElement(target)) return null;
         var role = (target.getAttribute('role') || '').toLowerCase();
         if (target.nodeName === 'BUTTON' || target.nodeName === 'A') return target;

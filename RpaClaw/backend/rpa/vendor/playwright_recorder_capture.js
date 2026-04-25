@@ -212,7 +212,7 @@
         if (!el || !el.getAttribute) return false;
         var role = (el.getAttribute('role') || '').toLowerCase();
         var hasPopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
-        if (hasPopup === 'menu' || hasPopup === 'listbox' || hasPopup === 'true') return true;
+        if (hasPopup === 'menu' || hasPopup === 'list' || hasPopup === 'listbox' || hasPopup === 'true') return true;
         if (el.hasAttribute('aria-expanded')) return true;
         var isInteractiveTriggerLike = role === 'button' || role === 'link' || el.tagName === 'BUTTON' || el.tagName === 'A';
         return isInteractiveTriggerLike && hasMenuPopupNearby(el);
