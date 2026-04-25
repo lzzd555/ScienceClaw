@@ -286,6 +286,111 @@ def test_ordinal_overlay_falls_back_for_semantic_selection():
     assert plan is None
 
 
+def _table_view_snapshot():
+    return {
+        "url": "https://example.test/grid",
+        "title": "Grid",
+        "frames": [],
+        "actionable_nodes": [],
+        "content_nodes": [],
+        "containers": [],
+        "table_views": [
+            {
+                "kind": "table_view",
+                "framework_hint": "aui-grid",
+                "columns": [
+                    {"index": 0, "column_id": "col_23", "header": "", "role": "row_index"},
+                    {"index": 1, "column_id": "col_24", "header": "", "role": "selection"},
+                    {"index": 2, "column_id": "col_25", "header": "文件名称", "role": "file_link"},
+                    {"index": 3, "column_id": "col_28", "header": "导出状态", "role": "status"},
+                ],
+                "rows": [
+                    {
+                        "index": 0,
+                        "cells": [
+                            {
+                                "column_id": "col_25",
+                                "column_index": 2,
+                                "column_header": "文件名称",
+                                "text": "File_189.xlsx",
+                                "actions": [
+                                    {
+                                        "kind": "link",
+                                        "label": "File_189.xlsx",
+                                        "locator": {
+                                            "method": "relative_css",
+                                            "scope": "row",
+                                            "value": "td[data-colid='col_25'] a",
+                                        },
+                                    }
+                                ],
+                            },
+                            {"column_id": "col_28", "column_index": 3, "column_header": "导出状态", "text": "FINISH", "actions": []},
+                        ],
+                        "locator_hints": [{"kind": "playwright", "expression": "page.locator('table.aui-grid__body tbody tr').nth(0)"}],
+                    },
+                    {
+                        "index": 1,
+                        "cells": [
+                            {
+                                "column_id": "col_25",
+                                "column_index": 2,
+                                "column_header": "文件名称",
+                                "text": "File_380.xlsx",
+                                "actions": [
+                                    {
+                                        "kind": "link",
+                                        "label": "File_380.xlsx",
+                                        "locator": {
+                                            "method": "relative_css",
+                                            "scope": "row",
+                                            "value": "td[data-colid='col_25'] a",
+                                        },
+                                    }
+                                ],
+                            },
+                            {"column_id": "col_28", "column_index": 3, "column_header": "导出状态", "text": "FINISH", "actions": []},
+                        ],
+                        "locator_hints": [{"kind": "playwright", "expression": "page.locator('table.aui-grid__body tbody tr').nth(1)"}],
+                    },
+                ],
+            }
+        ],
+        "detail_views": [],
+    }
+
+
+def test_table_ordinal_lane_clicks_first_row_named_column_link():
+    build_plan = getattr(recording_runtime_agent, "_build_table_ordinal_overlay_plan")
+
+    plan = build_plan("点击第一行的文件名称", _table_view_snapshot())
+
+    assert plan is not None
+    assert plan["table_ordinal_overlay"] is True
+    assert "table.aui-grid__body tbody tr" in plan["code"]
+    assert "td[data-colid='col_25'] a" in plan["code"]
+    assert "File_189.xlsx" not in plan["code"]
+
+
+def test_table_ordinal_lane_extracts_second_row_status():
+    build_plan = getattr(recording_runtime_agent, "_build_table_ordinal_overlay_plan")
+
+    plan = build_plan("提取第二行的导出状态", _table_view_snapshot())
+
+    assert plan is not None
+    assert "nth(1)" in plan["code"]
+    assert "td[data-colid='col_28']" in plan["code"]
+    assert plan["expected_effect"] == "extract"
+
+
+def test_table_ordinal_lane_falls_back_without_column_match():
+    build_plan = getattr(recording_runtime_agent, "_build_table_ordinal_overlay_plan")
+
+    plan = build_plan("点击第一行的审批按钮", _table_view_snapshot())
+
+    assert plan is None
+
+
 @pytest.mark.asyncio
 async def test_recording_runtime_agent_uses_ordinal_overlay_without_planner(monkeypatch):
     async def fake_build_page_snapshot(*_args, **_kwargs):

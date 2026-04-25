@@ -157,7 +157,9 @@ class RecordingRuntimeAgent:
             debug_context=debug_context,
         )
 
-        first_plan = _build_ordinal_overlay_plan(instruction, snapshot)
+        first_plan = _build_table_ordinal_overlay_plan(instruction, snapshot)
+        if not first_plan:
+            first_plan = _build_ordinal_overlay_plan(instruction, snapshot)
         if not first_plan:
             first_plan = await self.planner(payload)
         first_result = await self.executor(page, first_plan, runtime_results)
@@ -504,6 +506,144 @@ def _parse_json_object(text: str) -> Dict[str, Any]:
     if parsed.get("action_type") == "run_python" and "async def run(page, results)" not in str(parsed.get("code") or ""):
         raise ValueError("Recording planner must return Python code defining async def run(page, results)")
     return parsed
+
+
+def _build_table_ordinal_overlay_plan(instruction: str, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    intent = _detect_ordinal_intent(instruction)
+    if not intent:
+        return None
+    action = _detect_ordinal_action(instruction)
+    if action not in {"click_primary", "extract_title"}:
+        return None
+
+    table = _select_table_view(snapshot, instruction)
+    if not table:
+        return None
+    rows = list(table.get("rows") or [])
+    if not rows:
+        return None
+    index = _ordinal_index_from_intent(intent, len(rows))
+    if index is None:
+        return None
+    column = _select_table_column(table, instruction)
+    if not column:
+        return None
+
+    row_selector = _table_row_selector(table)
+    if not row_selector:
+        return None
+    column_id = str(column.get("column_id") or "")
+    if column_id:
+        cell_selector = f"td[data-colid={column_id!r}]"
+    else:
+        col_index = int(column.get("index") or 0) + 1
+        cell_selector = f"td:nth-child({col_index})"
+
+    if action == "click_primary":
+        action_selector = _table_column_action_selector(table, index, column)
+        if not action_selector:
+            return None
+        code = (
+            "async def run(page, results):\n"
+            f"    _row = page.locator({row_selector!r}).nth({index})\n"
+            f"    await _row.locator({action_selector!r}).click()\n"
+            "    return {'action_performed': True}"
+        )
+        return {
+            "description": "Click table row column action",
+            "action_type": "run_python",
+            "expected_effect": "none",
+            "output_key": "table_row_action",
+            "code": code,
+            "table_ordinal_overlay": True,
+        }
+
+    code = (
+        "async def run(page, results):\n"
+        f"    _row = page.locator({row_selector!r}).nth({index})\n"
+        f"    return (await _row.locator({cell_selector!r}).inner_text()).strip()"
+    )
+    return {
+        "description": "Extract table row column value",
+        "action_type": "run_python",
+        "expected_effect": "extract",
+        "output_key": "table_row_value",
+        "code": code,
+        "table_ordinal_overlay": True,
+    }
+
+
+def _ordinal_index_from_intent(intent: Dict[str, int | str], row_count: int) -> Optional[int]:
+    kind = str(intent.get("kind") or "")
+    if kind == "last":
+        return row_count - 1 if row_count else None
+    if kind == "first_n":
+        return None
+    index = int(intent.get("index") or 0)
+    return index if 0 <= index < row_count else None
+
+
+def _select_table_view(snapshot: Dict[str, Any], instruction: str) -> Optional[Dict[str, Any]]:
+    tables = [table for table in list(snapshot.get("table_views") or []) if table.get("rows")]
+    if not tables:
+        return None
+    return max(tables, key=lambda table: len(table.get("rows") or []))
+
+
+def _select_table_column(table: Dict[str, Any], instruction: str) -> Optional[Dict[str, Any]]:
+    text = str(instruction or "").lower()
+    columns = list(table.get("columns") or [])
+    scored: List[tuple[int, Dict[str, Any]]] = []
+    for column in columns:
+        header = str(column.get("header") or "").lower()
+        role = str(column.get("role") or "").lower()
+        score = 0
+        if header and header in text:
+            score += 6
+        if any(token and token in text for token in header.replace("_", " ").split()):
+            score += 3
+        if role and role in text:
+            score += 3
+        if role == "file_link" and any(term in text for term in ("file", "文件", "名称", "名字")):
+            score += 5
+        if role == "status" and any(term in text for term in ("status", "状态")):
+            score += 5
+        if role == "selection" and any(term in text for term in ("checkbox", "勾选", "选择")):
+            score += 5
+        if score:
+            scored.append((score, column))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored[0][1]
+
+
+def _table_row_selector(table: Dict[str, Any]) -> str:
+    for row in table.get("rows") or []:
+        for hint in row.get("locator_hints") or []:
+            expression = str(hint.get("expression") or "")
+            match = re.search(r"page\.locator\((['\"])(.*?)\1\)\.nth\(\d+\)", expression)
+            if match:
+                return match.group(2)
+    return "tbody tr"
+
+
+def _table_column_action_selector(table: Dict[str, Any], index: int, column: Dict[str, Any]) -> str:
+    column_id = str(column.get("column_id") or "")
+    rows = list(table.get("rows") or [])
+    if index >= len(rows):
+        return ""
+    for cell in rows[index].get("cells") or []:
+        if column_id and str(cell.get("column_id") or "") != column_id:
+            continue
+        actions = list(cell.get("actions") or cell.get("row_local_actions") or [])
+        for action in actions:
+            locator = action.get("locator") if isinstance(action, dict) else {}
+            if isinstance(locator, dict) and locator.get("scope") == "row" and locator.get("value"):
+                return str(locator.get("value"))
+    if column_id:
+        return f"td[data-colid={column_id!r}] a, td[data-colid={column_id!r}] button"
+    return ""
 
 
 def _build_ordinal_overlay_plan(instruction: str, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
