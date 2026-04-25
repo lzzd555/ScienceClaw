@@ -22,6 +22,9 @@ from backend.rpa.trace_models import RPAPageState
 class _FakePage:
     url = "https://example.test/start"
 
+    def __init__(self):
+        self._event_handlers = {}
+
     async def title(self):
         return "Example"
 
@@ -33,6 +36,20 @@ class _FakePage:
 
     async def wait_for_load_state(self, _state):
         return None
+
+    def on(self, event, handler):
+        self._event_handlers.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event, handler):
+        handlers = self._event_handlers.get(event) or []
+        self._event_handlers[event] = [item for item in handlers if item is not handler]
+
+    async def trigger_download(self, filename):
+        download = SimpleNamespace(suggested_filename=filename)
+        for handler in list(self._event_handlers.get("download") or []):
+            result = handler(download)
+            if hasattr(result, "__await__"):
+                await result
 
 
 class _FakeLocator:
@@ -1418,6 +1435,33 @@ async def test_recording_runtime_agent_accepts_empty_extract_when_plan_explicitl
 
     assert result.success is True
     assert result.output == {"notifications": []}
+
+
+@pytest.mark.asyncio
+async def test_recording_runtime_agent_records_download_signal_from_ai_code():
+    async def planner(_payload):
+        return {
+            "description": "Download report",
+            "action_type": "run_python",
+            "expected_effect": "click",
+            "output_key": "download_report",
+            "code": (
+                "async def run(page, results):\n"
+                "    await page.trigger_download('report.xlsx')\n"
+                "    return {'action_performed': True}"
+            ),
+        }
+
+    page = _FakePage()
+    result = await RecordingRuntimeAgent(planner=planner).run(
+        page=page,
+        instruction="download the report",
+        runtime_results={},
+    )
+
+    assert result.success is True
+    assert result.trace.signals["download"]["filename"] == "report.xlsx"
+    assert result.trace.signals["download"]["count"] == 1
 
 
 @pytest.mark.asyncio

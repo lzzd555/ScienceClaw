@@ -487,11 +487,31 @@ class TraceSkillCompiler:
             previous_traces,
         )
         code = _rewrite_random_like_locator_in_code(code, trace)
+        download_signal = _trace_signal(trace, "download")
+        code_handles_download = "expect_download" in code or ".save_as(" in code
         lines = ["", f"    # trace {index}: {trace.description or 'AI operation'}"]
         for code_line in code.splitlines():
             lines.append(f"    {code_line}" if code_line.strip() else "")
-        lines.append("    _result = await run(current_page, _results)")
-        if key:
+        if download_signal and not code_handles_download:
+            download_name = str(download_signal.get("filename") or "file")
+            safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", download_name.split(".")[0]) or "file"
+            download_key = "download_" + safe_name
+            lines.append("    async with current_page.expect_download() as _dl_info:")
+            lines.append("        _result = await run(current_page, _results)")
+            lines.extend(
+                [
+                    "    _dl = await _dl_info.value",
+                    "    _dl_dir = kwargs.get('_downloads_dir', '.')",
+                    "    import os as _os; _os.makedirs(_dl_dir, exist_ok=True)",
+                    "    _dl_dest = _os.path.join(_dl_dir, _dl.suggested_filename)",
+                    "    await _dl.save_as(_dl_dest)",
+                    f"    _results[{json.dumps(download_key, ensure_ascii=False)}] = {{\"filename\": _dl.suggested_filename, \"path\": _dl_dest}}",
+                ]
+            )
+        else:
+            download_key = ""
+            lines.append("    _result = await run(current_page, _results)")
+        if key and key != download_key:
             lines.append(f"    _results[{key!r}] = _result")
         return lines
 

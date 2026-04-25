@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import inspect
 import json
@@ -358,6 +359,7 @@ class RecordingRuntimeAgent:
             description=str(plan.get("description") or instruction),
             before_page=before,
             after_page=after,
+            signals=dict(result.get("signals") or {}),
             output_key=output_key,
             output=output,
             ai_execution=RPAAIExecution(
@@ -427,8 +429,18 @@ class RecordingRuntimeAgent:
             if not callable(runner):
                 return {"success": False, "error": "No run(page, results) function defined", "output": ""}
             navigation_history: List[str] = []
+            download_events: List[Dict[str, Any]] = []
             original_goto = getattr(page, "goto", None)
             goto_wrapped = False
+            download_handler_attached = False
+
+            def on_download(download: Any) -> None:
+                download_events.append(
+                    {
+                        "filename": str(getattr(download, "suggested_filename", "") or ""),
+                        "url": str(getattr(page, "url", "") or ""),
+                    }
+                )
 
             if callable(original_goto):
                 async def tracked_goto(url: str, *args: Any, **kwargs: Any) -> Any:
@@ -444,11 +456,28 @@ class RecordingRuntimeAgent:
                 except Exception:
                     goto_wrapped = False
 
+            page_on = getattr(page, "on", None)
+            if callable(page_on):
+                try:
+                    page_on("download", on_download)
+                    download_handler_attached = True
+                except Exception:
+                    download_handler_attached = False
+
             try:
                 output = runner(page, runtime_results)
                 if inspect.isawaitable(output):
                     output = await output
+                if download_handler_attached:
+                    await asyncio.sleep(0)
             finally:
+                if download_handler_attached:
+                    remover = getattr(page, "remove_listener", None) or getattr(page, "off", None)
+                    if callable(remover):
+                        try:
+                            remover("download", on_download)
+                        except Exception:
+                            pass
                 if goto_wrapped:
                     try:
                         setattr(page, "goto", original_goto)
@@ -458,6 +487,13 @@ class RecordingRuntimeAgent:
             response = {"success": True, "error": None, "output": output}
             if navigation_history:
                 response["navigation_history"] = navigation_history
+            if download_events:
+                download_signal = dict(download_events[0])
+                download_signal["count"] = len(download_events)
+                if len(download_events) > 1:
+                    download_signal["files"] = list(download_events)
+                response["signals"] = {"download": download_signal}
+                response["effect"] = {"type": "download", "action_performed": True}
             return response
         except Exception as exc:
             return {

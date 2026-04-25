@@ -314,6 +314,122 @@ def test_manual_hover_compiles_to_locator_hover():
     assert "get_by_role('button', name='Export').hover()" in body
 
 
+def test_manual_popup_click_compiles_to_expect_popup_and_switches_page():
+    trace = RPAAcceptedTrace(
+        trace_id="popup-export",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="click",
+        description='click text("Export all")',
+        locator_candidates=[
+            {"locator": {"method": "text", "value": "Export all", "exact": True}, "selected": True},
+        ],
+        signals={"popup": {"target_tab_id": "tab-export"}},
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "async with current_page.expect_popup() as popup_info:" in body
+    assert "await current_page.get_by_text('Export all', exact=True).click()" in body
+    assert "new_page = await popup_info.value" in body
+    assert 'tabs["tab-export"] = new_page' in body
+    assert "current_page = new_page" in body
+
+
+def test_manual_download_click_compiles_to_expect_download():
+    trace = RPAAcceptedTrace(
+        trace_id="download-report",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="click",
+        description='click link("report.xlsx")',
+        locator_candidates=[
+            {"locator": {"method": "role", "role": "link", "name": "report.xlsx", "exact": True}, "selected": True},
+        ],
+        signals={"download": {"filename": "report.xlsx"}},
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "async with current_page.expect_download() as _dl_info:" in body
+    assert "await current_page.get_by_role('link', name='report.xlsx', exact=True).click()" in body
+    assert "_dl = await _dl_info.value" in body
+    assert '_results["download_report"]' in body
+
+
+def test_ai_operation_with_download_signal_compiles_to_expect_download():
+    trace = RPAAcceptedTrace(
+        trace_id="ai-download-report",
+        trace_type=RPATraceType.AI_OPERATION,
+        source="ai",
+        user_instruction="download the report",
+        description="Download report",
+        output_key="download_report",
+        output={"action_performed": True},
+        signals={"download": {"filename": "report.xlsx"}},
+        ai_execution=RPAAIExecution(
+            language="python",
+            code=(
+                "async def run(page, results):\n"
+                "    await page.get_by_role('link', name='report.xlsx').click()\n"
+                "    return {'action_performed': True}"
+            ),
+        ),
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "async with current_page.expect_download() as _dl_info:" in body
+    assert "            _result = await run(current_page, _results)" in body
+    assert "_dl = await _dl_info.value" in body
+    assert '_results["download_report"]' in body
+
+
+def test_ai_operation_with_existing_expect_download_is_not_wrapped_twice():
+    trace = RPAAcceptedTrace(
+        trace_id="ai-download-report",
+        trace_type=RPATraceType.AI_OPERATION,
+        source="ai",
+        user_instruction="download the report",
+        description="Download report",
+        signals={"download": {"filename": "report.xlsx"}},
+        ai_execution=RPAAIExecution(
+            language="python",
+            code=(
+                "async def run(page, results):\n"
+                "    async with page.expect_download() as download_info:\n"
+                "        await page.get_by_role('link', name='report.xlsx').click()\n"
+                "    return {'filename': (await download_info.value).suggested_filename}"
+            ),
+        ),
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+
+    assert script.count("expect_download()") == 1
+
+
+def test_manual_navigation_signal_click_compiles_to_expect_navigation():
+    trace = RPAAcceptedTrace(
+        trace_id="menu-settings",
+        trace_type=RPATraceType.MANUAL_ACTION,
+        action="click",
+        description='click text("Settings")',
+        locator_candidates=[
+            {"locator": {"method": "text", "value": "Settings", "exact": True}, "selected": True},
+        ],
+        signals={"navigation": {"url": "https://example.com/settings"}},
+    )
+
+    script = TraceSkillCompiler().generate_script([trace], is_local=True)
+    body = _execute_body(script)
+
+    assert "async with current_page.expect_navigation(wait_until='domcontentloaded'):" in body
+    assert "await current_page.get_by_text('Settings', exact=True).click()" in body
+    assert "await current_page.wait_for_load_state('domcontentloaded')" in body
+
+
 def test_manual_navigate_click_preserves_click_navigation_semantics():
     trace = RPAAcceptedTrace(
         trace_id="login-submit",
