@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, House, FolderOpen, Globe } from 'lucide-vue-next';
+import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, House, FolderOpen, Globe, AlertCircle, ChevronDown, ChevronUp, ClipboardCheck, Loader2 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
@@ -24,6 +24,13 @@ import {
   getRpaAgentProgressForEvent,
   type RpaAgentMessageStatus,
 } from '@/utils/rpaAgentProgress';
+import {
+  applyRpaAssistantRunEvent,
+  createRpaAssistantRun,
+  type RpaAssistantRun,
+  type RpaAssistantRunItem,
+  type RpaAssistantRound,
+} from '@/utils/rpaAssistantRun';
 import {
   getManualRecordingDiagnostics,
   isRpaTimelineStepDeletable,
@@ -227,6 +234,7 @@ interface ChatMessage {
   error?: string;
   showCode?: boolean;
   actions?: Array<{ description: string; code: string; showCode?: boolean }>;  // Track agent actions
+  run?: RpaAssistantRun;
   frameSummary?: string;
   locatorSummary?: string;
   collectionSummary?: string;
@@ -237,6 +245,55 @@ const chatMessages = ref<ChatMessage[]>([]);
 const newMessage = ref('');
 const sending = ref(false);
 const agentRunning = ref(false);
+const chatScrollRef = ref<HTMLElement | null>(null);
+
+const scrollAssistantToBottom = () => {
+  void nextTick(() => {
+    const container = chatScrollRef.value;
+    if (!container) return;
+    requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
+    });
+  });
+};
+
+const runRoundCount = (run?: RpaAssistantRun) => run?.rounds.length || 0;
+
+const getRunTraceCount = (msg: ChatMessage) => (
+  msg.run?.traceCount || Math.max(acceptedTraces.value.length, 0)
+);
+
+const getRunStatusLabel = (msg: ChatMessage) => {
+  if (msg.status === 'error') return '未完成';
+  if (msg.status === 'done') return '已完成';
+  if (msg.processingLabel) return '处理中';
+  return '准备中';
+};
+
+const getRunStatusClass = (msg: ChatMessage) => {
+  if (msg.status === 'error') return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
+  if (msg.status === 'done') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
+  return 'bg-[#f0dbff] text-[#6900b3] dark:bg-[#831bd7]/20 dark:text-purple-200';
+};
+
+const getRoundStatusLabel = (round: RpaAssistantRound) => {
+  if (round.status === 'error') return '需要修复';
+  if (round.status === 'done') return '已接收';
+  return '处理中';
+};
+
+const getRoundStatusClass = (round: RpaAssistantRound) => {
+  if (round.status === 'error') return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
+  if (round.status === 'done') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
+  return 'bg-[#edeef0] text-gray-700 dark:bg-white/10 dark:text-gray-300';
+};
+
+const getRunItemToneClass = (item: RpaAssistantRunItem) => {
+  if (item.kind === 'diagnostic') return 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200';
+  if (item.kind === 'trace') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200';
+  if (item.kind === 'action') return 'bg-[#f6f0ff] text-[#4f00d0] dark:bg-[#831bd7]/15 dark:text-purple-200';
+  return 'bg-[#f2f4f6] text-gray-700 dark:bg-white/[0.08] dark:text-gray-300';
+};
 
 interface PendingConfirm {
   description: string;
@@ -258,8 +315,6 @@ const syncTabs = (nextTabs: BrowserTab[]) => {
   activeTabId.value = active?.tab_id || null;
   syncAddressBar();
 };
-
-const codeActionIndex = (part: string) => Number(part.match(/\[\[CODE_(\d+)\]\]/)?.[1] ?? -1);
 
 const cleanupAssistantText = (text: string, script = '') => {
   let next = text;
@@ -716,9 +771,11 @@ const sendMessage = async () => {
     time: now,
     status: initialProgress.status,
     processingLabel: initialProgress.label,
+    run: createRpaAssistantRun(now),
   };
   chatMessages.value.push(assistantMsg);
   const msgIdx = chatMessages.value.length - 1;
+  scrollAssistantToBottom();
 
   try {
     const resp = await fetch(`/api/v1/rpa/session/${sessionId.value}/chat`, {
@@ -764,6 +821,13 @@ const sendMessage = async () => {
             if (progress) {
               chatMessages.value[msgIdx].status = progress.status;
               chatMessages.value[msgIdx].processingLabel = progress.label;
+            }
+            if (chatMessages.value[msgIdx].run) {
+              chatMessages.value[msgIdx].run = applyRpaAssistantRunEvent(
+                chatMessages.value[msgIdx].run!,
+                eventType,
+                data,
+              );
             }
             if (eventType === 'message_chunk') {
               chatMessages.value[msgIdx].text += data.text || '';
@@ -847,6 +911,7 @@ const sendMessage = async () => {
               chatMessages.value[msgIdx].error = data.message || '未知错误';
               agentRunning.value = false;
             }
+            scrollAssistantToBottom();
           } catch { /* ignore parse errors */ }
           eventType = '';
         }
@@ -1068,7 +1133,7 @@ const sendMessage = async () => {
                 <p
                   class="text-[10px] font-bold"
                   :class="agentRunning ? 'text-orange-500' : 'text-[#831bd7]'"
-                  v-text="agentRunning ? 'Agent 运行中...' : 'Trace-first 智能录制'"
+                  v-text="agentRunning ? '正在处理你的操作...' : '按描述录制操作'"
                 ></p>
               </div>
             </div>
@@ -1082,7 +1147,7 @@ const sendMessage = async () => {
           </div>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-[#eff1f2] dark:bg-[#212122]">
+        <div ref="chatScrollRef" class="flex-1 overflow-y-auto p-6 space-y-6 bg-[#eff1f2] dark:bg-[#212122]">
           <div v-if="chatMessages.length === 0" class="text-center text-gray-400 dark:text-gray-500 text-xs mt-8">
             在 VNC 中操作浏览器，步骤会自动记录到左侧面板。
           </div>
@@ -1093,66 +1158,121 @@ const sendMessage = async () => {
             :class="msg.role === 'user' ? 'items-end' : 'items-start'"
           >
             <div
-              class="max-w-[85%] min-w-0 overflow-hidden p-3 rounded-2xl text-xs leading-relaxed break-words [overflow-wrap:anywhere]"
-              :class="msg.role === 'user' ? 'bg-[#831bd7] text-white rounded-tr-none shadow-md shadow-purple-100' : 'bg-white dark:bg-[#272728] text-gray-700 dark:text-gray-300 rounded-tl-none border border-gray-100 dark:border-gray-800'"
+              v-if="msg.role === 'user'"
+              class="max-w-[85%] min-w-0 overflow-hidden rounded-2xl rounded-tr-none bg-[#831bd7] p-3 text-xs leading-relaxed text-white shadow-md shadow-purple-100 break-words [overflow-wrap:anywhere]"
             >
-              <!-- Message text with inline code blocks for agent actions -->
-              <div v-if="msg.actions && msg.actions.length > 0">
-                <template v-for="(part, pidx) in msg.text.split(/(\[\[CODE_\d+\]\])/)" :key="pidx">
-                  <span v-if="!part.match(/\[\[CODE_(\d+)\]\]/)" class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{{ part }}</span>
-                  <div v-else class="inline-block ml-2">
-                    <button
-                      @click="msg.actions[codeActionIndex(part)].showCode = !msg.actions[codeActionIndex(part)].showCode"
-                      class="inline-flex items-center gap-1 text-[10px] text-[#831bd7] hover:underline font-medium"
-                    >
-                      <Code :size="10" />
-                      {{ msg.actions[codeActionIndex(part)].showCode ? '收起' : '查看代码' }}
-                    </button>
-                    <pre v-if="msg.actions[codeActionIndex(part)].showCode" class="mt-1 bg-gray-900 dark:bg-gray-800 text-green-300 text-[10px] p-2 rounded-lg overflow-x-auto max-h-32 overflow-y-auto"><code>{{ msg.actions[codeActionIndex(part)].code }}</code></pre>
+              <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{{ msg.text }}</div>
+            </div>
+
+            <div
+              v-else-if="msg.run"
+              class="w-full max-w-[94%] overflow-hidden rounded-lg bg-white p-3 text-xs text-gray-800 shadow-[0_16px_36px_rgba(25,28,30,0.06)] dark:bg-[#272728] dark:text-gray-200"
+            >
+              <div class="flex min-w-0 items-start justify-between gap-2">
+                <div class="flex min-w-0 items-center gap-2">
+                  <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#831bd7] to-[#ac0089] text-white">
+                    <Wand2 :size="16" />
                   </div>
-                </template>
+                  <div class="min-w-0">
+                    <div class="truncate text-[12px] font-bold text-gray-950 dark:text-gray-100">任务处理进度</div>
+                    <div class="mt-0.5 flex flex-wrap gap-1 text-[9px] font-semibold text-gray-500 dark:text-gray-400">
+                      <span>{{ runRoundCount(msg.run) }} 次尝试</span>
+                      <span>·</span>
+                      <span>已记录 {{ getRunTraceCount(msg) }} 步</span>
+                      <span>·</span>
+                      <span>{{ msg.time }}</span>
+                    </div>
+                  </div>
+                </div>
+                <span class="shrink-0 rounded px-2 py-1 text-[9px] font-bold" :class="getRunStatusClass(msg)">
+                  {{ getRunStatusLabel(msg) }}
+                </span>
               </div>
-              <div v-else class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{{ msg.text }}</div>
-              <div v-if="msg.status === 'executing'" class="mt-2 flex items-center gap-1.5 text-[10px] text-[#831bd7] font-medium">
-                <div class="w-2 h-2 rounded-full bg-[#831bd7] animate-pulse"></div>
-                <span>{{ msg.processingLabel || '正在执行...' }}</span>
+
+              <div v-if="msg.run.rounds.length === 0" class="mt-3 rounded-lg bg-[#f2f4f6] p-3 dark:bg-white/[0.08]">
+                <div class="flex items-center gap-2 text-[11px] font-semibold text-[#831bd7] dark:text-purple-200">
+                  <Loader2 :size="13" class="animate-spin" />
+                  <span>{{ msg.processingLabel || 'Agent 正在规划录制步骤...' }}</span>
+                </div>
               </div>
-              <div v-if="msg.status === 'error' && msg.error" class="mt-2 text-[10px] text-red-500 bg-red-50 dark:bg-red-900/30 p-2 rounded-lg">
-                {{ msg.error }}
+
+              <div v-else class="mt-3 space-y-2">
+                <section
+                  v-for="round in msg.run.rounds"
+                  :key="round.id"
+                  class="rounded-lg bg-[#f8f9fb] p-2.5 dark:bg-white/[0.06]"
+                >
+                  <div class="mb-2 flex items-center justify-between gap-2">
+                    <div class="text-[10px] font-bold text-gray-900 dark:text-gray-100">第 {{ round.index }} 次尝试</div>
+                    <span class="rounded px-1.5 py-0.5 text-[9px] font-bold" :class="getRoundStatusClass(round)">
+                      {{ getRoundStatusLabel(round) }}
+                    </span>
+                  </div>
+
+                  <div class="space-y-1.5">
+                    <div
+                      v-for="item in round.items"
+                      :key="item.id"
+                      class="min-w-0 rounded-md p-2"
+                      :class="getRunItemToneClass(item)"
+                    >
+                      <div class="flex min-w-0 gap-2">
+                        <div class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-white/70 dark:bg-black/20">
+                          <Bot v-if="item.kind === 'plan'" :size="12" />
+                          <Terminal v-else-if="item.kind === 'action'" :size="12" />
+                          <ClipboardCheck v-else-if="item.kind === 'trace'" :size="12" />
+                          <AlertCircle v-else-if="item.kind === 'diagnostic'" :size="12" />
+                          <CheckCircle v-else :size="12" />
+                        </div>
+                        <div class="min-w-0 flex-1">
+                          <div class="break-words text-[11px] font-bold leading-snug [overflow-wrap:anywhere]">{{ item.title }}</div>
+                          <div v-if="item.detail" class="mt-1 whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed opacity-85 [overflow-wrap:anywhere]">{{ item.detail }}</div>
+                          <button
+                            v-if="item.code"
+                            @click="item.showCode = !item.showCode"
+                            class="mt-2 inline-flex items-center gap-1 rounded bg-white/70 px-2 py-1 text-[10px] font-bold text-[#831bd7] transition hover:bg-white dark:bg-black/20 dark:text-purple-200"
+                          >
+                            <Code :size="11" />
+                            {{ item.showCode ? '收起技术细节' : '查看技术细节' }}
+                            <ChevronUp v-if="item.showCode" :size="11" />
+                            <ChevronDown v-else :size="11" />
+                          </button>
+                          <pre v-if="item.code && item.showCode" class="mt-2 max-h-40 overflow-auto rounded-md bg-[#101828] p-2 text-[10px] leading-relaxed text-emerald-200"><code>{{ item.code }}</code></pre>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
               </div>
-              <div v-if="msg.status === 'error' && msg.diagnostics?.length" class="mt-2 text-[10px] text-red-600 bg-red-50 dark:bg-red-900/30 border border-red-100 dark:border-red-800/60 p-2 rounded-lg space-y-1">
-                <div class="font-bold">失败诊断</div>
-                <div v-for="(diagnostic, didx) in msg.diagnostics" :key="didx" class="font-mono whitespace-pre-wrap break-words">
+
+              <div
+                v-if="msg.status === 'done'"
+                class="mt-3 flex items-start gap-2 rounded-lg bg-emerald-50 p-2 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200"
+              >
+                <CheckCircle :size="13" class="mt-0.5 shrink-0" />
+                <span class="min-w-0 break-words">任务完成，已记录 {{ getRunTraceCount(msg) }} 个可回放步骤。</span>
+              </div>
+
+              <div
+                v-if="msg.status === 'error' && (msg.run.error || msg.run.diagnostics.length)"
+                class="mt-3 rounded-lg bg-red-50 p-2 text-[10px] text-red-700 dark:bg-red-950/30 dark:text-red-200"
+              >
+                <div class="mb-1 flex items-center gap-1 font-bold">
+                  <AlertCircle :size="12" />
+                  <span>失败诊断</span>
+                </div>
+                <div v-if="msg.run.error" class="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">{{ msg.run.error }}</div>
+                <div v-for="(diagnostic, didx) in msg.run.diagnostics" :key="didx" class="mt-1 whitespace-pre-wrap break-words font-mono opacity-90 [overflow-wrap:anywhere]">
                   {{ didx + 1 }}. {{ diagnostic }}
                 </div>
               </div>
-              <div v-if="msg.frameSummary || msg.collectionSummary || msg.locatorSummary" class="mt-2 space-y-1 text-[10px] text-gray-500 dark:text-gray-400">
-                <div v-if="msg.frameSummary">
-                  <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
-                  <span class="ml-1 font-mono">{{ msg.frameSummary }}</span>
-                </div>
-                <div v-if="msg.collectionSummary">
-                  <span class="font-semibold text-gray-600 dark:text-gray-400">Collection:</span>
-                  <span class="ml-1">{{ msg.collectionSummary }}</span>
-                </div>
-                <div v-if="msg.locatorSummary">
-                  <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
-                  <span class="ml-1">{{ msg.locatorSummary }}</span>
-                </div>
-              </div>
-              <div v-if="msg.status === 'done' && msg.role === 'assistant'" class="mt-2 flex items-center gap-1 text-[10px] text-green-600 font-medium">
-                <CheckCircle :size="10" /> 执行成功
-              </div>
-              <!-- Legacy script toggle (for non-agent mode) -->
-              <button
-                v-if="msg.script"
-                @click="msg.showCode = !msg.showCode"
-                class="mt-2 flex items-center gap-1 text-[10px] text-[#831bd7] hover:underline font-medium"
-              >
-                <Code :size="10" />
-                {{ msg.showCode ? '收起代码' : '查看代码' }}
-              </button>
-              <pre v-if="msg.script && msg.showCode" class="mt-2 bg-gray-900 dark:bg-gray-800 text-green-300 text-[10px] p-3 rounded-lg overflow-x-auto max-h-48 overflow-y-auto"><code>{{ msg.script }}</code></pre>
+            </div>
+
+            <div
+              v-else
+              class="max-w-[85%] min-w-0 overflow-hidden rounded-2xl rounded-tl-none bg-white p-3 text-xs leading-relaxed text-gray-700 shadow-sm dark:bg-[#272728] dark:text-gray-300"
+            >
+              <div class="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{{ msg.text }}</div>
             </div>
             <span class="text-[9px] text-gray-400 dark:text-gray-500 font-medium px-1">{{ msg.time }}</span>
           </div>
