@@ -515,6 +515,7 @@ def test_api_monitor_runtime_maps_arguments_headers_and_query(monkeypatch):
             "Authorization": "***",
         },
         "body": None,
+        "auth": {},
     }
 
 
@@ -794,3 +795,99 @@ def test_api_monitor_runtime_returns_structured_non_2xx(monkeypatch):
     assert result["status_code"] == 404
     assert result["body"] == {"error": "not found"}
     assert result["request_preview"]["headers"] == {"Authorization": "***"}
+
+
+def test_api_monitor_placeholder_auth_does_not_inject_credentials(monkeypatch):
+    api_client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: api_client)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_repository",
+        lambda collection_name: _MemoryRepo([
+            {
+                "_id": "tool_1",
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "search_orders",
+                "description": "Search orders",
+                "method": "GET",
+                "url": "/api/orders",
+                "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+                "query_mapping": {"keyword": "{{ keyword }}"},
+                "body_mapping": {},
+                "header_mapping": {},
+                "path_mapping": {},
+                "validation_status": "valid",
+            }
+        ]),
+    )
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id: str, cred_id: str):
+            return {"username": "alice", "password": "secret", "domain": ""}
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", lambda: _Vault())
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="user-1",
+        name="API Monitor",
+        transport="api_monitor",
+        scope="user",
+        url="https://api.example.test",
+        api_monitor_auth={"credential_type": "placeholder", "credential_id": "cred_1"},
+    )
+
+    result = asyncio.run(mcp_runtime.ApiMonitorMcpRuntime(server).call_tool("search_orders", {"keyword": "abc"}))
+
+    assert result["success"] is True
+    method, url, kwargs = api_client.calls[0]
+    assert method == "GET"
+    assert url == "https://api.example.test/api/orders"
+    assert kwargs["params"] == {"keyword": "abc"}
+    assert kwargs["headers"] == {}
+    assert "secret" not in str(kwargs)
+    assert result["request_preview"]["auth"] == {
+        "credential_type": "placeholder",
+        "credential_configured": True,
+        "injected": False,
+    }
+
+
+def test_api_monitor_missing_configured_credential_returns_error_without_http(monkeypatch):
+    api_client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: api_client)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_repository",
+        lambda collection_name: _MemoryRepo([
+            {
+                "_id": "tool_1",
+                "mcp_server_id": "mcp_api_monitor",
+                "name": "search_orders",
+                "description": "Search orders",
+                "method": "GET",
+                "url": "/api/orders",
+                "input_schema": {"type": "object", "properties": {}},
+                "validation_status": "valid",
+            }
+        ]),
+    )
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id: str, cred_id: str):
+            return None
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", lambda: _Vault())
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="user-1",
+        name="API Monitor",
+        transport="api_monitor",
+        scope="user",
+        url="https://api.example.test",
+        api_monitor_auth={"credential_type": "placeholder", "credential_id": "missing"},
+    )
+
+    result = asyncio.run(mcp_runtime.ApiMonitorMcpRuntime(server).call_tool("search_orders", {}))
+
+    assert result == {"success": False, "error": "API Monitor credential not found"}
+    assert api_client.calls == []

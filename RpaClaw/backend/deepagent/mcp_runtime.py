@@ -20,6 +20,8 @@ from backend.rpa.api_monitor_mcp_contract import (
     sanitize_preview_mapping,
     sanitize_preview_url,
 )
+from backend.rpa.api_monitor_auth import apply_api_monitor_auth_to_request
+from backend.credential.vault import get_vault
 from backend.storage import get_repository
 
 
@@ -254,11 +256,27 @@ class ApiMonitorMcpRuntime:
         if not url:
             return {"success": False, "error": f"API Monitor tool '{tool_name}' has no callable URL"}
 
-        request_query = _api_monitor_base_query(self._server)
+        has_api_monitor_auth = bool(self._server.api_monitor_auth)
+        request_query = _api_monitor_base_query(self._server) if not has_api_monitor_auth else {}
         request_query.update(render_mapping(query_mapping, rendered_arguments))
-        request_headers: dict[str, Any] = dict(self._server.headers)
+        request_headers: dict[str, Any] = dict(self._server.headers) if not has_api_monitor_auth else {}
         request_headers.update(render_mapping(header_mapping, rendered_arguments))
         request_body = render_mapping(body_mapping, rendered_arguments)
+
+        auth_application = await apply_api_monitor_auth_to_request(
+            user_id=self._server.user_id,
+            auth_config=self._server.api_monitor_auth,
+            headers=request_headers,
+            query=request_query,
+            body=request_body,
+            vault=get_vault(),
+        )
+        if auth_application.error:
+            return {"success": False, "error": auth_application.error}
+
+        request_headers = auth_application.headers
+        request_query = auth_application.query
+        request_body = auth_application.body
         json_body = request_body or None
 
         request_kwargs: dict[str, Any] = {
@@ -287,6 +305,7 @@ class ApiMonitorMcpRuntime:
                 "query": sanitize_preview_mapping(request_query),
                 "headers": sanitize_headers(request_headers),
                 "body": sanitize_preview_mapping(json_body) if json_body is not None else None,
+                "auth": auth_application.preview,
             },
         }
 

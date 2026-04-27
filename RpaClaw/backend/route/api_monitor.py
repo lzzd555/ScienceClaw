@@ -24,7 +24,9 @@ from backend.rpa.api_monitor.models import (
     UpdateToolSelectionRequest,
 )
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
+from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
 from backend.rpa.screencast import SessionScreencastController
+from backend.credential.vault import get_vault
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +324,16 @@ async def delete_tool(
     return {"status": "success"}
 
 
+@router.get("/session/{session_id}/auth-profile")
+async def get_auth_profile(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = api_monitor_manager.get_session(session_id)
+    _verify_session_owner(session, current_user)
+    return {"status": "success", "profile": build_api_monitor_auth_profile(session)}
+
+
 @router.post("/session/{session_id}/publish-mcp")
 async def publish_mcp(
     session_id: str,
@@ -346,6 +358,20 @@ async def publish_mcp(
             },
         )
 
+    auth_payload = (
+        request.api_monitor_auth.model_dump()
+        if request.api_monitor_auth is not None
+        else {"credential_type": "placeholder", "credential_id": ""}
+    )
+    try:
+        api_monitor_auth = await validate_api_monitor_auth_config(
+            str(current_user.id),
+            auth_payload,
+            vault=get_vault(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     result = await registry.publish_session(
         session=session,
         user_id=str(current_user.id),
@@ -353,5 +379,6 @@ async def publish_mcp(
         description=request.description,
         overwrite=bool(existing),
         existing_server_id=str(existing["_id"]) if existing else None,
+        api_monitor_auth=api_monitor_auth,
     )
     return {"status": "success", "data": result}

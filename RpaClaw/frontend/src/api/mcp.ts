@@ -22,6 +22,13 @@ export interface McpToolPolicy {
   blocked_tools: string[];
 }
 
+export type ApiMonitorCredentialType = 'placeholder';
+
+export interface ApiMonitorAuthConfig {
+  credential_type: ApiMonitorCredentialType;
+  credential_id: string;
+}
+
 export interface McpEndpointConfig {
   url?: string;
   command?: string;
@@ -45,6 +52,7 @@ export interface McpServerItem {
   readonly: boolean;
   endpoint_config: McpEndpointConfig;
   credential_binding: McpCredentialBinding;
+  api_monitor_auth?: ApiMonitorAuthConfig;
   tool_policy: McpToolPolicy;
 }
 
@@ -89,6 +97,7 @@ export interface ApiMonitorMcpConfigPayload {
   default_enabled?: boolean;
   endpoint_config?: Record<string, unknown>;
   credential_binding?: Record<string, unknown>;
+  api_monitor_auth?: ApiMonitorAuthConfig;
 }
 
 export interface ApiMonitorMcpToolTestResponse {

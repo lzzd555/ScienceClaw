@@ -104,10 +104,16 @@ class UpdateToolRequest(BaseModel):
     yaml_definition: str
 
 
+class ApiMonitorAuthConfigRequest(BaseModel):
+    credential_type: str = "placeholder"
+    credential_id: str = ""
+
+
 class PublishMcpRequest(BaseModel):
     mcp_name: str
     description: str = ""
     confirm_overwrite: bool = False
+    api_monitor_auth: Optional[ApiMonitorAuthConfigRequest] = None
 
 
 class UpdateToolSelectionRequest(BaseModel):

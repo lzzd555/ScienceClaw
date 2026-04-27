@@ -1293,3 +1293,72 @@ def test_list_session_mcp_returns_session_modes_for_owner(monkeypatch):
     assert data[1]["server_key"] == "user:mcp_user_1"
     assert data[1]["session_mode"] == "disabled"
     assert data[1]["effective_enabled"] is False
+
+
+def test_api_monitor_detail_returns_api_monitor_auth(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([
+        _api_monitor_server_doc(api_monitor_auth={"credential_type": "placeholder", "credential_id": "cred_1"})
+    ])
+    tool_repo = _MemoryRepo([_api_monitor_tool_doc()])
+
+    def fake_get_repository(collection_name):
+        return server_repo if collection_name == "user_mcp_servers" else tool_repo
+
+    monkeypatch.setattr(mcp_route, "get_repository", fake_get_repository)
+
+    response = client.get("/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-detail")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["server"]["api_monitor_auth"] == {
+        "credential_type": "placeholder",
+        "credential_id": "cred_1",
+    }
+
+
+def test_update_api_monitor_mcp_config_saves_api_monitor_auth_and_clears_legacy_auth(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([
+        _api_monitor_server_doc(
+            endpoint_config={"headers": {"Authorization": "old"}, "query": {"api_key": "old"}, "timeout_ms": 10000},
+            credential_binding={"headers": {"Authorization": "{{ credential.password }}"}, "query": {"api_key": "{{ credential.password }}"}},
+        )
+    ])
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id: str, cred_id: str):
+            return {"username": "", "password": "secret", "domain": ""}
+
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
+    monkeypatch.setattr(mcp_route, "get_vault", lambda: _Vault())
+
+    response = client.put(
+        "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
+        json={
+            "endpoint_config": {"timeout_ms": 30000},
+            "api_monitor_auth": {"credential_type": "placeholder", "credential_id": "cred_1"},
+        },
+    )
+
+    assert response.status_code == 200
+    updated = server_repo.docs["mcp_api_monitor"]
+    assert updated["api_monitor_auth"] == {"credential_type": "placeholder", "credential_id": "cred_1"}
+    assert updated["endpoint_config"] == {"timeout_ms": 30000}
+    assert updated["credential_binding"] == {}
+
+
+def test_update_api_monitor_mcp_config_rejects_unknown_credential_type(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([_api_monitor_server_doc()])
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
+        json={"api_monitor_auth": {"credential_type": "bearer_token", "credential_id": ""}},
+    )
+
+    assert response.status_code == 400
+    assert "api_monitor_auth.credential_type" in response.json()["detail"]

@@ -29,7 +29,7 @@
                 <h3 class="mt-2 text-2xl font-black text-[var(--text-primary)]">{{ detail.server.name }}</h3>
                 <p class="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">{{ detail.server.description || t('No description') }}</p>
               </div>
-              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                 <div class="detail-chip">
                   <span class="detail-chip-label">{{ t('Base URL') }}</span>
                   <span class="font-mono text-xs text-[var(--text-primary)]">{{ detail.server.endpoint_config?.url || '-' }}</span>
@@ -49,6 +49,12 @@
                 <div class="detail-chip">
                   <span class="detail-chip-label">{{ t('Tool count') }}</span>
                   <span class="text-[var(--text-primary)]">{{ detail.tools.length }}</span>
+                </div>
+                <div class="detail-chip">
+                  <span class="detail-chip-label">{{ t('Authentication') }}</span>
+                  <span :class="detail.server.api_monitor_auth?.credential_id ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">
+                    {{ apiMonitorAuthStatusLabel() }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -230,6 +236,7 @@ import {
   prettyJson,
   syncYamlTopLevelField,
 } from '@/utils/apiMonitorMcp';
+import { formatApiMonitorAuthStatus } from '@/utils/apiMonitorAuth';
 import { showErrorToast, showSuccessToast } from '@/utils/toast';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -284,6 +291,11 @@ function clearDetailState() {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function apiMonitorAuthStatusLabel() {
+  const status = formatApiMonitorAuthStatus(detail.value?.server.api_monitor_auth);
+  return status === 'configured' ? t('Configured') : t('No credential');
 }
 
 function parseYamlDraft(yamlText: string): { name?: string; description?: string; parameters?: Record<string, unknown> } | null {

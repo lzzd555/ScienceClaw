@@ -563,6 +563,14 @@ export default {
   'Yes': 'Yes',
   'No': 'No',
   'Tool count': 'Tool count',
+  'API Monitor Authentication': 'API Monitor Authentication',
+  'API Monitor credential auth hint': 'Choose a managed credential and credential type for this API Monitor MCP. Captured header profiles are not saved.',
+  'Credential Type': 'Credential Type',
+  'API Monitor Placeholder credential type': 'Placeholder',
+  'API Monitor Placeholder credential type hint': 'Placeholder type validates the selected credential but does not inject authentication into requests yet.',
+  'Authentication': 'Authentication',
+  'Configured': 'Configured',
+  'No credentials available': 'No credentials available',
   'Shared authentication': 'Shared authentication',
   'Shared API Monitor auth hint': 'Configure reusable headers, query parameters, and timeout shared across captured tools.',
   'Shared headers JSON': 'Shared headers JSON',
@@ -869,5 +877,10 @@ export default {
   'Use Add MCP to connect a server or create one from an RPA recording.': 'Use Add MCP to connect a server or create one from an RPA recording.',
   'Search MCP servers or tools...': 'Search MCP servers or tools...',
   'RPA gateway platform description': 'Unified entry for RPA MCP tools published from Tools. Agents connect here to discover and call those tools with the caller user context.',
-  'No RPA MCP tools published for gateway.': 'No RPA MCP tools have been published yet. Create one from an RPA recording in Tools first.'
+  'No RPA MCP tools published for gateway.': 'No RPA MCP tools have been published yet. Create one from an RPA recording in Tools first.',
+  // API Monitor Publish Auth
+  'Auth Configuration': 'Auth Configuration',
+  'Auth profile hint for publish': 'Header profile is used for this recommendation only and will not be saved.',
+  'Detected {count} sensitive headers': 'Detected {count} sensitive auth-related headers. Placeholder credential type recommended.',
+  'Skip credential': 'Skip for now',
 }

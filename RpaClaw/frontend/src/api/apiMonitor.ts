@@ -77,10 +77,34 @@ export interface AnalyzeEvent {
   data: unknown
 }
 
+export type ApiMonitorCredentialType = 'placeholder'
+
+export interface ApiMonitorAuthConfig {
+  credential_type: ApiMonitorCredentialType
+  credential_id: string
+}
+
+export interface ApiMonitorAuthProfileHeader {
+  name: string
+  display_name: string
+  occurrences: number
+  tools: string[]
+  signals: string[]
+  masked_example: string
+}
+
+export interface ApiMonitorAuthProfile {
+  header_count: number
+  sensitive_header_count: number
+  headers: ApiMonitorAuthProfileHeader[]
+  recommended_credential_type: ApiMonitorCredentialType
+}
+
 export interface PublishMcpPayload {
   mcp_name: string
   description: string
   confirm_overwrite: boolean
+  api_monitor_auth?: ApiMonitorAuthConfig
 }
 
 export interface PublishMcpResult {
@@ -230,4 +254,12 @@ export async function publishMcpToolBundle(
 ): Promise<PublishMcpResult> {
   const response = await apiClient.post(`/api-monitor/session/${sessionId}/publish-mcp`, payload)
   return response.data.data
+}
+
+/**
+ * Get the transient auth profile for a session's captured requests.
+ */
+export async function getAuthProfile(sessionId: string): Promise<ApiMonitorAuthProfile> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/auth-profile`)
+  return response.data.profile
 }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal } from 'lucide-vue-next';
+import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal, Loader2 } from 'lucide-vue-next';
 import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
+import { useI18n } from 'vue-i18n';
 import {
   startSession,
   stopSession,
@@ -13,9 +14,14 @@ import {
   deleteTool as apiDeleteTool,
   publishMcpToolBundle,
   updateToolSelection as apiUpdateToolSelection,
+  getAuthProfile,
   type ApiMonitorSession,
   type ApiToolDefinition,
+  type ApiMonitorAuthConfig,
+  type ApiMonitorAuthProfile,
 } from '@/api/apiMonitor';
+import { listCredentials, type Credential } from '@/api/credential';
+import { API_MONITOR_CREDENTIAL_TYPE_OPTIONS, normalizeApiMonitorAuth } from '@/utils/apiMonitorAuth';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
   getFrameSizeFromMetadata,
@@ -26,6 +32,7 @@ import {
 } from '@/utils/screencastGeometry';
 
 const router = useRouter();
+const { t } = useI18n();
 
 // ---------------------------------------------------------------------------
 // State
@@ -55,6 +62,13 @@ const isPublishing = ref(false);
 const publishForm = reactive({
   mcpName: '',
   description: '',
+});
+const authProfile = ref<ApiMonitorAuthProfile | null>(null);
+const publishCredentials = ref<Credential[]>([]);
+const isLoadingAuthProfile = ref(false);
+const publishAuth = reactive<ApiMonitorAuthConfig>({
+  credential_type: 'placeholder',
+  credential_id: '',
 });
 
 // Screencast
@@ -504,11 +518,29 @@ const getDefaultMcpName = () => {
   }
 };
 
-const openPublishDialog = () => {
+const openPublishDialog = async () => {
   if (!sessionId.value || !adoptedToolCount.value) return;
   publishForm.mcpName = publishForm.mcpName || getDefaultMcpName();
   publishForm.description = publishForm.description || session.value?.target_url || urlInput.value || '';
+  publishAuth.credential_type = 'placeholder';
+  publishAuth.credential_id = '';
   publishDialogOpen.value = true;
+  isLoadingAuthProfile.value = true;
+  try {
+    const [profile, creds] = await Promise.all([
+      getAuthProfile(sessionId.value),
+      listCredentials(),
+    ]);
+    authProfile.value = profile;
+    publishCredentials.value = creds;
+    publishAuth.credential_type = profile.recommended_credential_type || 'placeholder';
+  } catch (err: any) {
+    authProfile.value = null;
+    publishCredentials.value = [];
+    addLog('ERROR', `加载认证配置失败: ${err.message}`);
+  } finally {
+    isLoadingAuthProfile.value = false;
+  }
 };
 
 const submitPublish = async (confirmOverwrite = false) => {
@@ -521,6 +553,7 @@ const submitPublish = async (confirmOverwrite = false) => {
       mcp_name: publishForm.mcpName.trim(),
       description: publishForm.description.trim(),
       confirm_overwrite: confirmOverwrite,
+      api_monitor_auth: normalizeApiMonitorAuth(publishAuth),
     });
     publishDialogOpen.value = false;
     overwriteDialogOpen.value = false;
@@ -876,6 +909,37 @@ onBeforeUnmount(() => {
               placeholder="描述这些工具的功能..."
             ></textarea>
           </label>
+          <section class="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.04]">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-black text-[var(--text-primary)]">{{ t('Auth Configuration') }}</h3>
+                <p class="mt-1 text-xs leading-5 text-[var(--text-tertiary)]">
+                  {{ t('Auth profile hint for publish') }}
+                </p>
+              </div>
+              <Loader2 v-if="isLoadingAuthProfile" class="animate-spin text-sky-500" :size="16" />
+            </div>
+            <div v-if="authProfile" class="mb-4 rounded-xl bg-slate-50 px-3 py-2 text-xs text-[var(--text-secondary)] dark:bg-white/5">
+              {{ t('Detected {count} sensitive headers', { count: authProfile.sensitive_header_count }) }}
+            </div>
+            <label class="mb-3 flex flex-col gap-2">
+              <span class="text-sm font-bold text-[var(--text-secondary)]">{{ t('Credential Type') }}</span>
+              <select v-model="publishAuth.credential_type" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 dark:border-white/10 dark:bg-white/5">
+                <option v-for="option in API_MONITOR_CREDENTIAL_TYPE_OPTIONS" :key="option.value" :value="option.value">
+                  {{ t(option.labelKey) }}
+                </option>
+              </select>
+            </label>
+            <label class="flex flex-col gap-2">
+              <span class="text-sm font-bold text-[var(--text-secondary)]">{{ t('Credential') }}</span>
+              <select v-model="publishAuth.credential_id" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 dark:border-white/10 dark:bg-white/5">
+                <option value="">{{ t('Skip credential') }}</option>
+                <option v-for="credential in publishCredentials" :key="credential.id" :value="credential.id">
+                  {{ credential.name }} ({{ credential.username || credential.domain || credential.id }})
+                </option>
+              </select>
+            </label>
+          </section>
         </div>
         <div class="flex justify-end gap-3 border-t border-slate-200 bg-white px-6 py-4 dark:border-white/10 dark:bg-white/[0.055]">
           <button

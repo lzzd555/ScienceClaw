@@ -16,6 +16,8 @@ from backend.deepagent.mcp_runtime import ApiMonitorMcpRuntime, McpSdkRuntimeFac
 from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_science_session
 from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
 from backend.rpa.api_monitor_mcp_contract import parse_api_monitor_tool_yaml
+from backend.rpa.api_monitor_auth import validate_api_monitor_auth_config
+from backend.credential.vault import get_vault
 from backend.storage import get_repository
 from backend.user.dependencies import User, require_user
 
@@ -43,6 +45,7 @@ class McpServerListItem(BaseModel):
     readonly: bool = False
     endpoint_config: Dict[str, Any] = Field(default_factory=dict)
     credential_binding: Dict[str, Any] = Field(default_factory=dict)
+    api_monitor_auth: Dict[str, Any] = Field(default_factory=dict)
     tool_policy: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -53,6 +56,7 @@ class ApiMonitorMcpConfigUpdate(BaseModel):
     default_enabled: bool | None = None
     endpoint_config: Dict[str, Any] | None = None
     credential_binding: Dict[str, Any] | None = None
+    api_monitor_auth: Dict[str, Any] | None = None
 
 
 class ApiMonitorToolUpdate(BaseModel):
@@ -286,6 +290,7 @@ def _serialize_api_monitor_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
         readonly=False,
         endpoint_config=doc.get("endpoint_config") or {},
         credential_binding=doc.get("credential_binding") or {},
+        api_monitor_auth=doc.get("api_monitor_auth") or {},
         tool_policy=doc.get("tool_policy") or {},
     ).model_dump()
 
@@ -364,17 +369,18 @@ def _apply_session_mode(server: Dict[str, Any], session_mode: str) -> Dict[str, 
     return payload
 
 
-def _to_server_definition(server: Dict[str, Any]):
+def _to_server_definition(server: Dict[str, Any], *, user_id: str = ""):
     endpoint = server.get("endpoint_config") or {}
     return McpServerDefinition(
         id=server["id"],
+        user_id=user_id,
         name=server["name"],
         description=server.get("description", ""),
         transport=server["transport"],
         scope=server["scope"],
         enabled=server.get("enabled", True),
         default_enabled=server.get("default_enabled", False),
-        url=endpoint.get("url", ""),
+        url=endpoint.get("url") or endpoint.get("base_url", ""),
         command=endpoint.get("command", ""),
         args=endpoint.get("args", []),
         cwd=endpoint.get("cwd", ""),
@@ -382,6 +388,7 @@ def _to_server_definition(server: Dict[str, Any]):
         env=endpoint.get("env", {}),
         timeout_ms=endpoint.get("timeout_ms", 20000),
         credential_binding=server.get("credential_binding") or {},
+        api_monitor_auth=server.get("api_monitor_auth") or {},
         tool_policy=server.get("tool_policy") or {},
     )
 
@@ -426,7 +433,7 @@ async def _discover_tools(server_key: str, user_id: str) -> Dict[str, Any]:
             "tool_count": len(tools),
         }
 
-    definition = _to_server_definition(server)
+    definition = _to_server_definition(server, user_id=user_id)
     if definition.scope == "system" and definition.id == RPA_GATEWAY_SYSTEM_SERVER_ID:
         raw_tools = await _build_rpa_gateway_tools(user_id)
         tools = []
@@ -547,13 +554,34 @@ async def update_api_monitor_mcp_config(
     user_id = str(current_user.id)
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
     repo = get_repository("user_mcp_servers")
+
+    auth_field_set = "api_monitor_auth" in body.model_fields_set
+    api_monitor_auth = server_doc.get("api_monitor_auth") or {}
+    if auth_field_set:
+        try:
+            api_monitor_auth = await validate_api_monitor_auth_config(
+                user_id,
+                body.api_monitor_auth,
+                vault=get_vault(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    endpoint_config = _api_monitor_config_dict_value(body, server_doc, "endpoint_config")
+    credential_binding = _api_monitor_config_dict_value(body, server_doc, "credential_binding")
+    if auth_field_set:
+        endpoint_config.pop("headers", None)
+        endpoint_config.pop("query", None)
+        credential_binding = {}
+
     update_doc = {
         "name": _api_monitor_config_value(body, server_doc, "name", ""),
         "description": _api_monitor_config_value(body, server_doc, "description", ""),
         "enabled": _api_monitor_config_value(body, server_doc, "enabled", True),
         "default_enabled": _api_monitor_config_value(body, server_doc, "default_enabled", True),
-        "endpoint_config": _api_monitor_config_dict_value(body, server_doc, "endpoint_config"),
-        "credential_binding": _api_monitor_config_dict_value(body, server_doc, "credential_binding"),
+        "endpoint_config": endpoint_config,
+        "credential_binding": credential_binding,
+        "api_monitor_auth": api_monitor_auth,
         "updated_at": datetime.now(),
     }
     await repo.update_one({"_id": str(server_doc["_id"]), "user_id": user_id}, {"$set": update_doc})
@@ -605,7 +633,7 @@ async def test_api_monitor_tool(
     if not tool_name:
         return ApiResponse(data={"success": False, "error": "API Monitor tool has no callable name"})
 
-    server = _to_server_definition(_serialize_api_monitor_user_server(server_doc))
+    server = _to_server_definition(_serialize_api_monitor_user_server(server_doc), user_id=user_id)
     result = await ApiMonitorMcpRuntime(server).call_tool(tool_name, body.arguments)
     return ApiResponse(data=result)
 

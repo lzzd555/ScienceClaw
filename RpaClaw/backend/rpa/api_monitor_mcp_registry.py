@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from backend.rpa.api_monitor.models import ApiMonitorSession
 from backend.rpa.api_monitor_mcp_contract import ApiMonitorToolContract, parse_api_monitor_tool_yaml
+from backend.rpa.api_monitor_auth import normalize_api_monitor_auth_config
 from backend.storage import get_repository
 
 
@@ -33,6 +34,7 @@ class ApiMonitorMcpRegistry:
         description: str,
         overwrite: bool,
         existing_server_id: str | None = None,
+        api_monitor_auth: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = datetime.now()
         selected_tools = [tool for tool in session.tool_definitions if getattr(tool, "selected", False)]
@@ -40,8 +42,11 @@ class ApiMonitorMcpRegistry:
         existing_server = None
         if existing_server_id:
             existing_server = await self._servers.find_one({"_id": server_id, "user_id": user_id})
-        endpoint_config = (existing_server or {}).get("endpoint_config") or {}
-        credential_binding = (existing_server or {}).get("credential_binding") or {}
+        normalized_auth = normalize_api_monitor_auth_config(api_monitor_auth)
+        endpoint_config = _api_monitor_endpoint_config_without_legacy_auth(
+            (existing_server or {}).get("endpoint_config") or {}
+        )
+        credential_binding = {} if normalized_auth else (existing_server or {}).get("credential_binding") or {}
         server_doc = {
             "user_id": user_id,
             "name": mcp_name,
@@ -52,6 +57,7 @@ class ApiMonitorMcpRegistry:
             "source_type": "api_monitor",
             "endpoint_config": endpoint_config,
             "credential_binding": credential_binding,
+            "api_monitor_auth": normalized_auth,
             "tool_policy": (existing_server or {}).get("tool_policy") or {},
             "tool_count": len(selected_tools),
             "updated_at": now,
@@ -180,3 +186,10 @@ def _tool_value(tool: Any, key: str, default: Any = None) -> Any:
     if isinstance(tool, dict):
         return tool.get(key, default)
     return getattr(tool, key, default)
+
+
+def _api_monitor_endpoint_config_without_legacy_auth(endpoint_config: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(endpoint_config)
+    cleaned.pop("headers", None)
+    cleaned.pop("query", None)
+    return cleaned

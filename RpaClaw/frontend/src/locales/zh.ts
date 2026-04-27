@@ -604,6 +604,14 @@ export default {
   'Yes': '是',
   'No': '否',
   'Tool count': '工具数量',
+  'API Monitor Authentication': 'API Monitor 认证',
+  'API Monitor credential auth hint': '为此 API Monitor MCP 选择凭证管理中的凭证和凭证类型。捕获到的请求头画像不会被保存。',
+  'Credential Type': '凭证类型',
+  'API Monitor Placeholder credential type': '占位符',
+  'API Monitor Placeholder credential type hint': '占位类型只校验所选凭证，当前不会把认证信息注入请求。',
+  'Authentication': '认证',
+  'Configured': '已配置',
+  'No credentials available': '暂无可用凭证',
   'Shared authentication': '共享认证',
   'Shared API Monitor auth hint': '配置所有已捕获工具共用的请求头、Query 参数和超时时间。',
   'Shared headers JSON': '共享请求头 JSON',
@@ -911,5 +919,10 @@ export default {
   'Use Add MCP to connect a server or create one from an RPA recording.': '使用“添加 MCP”连接服务，或从 RPA 录制创建工具。',
   'Search MCP servers or tools...': '搜索 MCP 服务或工具...',
   'RPA gateway platform description': '统一暴露 Tools 中已发布的 RPA MCP 工具；Agent 连接这个入口后，可以发现并以调用方的用户上下文执行这些工具。',
-  'No RPA MCP tools published for gateway.': '尚未发布 RPA MCP 工具。请先在 Tools 中从 RPA 录制创建工具。'
+  'No RPA MCP tools published for gateway.': '尚未发布 RPA MCP 工具。请先在 Tools 中从 RPA 录制创建工具。',
+  // API Monitor Publish Auth
+  'Auth Configuration': '认证配置',
+  'Auth profile hint for publish': '请求头画像仅用于本次判断，不会保存到 MCP。',
+  'Detected {count} sensitive headers': '检测到 {count} 个疑似认证请求头，推荐使用占位凭证类型。',
+  'Skip credential': '暂不配置凭证',
 }

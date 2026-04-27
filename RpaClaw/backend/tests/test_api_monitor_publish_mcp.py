@@ -411,3 +411,68 @@ def test_update_tool_selection(monkeypatch):
     assert response.status_code == 200
     assert response.json()["tool"]["selected"] is False
     assert session.tool_definitions[0].selected is False
+
+
+@pytest.mark.anyio
+async def test_publish_persists_api_monitor_auth_without_auth_profile():
+    server_repo = _MemoryRepo([])
+    tool_repo = _MemoryRepo([])
+    registry = ApiMonitorMcpRegistry(server_repository=server_repo, tool_repository=tool_repo)
+
+    await registry.publish_session(
+        session=_build_session(),
+        user_id="user_1",
+        mcp_name="Orders MCP",
+        description="Order APIs",
+        overwrite=False,
+        api_monitor_auth={"credential_type": "placeholder", "credential_id": "cred_1"},
+    )
+
+    server = list(server_repo.docs.values())[0]
+    assert server["api_monitor_auth"] == {"credential_type": "placeholder", "credential_id": "cred_1"}
+    assert "auth_profile" not in server
+    assert all("auth_profile" not in tool for tool in tool_repo.docs.values())
+
+
+@pytest.mark.anyio
+async def test_publish_with_api_monitor_auth_clears_legacy_auth_config():
+    server_repo = _MemoryRepo(
+        [
+            {
+                "_id": "mcp_existing",
+                "user_id": "user_1",
+                "name": "Orders MCP",
+                "description": "Old",
+                "transport": "api_monitor",
+                "source_type": "api_monitor",
+                "endpoint_config": {
+                    "base_url": "https://api.example.test",
+                    "headers": {"Authorization": "Bearer {{ orders.password }}"},
+                    "query": {"api_key": "{{ orders.password }}"},
+                    "timeout_ms": 15000,
+                },
+                "credential_binding": {
+                    "credentials": [{"alias": "orders", "credential_id": "cred_old"}],
+                    "headers": {"Authorization": "Bearer {{ orders.password }}"},
+                    "query": {"api_key": "{{ orders.password }}"},
+                },
+            }
+        ]
+    )
+    tool_repo = _MemoryRepo([])
+    registry = ApiMonitorMcpRegistry(server_repository=server_repo, tool_repository=tool_repo)
+
+    await registry.publish_session(
+        session=_build_session(),
+        user_id="user_1",
+        mcp_name="Orders MCP",
+        description="New",
+        overwrite=True,
+        existing_server_id="mcp_existing",
+        api_monitor_auth={"credential_type": "placeholder", "credential_id": ""},
+    )
+
+    server = server_repo.docs["mcp_existing"]
+    assert server["endpoint_config"] == {"base_url": "https://api.example.test", "timeout_ms": 15000}
+    assert server["credential_binding"] == {}
+    assert server["api_monitor_auth"] == {"credential_type": "placeholder", "credential_id": ""}
