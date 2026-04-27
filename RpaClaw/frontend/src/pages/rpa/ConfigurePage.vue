@@ -4,13 +4,13 @@ import { useRouter, useRoute } from 'vue-router';
 import {
   Settings,
   Code,
-  Play,
-  ChevronRight,
   Tag,
   ChevronDown,
   ChevronUp,
 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
+import RpaDiscardRecordingDialog from '@/components/rpa/RpaDiscardRecordingDialog.vue';
+import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { buildRpaToolEditorLocation } from '@/utils/rpaMcpConvert';
 import {
@@ -103,6 +103,7 @@ const promotingStepIndex = ref<number | null>(null);
 const expandedStepIndex = ref<number | null>(null);
 const isScriptDrawerOpen = ref(false);
 const hasDiagnostics = computed(() => diagnostics.value.length > 0);
+const isDiscardDialogOpen = ref(false);
 
 const parseLocator = (raw: unknown): ParsedLocator | null => {
   if (!raw) return null;
@@ -492,12 +493,38 @@ const goToTest = () => {
   });
 };
 
+const confirmDiscardAndRecord = () => {
+  isDiscardDialogOpen.value = true;
+};
+
+const startNewRecording = () => {
+  router.push('/rpa/recorder');
+};
+
+const goToHome = () => {
+  router.push('/chat');
+};
+
+const goToSkills = () => {
+  router.push('/chat/skills');
+};
+
 const goToMcpToolEditor = () => {
   router.push(buildRpaToolEditorLocation({
     sessionId: sessionId.value,
     skillName: skillName.value,
     skillDescription: skillDescription.value,
   }));
+};
+
+const handleSecondaryAction = (id: string) => {
+  if (id === 'preview-script') {
+    generateScript();
+    return;
+  }
+  if (id === 'convert-mcp') {
+    goToMcpToolEditor();
+  }
 };
 
 onMounted(async () => {
@@ -511,48 +538,31 @@ onMounted(async () => {
 
 <template>
   <div class="min-h-screen bg-[#f5f6f7] dark:bg-[#161618] text-gray-900 dark:text-gray-100">
-    <header class="sticky top-0 z-30 border-b border-gray-200 dark:border-gray-700 bg-white/90 dark:bg-[#161618]/90 backdrop-blur-xl">
-      <div class="mx-auto flex max-w-[1440px] items-center gap-4 px-4 py-4 sm:px-6 lg:px-8">
-        <div class="flex min-w-0 items-center gap-3">
-          <div class="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#831bd7] to-[#ac0089] text-white shadow-lg shadow-[#831bd7]/20">
-            <Settings :size="20" />
-          </div>
-          <div class="min-w-0">
-            <h1 class="truncate text-lg font-extrabold tracking-tight sm:text-xl">配置技能</h1>
-          </div>
-        </div>
+    <RpaFlowGuide
+      class="sticky top-0 z-30"
+      current-step="configure"
+      :session-id="sessionId"
+      :recorded-step-count="steps.length"
+      :diagnostic-count="diagnostics.length"
+      :skill-name="skillName"
+      primary-label="开始测试"
+      :primary-disabled="hasDiagnostics"
+      :secondary-actions="[
+        { id: 'convert-mcp', label: '转换为 MCP 工具', tone: 'accent' },
+        { id: 'preview-script', label: scriptGenerating ? '生成中...' : '预览脚本', disabled: scriptGenerating || hasDiagnostics },
+      ]"
+      @home="goToHome"
+      @skills="goToSkills"
+      @go-record="confirmDiscardAndRecord"
+      @go-test="goToTest"
+      @primary-action="goToTest"
+      @secondary-action="handleSecondaryAction"
+    />
 
-        <div class="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            @click="goToMcpToolEditor"
-            class="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition-colors hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
-          >
-            <ChevronRight :size="16" />
-            转换为 MCP 工具
-          </button>
-          <button
-            type="button"
-            @click="generateScript"
-            :disabled="scriptGenerating || hasDiagnostics"
-            class="inline-flex items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Code :size="16" />
-            预览脚本
-          </button>
-          <button
-            type="button"
-            @click="goToTest"
-            :disabled="hasDiagnostics"
-            class="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#831bd7] to-[#ac0089] px-5 py-2 text-sm font-bold text-white shadow-lg shadow-[#831bd7]/20 transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Play :size="16" />
-            开始测试
-            <ChevronRight :size="16" />
-          </button>
-        </div>
-      </div>
-    </header>
+    <RpaDiscardRecordingDialog
+      v-model:open="isDiscardDialogOpen"
+      @confirm="startNewRecording"
+    />
 
     <div v-if="loading" class="flex h-64 items-center justify-center">
       <p class="text-sm text-gray-500 dark:text-gray-400">加载中...</p>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, House, FolderOpen, Globe, AlertCircle, ChevronDown, ChevronUp, ClipboardCheck, Loader2 } from 'lucide-vue-next';
+import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, Globe, AlertCircle, ChevronDown, ChevronUp, ClipboardCheck, Loader2 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
+import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
   getFrameSizeFromMetadata,
@@ -935,38 +936,19 @@ const sendMessage = async () => {
 <template>
   <div class="flex flex-col h-screen bg-[#f5f6f7] dark:bg-[#161618] overflow-hidden">
     <!-- Header -->
-    <header class="h-16 flex-shrink-0 bg-gradient-to-r from-[#831bd7] to-[#ac0089] shadow-lg flex justify-between items-center px-8 z-50">
-      <div class="flex items-center gap-4">
-        <Radio class="text-white animate-pulse" :size="24" />
-        <h1 class="text-white font-extrabold text-xl tracking-tight">技能录制器</h1>
-        <div class="ml-4 px-3 py-1 bg-white/20 rounded-full flex items-center gap-2">
-          <div class="w-2 h-2 rounded-full bg-red-400 animate-pulse"></div>
-          <span class="text-white/90 text-[10px] font-bold uppercase tracking-wider">正在录制 ({{ recordingTime }})</span>
-        </div>
-      </div>
-      <div class="flex items-center gap-4">
-        <button
-          @click="goToHome"
-          class="flex items-center gap-2 bg-white/10 text-white font-medium px-4 py-2 rounded-full hover:bg-white/20 transition-all text-sm"
-        >
-          <House :size="16" />
-          返回首页
-        </button>
-        <button
-          @click="goToSkills"
-          class="flex items-center gap-2 bg-white/10 text-white font-medium px-4 py-2 rounded-full hover:bg-white/20 transition-all text-sm"
-        >
-          <FolderOpen :size="16" />
-          技能库
-        </button>
-        <button
-          @click="stopRecording"
-          class="bg-white dark:bg-[#272728] text-[#831bd7] font-bold px-6 py-2 rounded-full hover:bg-white/90 transition-all shadow-md active:scale-95 text-sm"
-        >
-          完成录制
-        </button>
-      </div>
-    </header>
+    <RpaFlowGuide
+      current-step="record"
+      :session-id="sessionId"
+      :recorded-step-count="Math.max(steps.length - 1, 0)"
+      :diagnostic-count="recordingDiagnostics.length"
+      :is-recording="isRecording"
+      :recording-time="recordingTime"
+      primary-label="完成录制"
+      @home="goToHome"
+      @skills="goToSkills"
+      @go-configure="stopRecording"
+      @primary-action="stopRecording"
+    />
 
     <!-- Main Content -->
     <div class="flex-1 flex overflow-hidden">

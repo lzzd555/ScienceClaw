@@ -3,12 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router';
 import {
   AlertTriangle,
-  ArrowLeft,
   CheckCircle,
   Code,
-  FolderOpen,
   Globe,
-  House,
   Loader2,
   Play,
   RotateCcw,
@@ -17,6 +14,8 @@ import {
   XCircle,
 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
+import RpaDiscardRecordingDialog from '@/components/rpa/RpaDiscardRecordingDialog.vue';
+import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
   getFrameSizeFromMetadata,
@@ -34,6 +33,7 @@ import {
   mapRpaConfigureDisplaySteps,
   type RpaRecordingDiagnosticItem,
 } from '@/utils/rpaConfigureTimeline';
+import { type RpaTestState } from '@/utils/rpaFlowGuide';
 
 const router = useRouter();
 const route = useRoute();
@@ -87,6 +87,13 @@ const saving = ref(false);
 const saved = ref(false);
 const showScript = ref(false);
 const error = ref<string | null>(null);
+const isDiscardDialogOpen = ref(false);
+
+const flowTestState = computed<RpaTestState>(() => {
+  if (testing.value) return 'running';
+  if (!testDone.value) return 'idle';
+  return testSuccess.value ? 'success' : 'failed';
+});
 
 interface LocatorCandidate {
   kind: string;
@@ -442,6 +449,10 @@ const goBackToConfigure = () => {
 };
 
 const goBackToRecorder = () => {
+  isDiscardDialogOpen.value = true;
+};
+
+const startNewRecording = () => {
   router.push('/rpa/recorder');
 };
 
@@ -478,6 +489,14 @@ const saveSkill = async () => {
   }
 };
 
+const handleTestPrimaryAction = () => {
+  if (testDone.value && testSuccess.value) {
+    saveSkill();
+    return;
+  }
+  runTest();
+};
+
 onMounted(() => {
   loadSessionDiagnostics().then(() => {
     if (!recordingDiagnostics.value.length) {
@@ -494,41 +513,31 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen flex-col overflow-hidden bg-[#f5f6f7] dark:bg-[#161618]">
-    <header class="flex h-14 flex-shrink-0 items-center gap-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] px-6">
-      <button
-        class="flex items-center gap-1 text-gray-500 dark:text-gray-400 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
-        @click="goBackToConfigure"
-      >
-        <ArrowLeft :size="18" />
-      </button>
-      <Play class="text-[#831bd7]" :size="22" />
-      <h1 class="text-lg font-extrabold text-gray-900 dark:text-gray-100">测试技能</h1>
-      <span class="max-w-48 truncate text-sm text-gray-500 dark:text-gray-400">{{ skillName }}</span>
-      <div class="flex-1" />
+    <RpaFlowGuide
+      current-step="test"
+      :session-id="sessionId"
+      :recorded-step-count="recordedSteps.length"
+      :diagnostic-count="recordingDiagnostics.length"
+      :test-state="flowTestState"
+      :skill-name="skillName"
+      :status-message="saved ? '技能已保存，正在跳转...' : ''"
+      :primary-label="testDone && testSuccess ? (saving ? '保存中...' : '保存技能') : (testing ? '执行中...' : '重新执行')"
+      :primary-disabled="testing || saving || recordingDiagnostics.length > 0"
+      :secondary-actions="[
+        { id: 'configure', label: '返回配置' },
+      ]"
+      @home="goToHome"
+      @skills="goToSkills"
+      @go-record="goBackToRecorder"
+      @go-configure="goBackToConfigure"
+      @primary-action="handleTestPrimaryAction"
+      @secondary-action="goBackToConfigure"
+    />
 
-      <button
-        class="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] hover:text-gray-900 dark:hover:text-white"
-        @click="goToHome"
-      >
-        <House :size="15" />
-        返回首页
-      </button>
-      <button
-        class="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345] hover:text-gray-900 dark:hover:text-white"
-        @click="goToSkills"
-      >
-        <FolderOpen :size="15" />
-        技能库
-      </button>
-
-      <div
-        v-if="saved"
-        class="flex items-center gap-2 text-sm font-bold text-green-600"
-      >
-        <CheckCircle :size="18" />
-        技能已保存，正在跳转...
-      </div>
-    </header>
+    <RpaDiscardRecordingDialog
+      v-model:open="isDiscardDialogOpen"
+      @confirm="startNewRecording"
+    />
 
     <div class="flex min-h-0 flex-1">
       <aside class="flex w-[300px] flex-col overflow-y-auto border-r border-gray-200 dark:border-gray-700 bg-[#eff1f2] dark:bg-[#212122] p-5">
