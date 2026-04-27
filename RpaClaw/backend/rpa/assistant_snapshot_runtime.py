@@ -80,6 +80,17 @@ SNAPSHOT_V2_JS = r"""() => {
             .trim();
     }
 
+    function escapeCssIdentifier(value) {
+        const raw = String(value || '').trim();
+        if (!raw)
+            return '';
+        try {
+            if (globalThis.CSS && CSS.escape)
+                return CSS.escape(raw);
+        } catch (e) {}
+        return raw.replace(/[^a-zA-Z0-9_-]/g, match => '\\' + match);
+    }
+
     function fallbackRole(el) {
         const explicitRole = el.getAttribute('role');
         if (explicitRole)
@@ -430,11 +441,135 @@ SNAPSHOT_V2_JS = r"""() => {
         return { title: '', source: '' };
     }
 
+    function collectJalorGridTableView(root) {
+        const headerCells = Array.from(root.querySelectorAll('.jalor-igrid-head tbody.igrid-head td'));
+        const bodyRows = Array.from(root.querySelectorAll('.jalor-igrid-body tbody.igrid-data tr.grid-row'))
+            .filter(row => !row.matches('tr.grid-row-group') && row.querySelector('td'));
+        if (!headerCells.length || !bodyRows.length)
+            return null;
+
+        const headerByField = new Map();
+        const headerByCol = new Map();
+        const headers = [];
+        headerCells.forEach((cell, index) => {
+            const fieldName = attr(cell, 'field', 80);
+            const colNumber = attr(cell, '_col', 40);
+            const header = textOf(cell, 120);
+            const columnId = fieldName || colNumber || `index:${index}`;
+            const record = {
+                index,
+                column_id: columnId,
+                field: fieldName,
+                col: colNumber,
+                header,
+                role: '',
+            };
+            headers.push(record);
+            if (fieldName)
+                headerByField.set(fieldName, record);
+            if (colNumber)
+                headerByCol.set(colNumber, record);
+        });
+
+        const bodyTable = root.querySelector('.jalor-igrid-body table');
+        const bodyTableId = attr(bodyTable, 'id', 120);
+        const rowSelector = bodyTableId ? `#${escapeCssIdentifier(bodyTableId)} tbody.igrid-data tr.grid-row` : '.jalor-igrid-body tbody.igrid-data tr.grid-row';
+        const rows = [];
+        const columnSamples = new Map();
+        for (const row of bodyRows.slice(0, 10)) {
+            const rowIndex = rows.length;
+            const cells = [];
+            const cellEls = Array.from(row.querySelectorAll('td')).filter(cell => !cell.closest('tr.grid-row-group'));
+            cellEls.forEach((cell, cellIndex) => {
+                const fieldName = attr(cell, 'field', 80);
+                const colNumber = attr(cell, '_col', 40);
+                const columnKey = fieldName || colNumber || `index:${cellIndex}`;
+                const headerRecord = (fieldName ? headerByField.get(fieldName) : null) || (colNumber ? headerByCol.get(colNumber) : null) || headers[cellIndex];
+                const text = textOf(cell, 200);
+                const actions = Array.from(cell.querySelectorAll('a,button,input[type=checkbox],[role=button],[role=link]')).slice(0, 4).map(action => {
+                    const tag = action.tagName.toLowerCase();
+                    const role = getRole(action) || tag;
+                    const label = getAccessibleName(action) || textOf(action, 120) || role;
+                    const selector = fieldName
+                        ? `td[field="${escapeCssAttributeValue(fieldName)}"] ${tag}`
+                        : (colNumber ? `td[_col="${escapeCssAttributeValue(colNumber)}"] ${tag}` : `td:nth-child(${cellIndex + 1}) ${tag}`);
+                    return {
+                        kind: role,
+                        label,
+                        locator: { method: 'relative_css', scope: 'row', value: selector },
+                    };
+                });
+                cells.push({
+                    column_id: headerRecord ? headerRecord.column_id : columnKey,
+                    field: fieldName,
+                    col: colNumber,
+                    column_index: cellIndex,
+                    column_header: headerRecord ? headerRecord.header : '',
+                    text,
+                    value_kind: valueKind(text),
+                    row_local_actions: actions,
+                    actions,
+                });
+                if (!columnSamples.has(columnKey))
+                    columnSamples.set(columnKey, { texts: [], hasCheckbox: false, hasLink: false });
+                const sample = columnSamples.get(columnKey);
+                if (text)
+                    sample.texts.push(text);
+                sample.hasCheckbox = sample.hasCheckbox || Boolean(cell.querySelector('input[type=checkbox]'));
+                sample.hasLink = sample.hasLink || Boolean(cell.querySelector('a,[role=link]'));
+            });
+            rows.push({
+                index: rowIndex,
+                source_row_index: attr(row, '_row', 40),
+                cells,
+                locator_hints: [
+                    {
+                        kind: 'playwright',
+                        expression: "page.locator('" + rowSelector + "').nth(" + rowIndex + ")",
+                    },
+                ],
+            });
+        }
+
+        const columns = headers.map((header, index) => {
+            const sample = columnSamples.get(header.field || header.col || `index:${index}`) || { texts: [], hasCheckbox: false, hasLink: false };
+            return {
+                index,
+                column_id: header.column_id,
+                field: header.field,
+                col: header.col,
+                header: header.header,
+                role: columnRole(header.header, header.column_id, sample.texts.slice(0, 5), sample.hasCheckbox, sample.hasLink),
+                sample_values: sample.texts.slice(0, 3),
+            };
+        });
+
+        const explicitTitle = attr(root, 'aria-label', 120) || attr(root, 'title', 120);
+        const nearbyTitle = nearestTableTitle(root);
+        const title = explicitTitle || nearbyTitle.title;
+        return {
+            kind: 'table_view',
+            framework_hint: 'jalor-igrid',
+            title,
+            title_source: explicitTitle ? 'root_attribute' : nearbyTitle.source,
+            nearby_headings: nearbyTitle.title ? [nearbyTitle.title] : [],
+            row_count_observed: bodyRows.length,
+            columns,
+            rows,
+            auxiliary_text: [],
+        };
+    }
+
     function collectTableViews() {
         const views = [];
+        const jalorViews = Array.from(document.querySelectorAll('.jalor-igrid'))
+            .map(root => collectJalorGridTableView(root))
+            .filter(Boolean);
+        views.push(...jalorViews);
+
         const gridRoots = Array.from(document.querySelectorAll('.aui-grid, [role=grid], table'))
             .map(el => el.closest('.aui-grid') || el)
-            .filter((el, index, arr) => el && arr.indexOf(el) === index);
+            .filter((el, index, arr) => el && !el.closest('.jalor-igrid') && arr.indexOf(el) === index);
 
         for (const root of gridRoots.slice(0, 8)) {
             const headerCells = Array.from(root.querySelectorAll('thead th,[role=columnheader]'));
