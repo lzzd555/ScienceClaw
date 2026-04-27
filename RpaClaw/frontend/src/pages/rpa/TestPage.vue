@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
-  AlertTriangle,
   CheckCircle,
   Code,
   Globe,
@@ -16,6 +15,7 @@ import {
 import { apiClient } from '@/api/client';
 import RpaDiscardRecordingDialog from '@/components/rpa/RpaDiscardRecordingDialog.vue';
 import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
+import RpaStepTimeline from '@/components/rpa/RpaStepTimeline.vue';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
   getFrameSizeFromMetadata,
@@ -111,67 +111,6 @@ const failedStepCandidates = ref<LocatorCandidate[]>([]);
 const failedStepError = ref('');
 const triedCandidateIndices = ref<Set<number>>(new Set());
 const retryingWithCandidate = ref(false);
-
-const parseLocator = (raw: unknown) => {
-  if (!raw) return null;
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return { method: 'css', value: raw };
-    }
-  }
-  return raw as any;
-};
-
-const formatLocator = (raw: unknown): string => {
-  const locator = parseLocator(raw);
-  if (!locator) return 'No locator';
-  if (locator.method === 'role') {
-    return locator.name ? `role=${locator.role}[name="${locator.name}"]` : `role=${locator.role}`;
-  }
-  if (locator.method === 'nested') {
-    return `${formatLocator(locator.parent)} >> ${formatLocator(locator.child)}`;
-  }
-  if (locator.method === 'nth') {
-    const baseLocator = locator.locator || locator.base;
-    const prefix = baseLocator ? `${formatLocator(baseLocator)} >> ` : '';
-    return `${prefix}nth=${locator.index}`;
-  }
-  if (locator.method === 'css') return locator.value || 'css';
-  return `${locator.method || 'locator'}:${locator.value || locator.name || ''}`;
-};
-
-const formatFramePath = (framePath?: string[]) => {
-  if (!framePath?.length) return 'Main frame';
-  return framePath.join(' -> ');
-};
-
-const VALIDATION_LABELS: Record<string, string> = {
-  ok: 'Strict match',
-  ambiguous: 'Ambiguous / not unique',
-  fallback: 'Fallback',
-  warning: 'Warning',
-  broken: 'Broken',
-};
-
-const VALIDATION_CLASS_MAP: Record<string, string> = {
-  ok: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
-  ambiguous: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  fallback: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  warning: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  broken: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
-};
-
-const getValidationLabel = (status?: string) => {
-  if (!status) return 'Unknown';
-  return VALIDATION_LABELS[status] || status.replace(/_/g, ' ');
-};
-
-const getValidationClass = (status?: string) => {
-  if (!status) return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-};
 
 const loadSessionDiagnostics = async () => {
   if (!sessionId.value) return;
@@ -435,15 +374,6 @@ const retryWithCandidate = async (candidateIndex: number) => {
   }
 };
 
-watch(failedStepIndex, (index) => {
-  if (index !== null) {
-    nextTick(() => {
-      const el = document.querySelector(`[data-step-index="${index}"]`);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    });
-  }
-});
-
 const goBackToConfigure = () => {
   router.push(`/rpa/configure?sessionId=${sessionId.value}`);
 };
@@ -540,126 +470,21 @@ onBeforeUnmount(() => {
     />
 
     <div class="flex min-h-0 flex-1">
-      <aside class="flex w-[300px] flex-col overflow-y-auto border-r border-gray-200 dark:border-gray-700 bg-[#eff1f2] dark:bg-[#212122] p-5">
-        <div class="mb-6 flex items-center justify-between">
-          <h2 class="text-lg font-extrabold text-gray-900 dark:text-gray-100">录制步骤</h2>
-          <span class="rounded-md bg-[#c384ff]/20 px-2 py-1 text-[10px] font-bold text-[#831bd7]">
-            {{ recordedSteps.length }} 步
-          </span>
-        </div>
-
-        <div
-          v-if="recordingDiagnostics.length"
-          class="mb-4 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/80 dark:bg-rose-950/20 p-3 text-xs text-rose-700 dark:text-rose-300"
-        >
-          <p class="font-semibold">还有 {{ recordingDiagnostics.length }} 个待修复步骤</p>
-          <p class="mt-1">请先回到配置页修复或删除这些步骤，然后再开始测试。</p>
-        </div>
-
-        <div class="space-y-4">
-          <div
-            v-for="(step, index) in recordedSteps"
-            :key="step.id || index"
-            :data-step-index="index"
-            class="rounded-xl border-l-4 bg-white dark:bg-[#272728] p-4 shadow-sm"
-            :class="[ failedStepIndex === index ? 'border-red-500 ring-2 ring-red-100' : 'border-gray-200 dark:border-gray-700' ]"
-          >
-            <div class="mb-1 flex items-center justify-between gap-3">
-              <span class="text-[10px] font-bold text-gray-400 dark:text-gray-500">
-                步骤 {{ String(index + 1).padStart(2, '0') }}
-              </span>
-              <span
-                class="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-                :class="getValidationClass(step.validation?.status)"
-              >
-                {{ getValidationLabel(step.validation?.status) }}
-              </span>
-            </div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
-              {{ step.description || step.action }}
-            </h3>
-            <p class="mt-2 break-all text-[11px] text-gray-500 dark:text-gray-400">
-              <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
-              <span class="ml-1 font-mono">{{ formatLocator(step.target) }}</span>
-            </p>
-            <p class="mt-1 break-all text-[11px] text-gray-500 dark:text-gray-400">
-              <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
-              <span class="ml-1 font-mono">{{ formatFramePath(step.frame_path) }}</span>
-            </p>
-            <p
-              v-if="step.validation?.details"
-              class="mt-1 break-all text-[11px] text-gray-500 dark:text-gray-400"
-            >
-              <span class="font-semibold text-gray-600 dark:text-gray-400">Details:</span>
-              <span class="ml-1">{{ step.validation.details }}</span>
-            </p>
-
-            <div v-if="failedStepIndex === index" class="mt-3 space-y-3">
-              <div class="rounded-lg bg-red-50 dark:bg-red-900/30 p-2.5 text-[11px] text-red-700">
-                <p class="font-semibold flex items-center gap-1">
-                  <AlertTriangle :size="12" />
-                  执行失败
-                </p>
-                <p class="mt-1 break-all">{{ failedStepError }}</p>
-              </div>
-
-              <div v-if="failedStepCandidates.length > 0">
-                <p class="text-[11px] font-semibold text-gray-700 dark:text-gray-300">
-                  尝试其他定位器：
-                </p>
-                <div class="mt-2 space-y-1.5">
-                  <button
-                    v-for="(candidate, cIdx) in failedStepCandidates"
-                    :key="cIdx"
-                    class="w-full rounded-lg border p-2 text-left text-[11px] transition-colors"
-                    :class="[ triedCandidateIndices.has(cIdx) ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#383739] opacity-60' : 'border-purple-200 dark:border-purple-800 hover:bg-purple-50 hover:border-purple-400' ]"
-                    :disabled="retryingWithCandidate"
-                    @click="retryWithCandidate(cIdx)"
-                  >
-                    <div class="flex items-center justify-between">
-                      <span class="font-mono font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {{ candidate.kind }}: {{ candidate.playwright_locator || formatLocator(candidate.locator) }}
-                      </span>
-                      <span
-                        v-if="cIdx === 0 && !triedCandidateIndices.has(cIdx)"
-                        class="flex-shrink-0 rounded-full bg-purple-100 px-1.5 py-0.5 text-[9px] font-bold text-purple-700"
-                      >
-                        推荐
-                      </span>
-                      <span
-                        v-if="triedCandidateIndices.has(cIdx)"
-                        class="flex-shrink-0 rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-bold text-gray-500 dark:text-gray-400"
-                      >
-                        已尝试
-                      </span>
-                    </div>
-                    <div class="mt-1 flex gap-3 text-gray-500 dark:text-gray-400">
-                      <span>score: {{ candidate.score }}</span>
-                      <span :class="candidate.strict_match_count === 1 ? 'text-green-600' : 'text-amber-600'">
-                        match: {{ candidate.strict_match_count }}
-                        {{ candidate.strict_match_count === 1 ? '\u2713' : '\u26A0' }}
-                      </span>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              <div v-else class="rounded-lg bg-amber-50 dark:bg-amber-900/30 p-2.5 text-[11px] text-amber-700">
-                此步骤无候选定位器可切换，建议返回重新录制。
-              </div>
-            </div>
-          </div>
-
-          <div
-            v-if="!recordedSteps.length"
-            class="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 py-8 opacity-60"
-          >
-            <div class="animate-spin text-[#831bd7]">
-              <Loader2 :size="20" />
-            </div>
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">等待录制步骤加载...</p>
-          </div>
-        </div>
+      <aside class="flex w-[300px] flex-shrink-0 overflow-hidden bg-[#eff1f2] dark:bg-[#212122]">
+        <RpaStepTimeline
+          :steps="recordedSteps"
+          mode="test"
+          :auto-scroll="true"
+          :failed-step-index="failedStepIndex"
+          :failed-step-error="failedStepError"
+          :failed-step-candidates="failedStepCandidates"
+          :tried-candidate-indices="triedCandidateIndices"
+          :retrying-with-candidate="retryingWithCandidate"
+          :diagnostics-count="recordingDiagnostics.length"
+          diagnostics-message="请先回到配置页修复或删除这些步骤，然后再开始测试。"
+          empty-message="等待录制步骤加载..."
+          @retry-candidate="retryWithCandidate"
+        />
       </aside>
 
       <main class="flex min-w-0 flex-1 flex-col bg-[#f5f6f7] dark:bg-[#161618] px-5 py-4">

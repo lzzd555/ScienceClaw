@@ -5,12 +5,11 @@ import {
   Settings,
   Code,
   Tag,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import RpaDiscardRecordingDialog from '@/components/rpa/RpaDiscardRecordingDialog.vue';
 import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
+import RpaStepTimeline from '@/components/rpa/RpaStepTimeline.vue';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { buildRpaToolEditorLocation } from '@/utils/rpaMcpConvert';
 import {
@@ -20,6 +19,10 @@ import {
   type RpaRecordingDiagnosticItem,
   type RpaConfigureStep,
 } from '@/utils/rpaConfigureTimeline';
+import {
+  formatRpaActionLabel,
+  formatRpaStepLocator,
+} from '@/utils/rpaStepTimeline';
 
 const router = useRouter();
 const route = useRoute();
@@ -100,7 +103,6 @@ const scriptGenerating = ref(false);
 const params = ref<ParamItem[]>([]);
 const credentials = ref<CredentialItem[]>([]);
 const promotingStepIndex = ref<number | null>(null);
-const expandedStepIndex = ref<number | null>(null);
 const isScriptDrawerOpen = ref(false);
 const hasDiagnostics = computed(() => diagnostics.value.length > 0);
 const isDiscardDialogOpen = ref(false);
@@ -115,36 +117,6 @@ const parseLocator = (raw: unknown): ParsedLocator | null => {
     }
   }
   return raw as ParsedLocator;
-};
-
-const shortenText = (value: string, max = 48): string => {
-  if (!value) return '';
-  return value.length > max ? `${value.slice(0, Math.max(0, max - 1))}…` : value;
-};
-
-const getNthBaseLocator = (locator: ParsedLocator) => locator.locator || locator.base;
-
-const formatLocator = (raw: unknown): string => {
-  const locator = parseLocator(raw);
-  if (!locator) return '无定位器';
-  if (locator.method === 'role') {
-    return locator.name ? `role=${locator.role}[name="${locator.name}"]` : `role=${locator.role}`;
-  }
-  if (locator.method === 'nested') {
-    return `${formatLocator(locator.parent)} >> ${formatLocator(locator.child)}`;
-  }
-  if (locator.method === 'nth') {
-    const baseLocator = getNthBaseLocator(locator);
-    const prefix = baseLocator ? `${formatLocator(baseLocator)} >> ` : '';
-    return `${prefix}nth=${locator.index}`;
-  }
-  if (locator.method === 'css') return locator.value || 'css';
-  return `${locator.method || 'locator'}:${locator.value || locator.name || ''}`;
-};
-
-const formatFramePath = (framePath?: string[]) => {
-  if (!framePath?.length) return '主框架';
-  return framePath.join(' -> ');
 };
 
 const VALIDATION_LABELS: Record<string, string> = {
@@ -173,111 +145,6 @@ const getValidationClass = (status?: string) => {
   return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 ring-1 ring-gray-200 dark:ring-gray-700';
 };
 
-const getActionLabel = (action: string) => {
-  const map: Record<string, string> = {
-    click: '点击',
-    fill: '输入',
-    press: '按键',
-    select: '选择',
-    navigate: '打开页面',
-    goto: '打开页面',
-    navigate_click: '点击后跳转',
-    navigate_press: '按键后跳转',
-    open_tab_click: '点击新标签',
-    switch_tab: '切换标签',
-    close_tab: '关闭标签',
-    download_click: '点击下载',
-    download: '下载',
-  };
-  return map[action] || action;
-};
-
-const getActionColor = (action: string) => {
-  const map: Record<string, string> = {
-    click: 'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-400',
-    fill: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
-    press: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-    select: 'bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-700 dark:text-fuchsia-400',
-    navigate: 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400',
-    goto: 'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400',
-    navigate_click: 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-400',
-    navigate_press: 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-400',
-    open_tab_click: 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400',
-    switch_tab: 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300',
-    close_tab: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
-    download_click: 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400',
-    download: 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400',
-  };
-  return map[action] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-};
-
-const getValuePreview = (step: StepItem) => {
-  if (!step.value) return '';
-  const display = step.sensitive ? '******' : String(step.value);
-  return shortenText(`值: ${display}`, 28);
-};
-
-const getFrameHint = (step: StepItem) => {
-  if (!step.frame_path?.length) return '';
-  return `iframe ${step.frame_path.length} 层`;
-};
-
-const getSelectedCandidate = (step: StepItem): LocatorCandidate | null => {
-  const candidates = step.locator_candidates || [];
-  return candidates.find((candidate) => candidate.selected) || candidates[0] || null;
-};
-
-const formatCandidateMatchText = (candidate: LocatorCandidate): string => {
-  const strictCount = candidate.strict_match_count;
-  const visibleCount = candidate.visible_match_count;
-
-  if (typeof strictCount === 'number' && strictCount > 0) {
-    return strictCount === 1 ? 'strict match' : `${strictCount} strict matches`;
-  }
-
-  if (typeof visibleCount === 'number') {
-    const plural = visibleCount === 1 ? '' : 'es';
-    return `${visibleCount} visible match${plural}`;
-  }
-
-  if (typeof strictCount === 'number') {
-    const plural = strictCount === 1 ? '' : 'es';
-    return `${strictCount} strict match${plural}`;
-  }
-
-  return '';
-};
-
-const getCandidateSummary = (step: StepItem) => {
-  const candidates = step.locator_candidates || [];
-  const total = candidates.length;
-  if (!total) return '';
-  const selected = getSelectedCandidate(step);
-  if (!selected) return `${total} candidate${total === 1 ? '' : 's'}`;
-
-  const summary: string[] = [];
-  if (selected.kind) summary.push(`Current ${selected.kind}`);
-  const matchText = formatCandidateMatchText(selected);
-  if (matchText) summary.push(matchText);
-  summary.push(`${total} candidate${total === 1 ? '' : 's'}`);
-
-  return summary.join(' · ');
-};
-
-const getStepTitle = (step: StepItem) => {
-  if (step.description) return step.description;
-  return `${getActionLabel(step.action)} ${formatLocator(step.target || step.label || '')}`;
-};
-
-const getStepLocatorSummary = (step: StepItem) => {
-  if (step.url && !step.target) return shortenText(step.url, 72);
-  return shortenText(formatLocator(step.target || step.label || ''), 72);
-};
-
-const toggleStep = (index: number) => {
-  expandedStepIndex.value = expandedStepIndex.value === index ? null : index;
-};
-
 const promoteLocator = async (stepIndex: number, candidateIndex: number) => {
   if (!sessionId.value || promotingStepIndex.value !== null) return;
   promotingStepIndex.value = stepIndex;
@@ -287,7 +154,6 @@ const promoteLocator = async (stepIndex: number, candidateIndex: number) => {
       candidate_index: candidateIndex,
     });
     await loadSession();
-    expandedStepIndex.value = stepIndex;
   } catch (err: any) {
     error.value = `切换定位器失败: ${err.response?.data?.detail || err.message}`;
   } finally {
@@ -617,7 +483,7 @@ onMounted(async () => {
                   <div class="min-w-0 flex-1">
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="rounded-full bg-rose-100 dark:bg-rose-900/40 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-rose-700 dark:text-rose-300">
-                        {{ getActionLabel(diagnostic.action) }}
+                        {{ formatRpaActionLabel(diagnostic.action) }}
                       </span>
                       <span
                         class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
@@ -661,7 +527,7 @@ onMounted(async () => {
                         <span v-if="candidate.selector" class="text-gray-400 dark:text-gray-500">Selector</span>
                       </div>
                       <p class="mt-1 break-all font-mono text-xs text-gray-700 dark:text-gray-300">
-                        {{ formatLocator(candidate.locator) }}
+                        {{ formatRpaStepLocator(candidate.locator) }}
                       </p>
                       <p v-if="candidate.reason" class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">{{ candidate.reason }}</p>
                     </div>
@@ -680,153 +546,16 @@ onMounted(async () => {
             </div>
           </section>
 
-          <div class="space-y-3">
-            <article
-              v-for="(step, idx) in steps"
-              :key="step.id"
-              class="overflow-hidden rounded-3xl border bg-white dark:bg-[#272728] shadow-sm transition-all"
-              :class="expandedStepIndex === idx ? 'border-[#831bd7]/30 shadow-lg shadow-[#831bd7]/10' : 'border-gray-200 dark:border-gray-700'"
-            >
-              <div
-                class="cursor-pointer px-4 py-4 sm:px-5"
-                @click="toggleStep(idx)"
-              >
-                <div class="flex items-start gap-4">
-                  <div
-                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-xs font-extrabold"
-                    :class="expandedStepIndex === idx ? 'bg-[#831bd7] text-white' : 'bg-gray-100 dark:bg-[#444345] text-gray-500 dark:text-gray-400'"
-                  >
-                    {{ String(idx + 1).padStart(2, '0') }}
-                  </div>
-
-                  <div class="min-w-0 flex-1">
-                    <div class="flex flex-wrap items-center gap-2">
-                      <span
-                        class="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide"
-                        :class="getActionColor(step.action)"
-                      >
-                        {{ getActionLabel(step.action) }}
-                      </span>
-                      <span
-                        v-if="step.validation?.status"
-                        class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
-                        :class="getValidationClass(step.validation.status)"
-                      >
-                        {{ getValidationLabel(step.validation.status) }}
-                      </span>
-                      <span
-                        v-if="getFrameHint(step)"
-                        class="rounded-full bg-violet-50 dark:bg-violet-900/30 px-2.5 py-1 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-100"
-                      >
-                        {{ getFrameHint(step) }}
-                      </span>
-                    </div>
-
-                    <h3 class="mt-2 text-sm font-bold text-gray-900 dark:text-gray-100 sm:text-[15px]">
-                      {{ getStepTitle(step) }}
-                    </h3>
-
-                    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-500 dark:text-gray-400">
-                      <span class="min-w-0 max-w-full truncate font-mono text-gray-600 dark:text-gray-400">
-                        {{ getStepLocatorSummary(step) }}
-                      </span>
-                      <span v-if="getValuePreview(step)">{{ getValuePreview(step) }}</span>
-                      <span v-if="getCandidateSummary(step)">{{ getCandidateSummary(step) }}</span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728] text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-50 dark:hover:bg-[#444345]"
-                    @click.stop="toggleStep(idx)"
-                  >
-                    <ChevronUp v-if="expandedStepIndex === idx" :size="18" />
-                    <ChevronDown v-else :size="18" />
-                  </button>
-                </div>
-              </div>
-
-              <div
-                v-if="expandedStepIndex === idx"
-                class="border-t border-gray-100 dark:border-gray-800 bg-[#faf7fd] dark:bg-[#3d3846] px-4 py-4 sm:px-5"
-                @click.stop
-              >
-                <div class="grid gap-3 rounded-2xl bg-white dark:bg-[#272728] p-4 ring-1 ring-[#831bd7]/10">
-                  <div class="grid gap-2 text-sm text-gray-600 dark:text-gray-400">
-                    <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">主定位器</span>
-                      <span class="break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatLocator(step.target) }}</span>
-                    </div>
-                    <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">框架层级</span>
-                      <span class="break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatFramePath(step.frame_path) }}</span>
-                    </div>
-                    <div class="grid gap-1 sm:grid-cols-[92px_minmax(0,1fr)]">
-                      <span class="text-xs font-bold uppercase tracking-wide text-gray-400 dark:text-gray-500">校验结果</span>
-                      <div class="flex flex-wrap items-center gap-2">
-                        <span
-                          v-if="step.validation?.status"
-                          class="rounded-full px-2.5 py-1 text-[10px] font-semibold"
-                          :class="getValidationClass(step.validation.status)"
-                        >
-                          {{ getValidationLabel(step.validation.status) }}
-                        </span>
-                        <span class="text-xs text-gray-600 dark:text-gray-400">{{ step.validation?.details || '无额外说明' }}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div v-if="step.locator_candidates?.length && step.configurable !== false" class="space-y-2">
-                    <div class="flex items-center justify-between">
-                      <p class="text-sm font-bold text-gray-900 dark:text-gray-100">候选定位器</p>
-                      <p class="text-xs text-gray-400 dark:text-gray-500">只在当前展开步骤中显示完整列表</p>
-                    </div>
-
-                    <div class="space-y-2">
-                      <div
-                        v-for="(candidate, candidateIndex) in step.locator_candidates"
-                        :key="`${step.id}-${candidateIndex}`"
-                        class="flex flex-col gap-2 rounded-2xl border px-3 py-3 md:flex-row md:items-start md:justify-between md:gap-4"
-                        :class="candidate.selected ? 'border-[#831bd7]/30 bg-[#fbf7ff]' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-[#272728]'"
-                      >
-                        <div class="min-w-0 flex-1">
-                          <div class="flex flex-wrap items-center gap-2 text-[11px]">
-                            <span class="rounded-full bg-gray-100 dark:bg-[#444345] px-2 py-0.5 font-semibold uppercase tracking-wide text-gray-600 dark:text-gray-400">
-                              {{ candidate.kind || 'locator' }}
-                            </span>
-                            <span class="text-gray-400 dark:text-gray-500">分数 {{ candidate.score ?? '-' }}</span>
-                            <span class="text-gray-400 dark:text-gray-500">严格 {{ candidate.strict_match_count ?? '-' }}</span>
-                            <span
-                              v-if="candidate.selected"
-                              class="rounded-full bg-[#831bd7] px-2 py-0.5 font-semibold text-white"
-                            >
-                              当前使用
-                            </span>
-                          </div>
-                          <p class="mt-1 break-all font-mono text-xs text-gray-700 dark:text-gray-300">{{ formatLocator(candidate.locator) }}</p>
-                          <p v-if="candidate.reason" class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">{{ candidate.reason }}</p>
-                        </div>
-
-                        <button
-                          type="button"
-                          class="shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors"
-                          :class="candidate.selected ? 'cursor-default border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500' : 'border-[#831bd7]/25 text-[#831bd7] hover:bg-[#831bd7]/5'"
-                          :disabled="candidate.selected || promotingStepIndex === idx"
-                          @click.stop="promoteLocator(idx, candidateIndex)"
-                        >
-                          {{ promotingStepIndex === idx ? '切换中...' : (candidate.selected ? '当前使用' : '使用此定位器') }}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </article>
-
-            <div v-if="steps.length === 0" class="rounded-3xl border border-dashed border-gray-300 dark:border-gray-600 bg-white dark:bg-[#272728] px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
-              当前没有可配置的录制步骤。
-            </div>
-          </div>
+          <RpaStepTimeline
+            class="min-h-[620px] overflow-hidden rounded-2xl"
+            :steps="steps"
+            mode="configure"
+            :show-header="false"
+            :show-candidates="true"
+            :promoting-step-index="promotingStepIndex"
+            empty-message="当前没有可配置的录制步骤。"
+            @promote-locator="promoteLocator($event.stepIndex, $event.candidateIndex)"
+          />
         </section>
 
         <aside class="space-y-4 xl:sticky xl:top-24 xl:self-start">

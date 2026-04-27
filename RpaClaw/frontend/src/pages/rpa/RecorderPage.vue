@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, X, Globe, AlertCircle, ChevronDown, ChevronUp, ClipboardCheck, Loader2 } from 'lucide-vue-next';
+import { Camera, Terminal, CheckCircle, Radio, Send, Wand2, Bot, Code, Globe, AlertCircle, ChevronDown, ChevronUp, ClipboardCheck, Loader2 } from 'lucide-vue-next';
 import { apiClient } from '@/api/client';
 import RpaFlowGuide from '@/components/rpa/RpaFlowGuide.vue';
+import RpaStepTimeline from '@/components/rpa/RpaStepTimeline.vue';
 import { getBackendWsUrl } from '@/utils/sandbox';
 import {
   getFrameSizeFromMetadata,
@@ -116,32 +117,6 @@ const formatLocator = (raw: unknown): string => {
 const formatFramePath = (framePath?: string[]) => {
   if (!framePath?.length) return 'Main frame';
   return framePath.join(' -> ');
-};
-
-const VALIDATION_LABELS: Record<string, string> = {
-  ok: 'Strict match',
-  ambiguous: 'Ambiguous / not unique',
-  fallback: 'Fallback',
-  warning: 'Warning',
-  broken: 'Broken',
-};
-
-const VALIDATION_CLASS_MAP: Record<string, string> = {
-  ok: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400',
-  ambiguous: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  fallback: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  warning: 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400',
-  broken: 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400',
-};
-
-const getValidationLabel = (status?: string) => {
-  if (!status) return 'Unknown';
-  return VALIDATION_LABELS[status] || status.replace(/_/g, ' ');
-};
-
-const getValidationClass = (status?: string) => {
-  if (!status) return 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
-  return VALIDATION_CLASS_MAP[status] || 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300';
 };
 
 const mapServerSteps = (serverSteps: any[]) => ([
@@ -953,77 +928,19 @@ const sendMessage = async () => {
     <!-- Main Content -->
     <div class="flex-1 flex overflow-hidden">
       <!-- Left Sidebar: Steps -->
-      <aside class="w-80 bg-[#eff1f2] dark:bg-[#212122] border-r border-gray-200 dark:border-gray-700 p-6 overflow-y-auto flex flex-col">
-        <div class="flex items-center justify-between mb-8">
-          <h2 class="text-gray-900 dark:text-gray-100 font-extrabold text-lg">录制步骤</h2>
-          <span class="text-[#831bd7] text-[10px] font-bold bg-[#c384ff]/20 px-2 py-1 rounded-md">{{ steps.length }} 步</span>
-        </div>
-
-        <div
-          v-if="recordingDiagnostics.length"
-          class="mb-4 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/80 dark:bg-rose-950/20 p-3 text-xs text-rose-700 dark:text-rose-300"
-        >
-          <p class="font-semibold">当前有 {{ recordingDiagnostics.length }} 个待修复步骤</p>
-          <p class="mt-1">这些步骤不会进入 accepted timeline，完成录制后需要在配置页修复或删除。</p>
-        </div>
-
-        <div class="space-y-4">
-          <div
-            v-for="(step, index) in steps"
-            :key="step.id"
-            class="bg-white dark:bg-[#272728] p-4 rounded-xl shadow-sm border-l-4 transition-all group relative"
-            :class="[ step.source === 'ai' ? 'border-[#ac0089]' : (step.status === 'active' ? 'border-[#831bd7]' : 'border-gray-200 dark:border-gray-700 opacity-70') ]"
-          >
-            <div class="flex justify-between items-start mb-1">
-              <div class="flex items-center gap-1.5">
-                <Bot v-if="step.source === 'ai'" class="text-[#ac0089]" :size="12" />
-                <p class="text-[10px] font-bold" :class="step.source === 'ai' ? 'text-[#ac0089]' : (step.status === 'active' ? 'text-[#831bd7]' : 'text-gray-400 dark:text-gray-500')">
-                  {{ step.source === 'ai' ? 'AI' : '步骤' }} {{ step.id.padStart(2, '0') }}
-                </p>
-              </div>
-              <div class="flex items-center gap-1">
-                <button
-                  v-if="index > 0 && step.deletable !== false"
-                  @click="deleteStep(step, index - 1)"
-                  class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
-                  title="删除步骤"
-                >
-                  <X class="text-red-500" :size="14" />
-                </button>
-                <CheckCircle v-if="step.status === 'completed'" class="text-green-500" :size="14" />
-              </div>
-            </div>
-            <h3 class="text-gray-900 dark:text-gray-100 font-semibold text-sm">{{ step.title }}</h3>
-            <p class="text-gray-500 dark:text-gray-400 text-[11px] mt-2 leading-relaxed">{{ step.description }}</p>
-            <div v-if="step.locatorSummary || step.frameSummary || step.validationStatus" class="mt-3 space-y-1.5 text-[10px] text-gray-500 dark:text-gray-400">
-              <p v-if="step.locatorSummary" class="break-all">
-                <span class="font-semibold text-gray-600 dark:text-gray-400">Locator:</span>
-                <span class="font-mono ml-1">{{ step.locatorSummary }}</span>
-              </p>
-              <p v-if="step.frameSummary" class="break-all">
-                <span class="font-semibold text-gray-600 dark:text-gray-400">Frame:</span>
-                <span class="font-mono ml-1">{{ step.frameSummary }}</span>
-              </p>
-              <p v-if="step.validationStatus" class="break-all">
-                <span class="font-semibold text-gray-600 dark:text-gray-400">Validation:</span>
-                <span
-                  class="ml-1 px-1.5 py-0.5 rounded-full"
-                  :class="getValidationClass(step.validationStatus)"
-                >
-                  {{ getValidationLabel(step.validationStatus) }}
-                </span>
-                <span v-if="step.validationDetails" class="ml-1">{{ step.validationDetails }}</span>
-              </p>
-            </div>
-          </div>
-
-          <div v-if="isRecording" class="flex flex-col items-center justify-center py-8 gap-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl opacity-60">
-            <div class="animate-spin text-[#831bd7]">
-              <Wand2 :size="20" />
-            </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">检测新操作中...</p>
-          </div>
-        </div>
+      <aside class="flex w-80 flex-shrink-0 overflow-hidden bg-[#eff1f2] dark:bg-[#212122]">
+        <RpaStepTimeline
+          :steps="steps"
+          mode="record"
+          :is-recording="isRecording"
+          :auto-scroll="true"
+          :active-index="isRecording && steps.length ? steps.length - 1 : null"
+          :diagnostics-count="recordingDiagnostics.length"
+          diagnostics-message="这些步骤不会进入 accepted timeline，完成录制后需要在配置页修复或删除。"
+          show-delete
+          empty-message="在浏览器中操作后，步骤会自动出现在这里。"
+          @delete-step="deleteStep($event.step, $event.index - 1)"
+        />
       </aside>
 
       <!-- Center: Screencast Viewport -->
