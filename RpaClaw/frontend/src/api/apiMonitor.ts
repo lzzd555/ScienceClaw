@@ -77,11 +77,12 @@ export interface AnalyzeEvent {
   data: unknown
 }
 
-export type ApiMonitorCredentialType = 'placeholder'
+export type ApiMonitorCredentialType = 'placeholder' | 'test'
 
 export interface ApiMonitorAuthConfig {
   credential_type: ApiMonitorCredentialType
   credential_id: string
+  login_url?: string
 }
 
 export interface ApiMonitorAuthProfileHeader {

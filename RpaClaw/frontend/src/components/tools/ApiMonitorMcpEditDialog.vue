@@ -1,6 +1,6 @@
 <template>
   <Dialog :open="open" @update:open="handleOpenChange">
-    <DialogContent class="w-[calc(100vw-16px)] max-w-3xl max-h-[94vh] overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] p-0 shadow-2xl dark:border-white/10 dark:bg-[#101115]">
+    <DialogContent class="flex w-[calc(100vw-16px)] max-w-3xl flex-col max-h-[94vh] overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] p-0 shadow-2xl dark:border-white/10 dark:bg-[#101115]">
       <DialogHeader class="border-b border-slate-200 bg-white/80 px-6 py-5 dark:border-white/10 dark:bg-white/[0.05]">
         <DialogTitle class="flex items-center gap-3 text-xl font-black text-[var(--text-primary)]">
           <div class="flex h-10 w-10 items-center justify-center rounded-2xl bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-200">
@@ -13,7 +13,7 @@
         </DialogDescription>
       </DialogHeader>
 
-      <div class="max-h-[calc(94vh-88px)] overflow-y-auto p-6 space-y-6">
+      <div class="flex-1 overflow-y-auto min-h-0 p-6 space-y-6">
         <!-- Basic info -->
         <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
           <h3 class="mb-4 text-sm font-black uppercase tracking-[0.1em] text-teal-600 dark:text-teal-300">{{ t('Basic info') }}</h3>
@@ -61,6 +61,11 @@
               <small v-if="credentials.length === 0">{{ t('No credentials available') }}</small>
             </label>
           </div>
+
+          <label v-if="form.credentialType === 'test'" class="field mt-4">
+            <span>{{ t('Login URL') }}</span>
+            <input v-model="form.loginUrl" class="tools-input font-mono" :placeholder="t('Login URL placeholder')" />
+          </label>
 
           <label class="field mt-4">
             <span>{{ t('Timeout (ms)') }}</span>
@@ -121,8 +126,9 @@ const credentials = ref<Credential[]>([]);
 const form = reactive({
   name: '',
   description: '',
-  credentialType: 'placeholder' as 'placeholder',
+  credentialType: 'placeholder' as 'placeholder' | 'test',
   credentialId: '',
+  loginUrl: '',
   timeoutMs: 20000,
 });
 
@@ -133,6 +139,7 @@ function populateFromServer(server: McpServerItem) {
   const auth = normalizeApiMonitorAuth(server.api_monitor_auth);
   form.credentialType = auth.credential_type;
   form.credentialId = auth.credential_id;
+  form.loginUrl = auth.login_url || '';
   form.timeoutMs = (endpointConfig.timeout_ms as number) || 20000;
 }
 
@@ -153,6 +160,7 @@ async function save() {
       api_monitor_auth: {
         credential_type: form.credentialType,
         credential_id: form.credentialId,
+        ...(form.credentialType === 'test' && form.loginUrl ? { login_url: form.loginUrl } : {}),
       },
     });
     emit('server-updated', result.server);

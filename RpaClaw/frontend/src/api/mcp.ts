@@ -22,11 +22,12 @@ export interface McpToolPolicy {
   blocked_tools: string[];
 }
 
-export type ApiMonitorCredentialType = 'placeholder';
+export type ApiMonitorCredentialType = 'placeholder' | 'test';
 
 export interface ApiMonitorAuthConfig {
   credential_type: ApiMonitorCredentialType;
   credential_id: string;
+  login_url?: string;
 }
 
 export interface McpEndpointConfig {

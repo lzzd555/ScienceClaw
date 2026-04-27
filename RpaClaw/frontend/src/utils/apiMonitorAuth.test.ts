@@ -7,12 +7,17 @@ import {
 } from './apiMonitorAuth';
 
 describe('API Monitor auth helpers', () => {
-  it('exposes the placeholder credential type', () => {
+  it('exposes the placeholder and test credential types', () => {
     expect(API_MONITOR_CREDENTIAL_TYPE_OPTIONS).toEqual([
       {
         value: 'placeholder',
         labelKey: 'API Monitor Placeholder credential type',
         descriptionKey: 'API Monitor Placeholder credential type hint',
+      },
+      {
+        value: 'test',
+        labelKey: 'API Monitor Test credential type',
+        descriptionKey: 'API Monitor Test credential type hint',
       },
     ]);
   });
@@ -21,6 +26,7 @@ describe('API Monitor auth helpers', () => {
     expect(normalizeApiMonitorAuth(undefined)).toEqual({
       credential_type: 'placeholder',
       credential_id: '',
+      login_url: '',
     });
   });
 

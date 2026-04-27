@@ -1,6 +1,6 @@
 <template>
   <Dialog :open="open" @update:open="handleOpenChange">
-    <DialogContent class="w-[calc(100vw-16px)] max-w-6xl max-h-[94vh] overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] p-0 shadow-2xl dark:border-white/10 dark:bg-[#101115]">
+    <DialogContent class="flex w-[calc(100vw-16px)] max-w-6xl flex-col max-h-[94vh] overflow-hidden rounded-3xl border border-slate-200 bg-[#f5f7fb] p-0 shadow-2xl dark:border-white/10 dark:bg-[#101115]">
       <DialogHeader class="border-b border-slate-200 bg-white/80 px-6 py-5 dark:border-white/10 dark:bg-white/[0.05]">
         <DialogTitle class="flex items-center gap-3 text-xl font-black text-[var(--text-primary)]">
           <div class="flex h-10 w-10 items-center justify-center rounded-2xl bg-teal-100 text-teal-700 dark:bg-teal-400/15 dark:text-teal-200">
@@ -13,7 +13,7 @@
         </DialogDescription>
       </DialogHeader>
 
-      <div class="max-h-[calc(94vh-88px)] overflow-y-auto p-6">
+      <div class="flex-1 overflow-y-auto min-h-0 p-6">
         <div v-if="loading" class="flex min-h-[360px] items-center justify-center">
           <div class="inline-flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-semibold text-[var(--text-secondary)] shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
             <Loader2 class="animate-spin" :size="18" />

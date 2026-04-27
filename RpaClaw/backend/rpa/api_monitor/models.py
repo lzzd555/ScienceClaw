@@ -107,6 +107,7 @@ class UpdateToolRequest(BaseModel):
 class ApiMonitorAuthConfigRequest(BaseModel):
     credential_type: str = "placeholder"
     credential_id: str = ""
+    login_url: str = ""
 
 
 class PublishMcpRequest(BaseModel):
