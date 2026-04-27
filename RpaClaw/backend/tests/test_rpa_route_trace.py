@@ -32,6 +32,27 @@ def test_generate_session_script_prefers_traces_over_legacy_steps():
     assert "top10_prs" in script
 
 
+def test_generate_session_script_does_not_emit_empty_snapshot_extract_when_fields_are_missing():
+    session = RPASession(id="snapshot-empty-fields", user_id="u1", sandbox_session_id="sandbox")
+    session.traces.append(
+        RPAAcceptedTrace(
+            trace_type=RPATraceType.AI_OPERATION,
+            source="ai",
+            description="提取采购信息内容",
+            output_key="purchase_info",
+            output={"预计总金额 (含税）": "100.00"},
+            ai_execution=RPAAIExecution(language="snapshot", code="", output={"预计总金额 (含税）": "100.00"}),
+            signals={"extract_snapshot": {"source": "detail_views", "section_title": "采购信息", "fields": []}},
+        )
+    )
+
+    script = ROUTE_MODULE._generate_session_script(session, {}, test_mode=True)
+
+    assert "_results['purchase_info'] = _result" in script
+    assert "预计总金额 (含税）" in script
+    assert "100.00" not in script
+
+
 def test_generate_session_script_uses_recorded_actions_when_present():
     session = RPASession(id="s2", user_id="u2", sandbox_session_id="sandbox")
     session.recorded_actions.append(

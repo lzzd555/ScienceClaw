@@ -563,22 +563,40 @@ class TraceSkillCompiler:
         used_output_keys: Dict[str, int],
     ) -> List[str]:
         signal = _trace_signal(trace, "extract_snapshot")
-        fields = [dict(field) for field in list(signal.get("fields") or []) if isinstance(field, dict)]
+        fields = self._snapshot_extract_fields(trace, signal)
         key = self._allocate_output_key(trace, trace.output_key or f"snapshot_extract_{index}", used_output_keys)
         lines = ["", f"    # trace {index}: {trace.description or 'snapshot extract'}"]
         lines.append("    _result = {}")
         for field in fields:
             label = str(field.get("label") or "").strip()
             data_prop = str(field.get("data_prop") or "").strip()
-            if not label or not data_prop:
+            if not label:
                 continue
-            selector = f'[data-prop="{data_prop}"]'
-            lines.append(f"    _field = current_page.locator({selector!r}).first")
+            if data_prop:
+                selector = f'[data-prop="{data_prop}"]'
+                lines.append(f"    _field = current_page.locator({selector!r}).first")
+            else:
+                xpath = (
+                    "xpath=//*[normalize-space()="
+                    + _xpath_literal(label)
+                    + "]/ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' aui-form-item ')][1]"
+                )
+                lines.append(f"    _field = current_page.locator({xpath!r}).first")
             lines.append("    if await _field.count():")
             lines.append("        _value = await _extract_display_field_value(_field)")
             lines.append(f"        _result[{label!r}] = _value")
         lines.append(f"    _results[{key!r}] = _result")
         return lines
+
+    @staticmethod
+    def _snapshot_extract_fields(trace: RPAAcceptedTrace, signal: Dict[str, Any]) -> List[Dict[str, Any]]:
+        fields = [dict(field) for field in list(signal.get("fields") or []) if isinstance(field, dict)]
+        usable_fields = [field for field in fields if str(field.get("label") or "").strip()]
+        if usable_fields:
+            return usable_fields
+        if isinstance(trace.output, dict):
+            return [{"label": str(label), "data_prop": ""} for label in trace.output.keys() if str(label).strip()]
+        return []
 
     @staticmethod
     def _build_param_lookup(params: Dict[str, Any]) -> Dict[str, List[tuple[str, Dict[str, Any]]]]:
@@ -885,6 +903,15 @@ def _trace_signal(trace: RPAAcceptedTrace, name: str) -> Dict[str, Any]:
     signals = trace.signals if isinstance(trace.signals, dict) else {}
     signal = signals.get(name)
     return dict(signal) if isinstance(signal, dict) else {}
+
+
+def _xpath_literal(value: str) -> str:
+    text = str(value)
+    if "'" not in text:
+        return f"'{text}'"
+    if '"' not in text:
+        return f'"{text}"'
+    return "concat(" + ", \"'\", ".join(f"'{part}'" for part in text.split("'")) + ")"
 
 
 def _trace_has_random_like_primary_locator(trace: RPAAcceptedTrace) -> bool:

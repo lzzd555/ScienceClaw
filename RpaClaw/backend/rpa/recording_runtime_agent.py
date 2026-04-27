@@ -371,7 +371,7 @@ class RecordingRuntimeAgent:
             output=output,
             ai_execution=RPAAIExecution(
                 language="snapshot" if str(plan.get("action_type") or "").strip() == "extract_snapshot" else "python",
-                code=str(plan.get("code") or ""),
+                code=_extract_snapshot_preview_code(plan) if str(plan.get("action_type") or "").strip() == "extract_snapshot" else str(plan.get("code") or ""),
                 output=output,
                 error=result.get("error"),
                 repair_attempted=repair_attempted,
@@ -586,6 +586,24 @@ def _snapshot_plan_fields(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(extraction, dict) and isinstance(extraction.get("fields"), list):
         return [dict(field) for field in extraction["fields"] if isinstance(field, dict)]
     return []
+
+
+def _extract_snapshot_preview_code(plan: Dict[str, Any]) -> str:
+    fields = _snapshot_plan_fields(plan)
+    labels = [str(field.get("label") or "").strip() for field in fields if str(field.get("label") or "").strip()]
+    lines = [
+        "# extract_snapshot: values were read from the current compact snapshot during recording",
+        "# final skill compilation will generate Playwright extraction code from this evidence",
+    ]
+    source = str(plan.get("source") or "").strip()
+    section_title = str(plan.get("section_title") or "").strip()
+    if source:
+        lines.append(f"# source: {source}")
+    if section_title:
+        lines.append(f"# section: {section_title}")
+    for label in labels[:20]:
+        lines.append(f"# field: {label}")
+    return "\n".join(lines)
 
 
 def _extract_text(response: Any) -> str:

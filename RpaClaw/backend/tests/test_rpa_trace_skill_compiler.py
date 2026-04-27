@@ -88,6 +88,31 @@ def test_compiler_renders_snapshot_detail_extract_as_playwright_code():
     assert "100.00" not in body
 
 
+def test_compiler_renders_snapshot_extract_from_output_labels_when_field_evidence_missing():
+    script = TraceSkillCompiler().generate_script(
+        [
+            RPAAcceptedTrace(
+                trace_type=RPATraceType.AI_OPERATION,
+                source="ai",
+                description="Extract procurement info",
+                output_key="purchase_info",
+                output={"预计总金额 (含税）": "100.00", "币种": "USD"},
+                ai_execution=RPAAIExecution(language="snapshot", code="", output={"预计总金额 (含税）": "100.00", "币种": "USD"}),
+                signals={"extract_snapshot": {"source": "detail_views", "section_title": "采购信息", "fields": []}},
+            )
+        ],
+        is_local=True,
+    )
+
+    body = _execute_body(script)
+
+    assert "_result = {}" in body
+    assert "ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' aui-form-item ')]" in body
+    assert "_results['purchase_info'] = _result" in body
+    assert "100.00" not in body
+    assert "USD" not in body
+
+
 def test_compiler_wraps_each_trace_with_trace_level_logging():
     script = TraceSkillCompiler().generate_script(
         [

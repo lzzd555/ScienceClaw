@@ -654,7 +654,8 @@ async def test_recording_runtime_agent_accepts_extract_snapshot_plan(monkeypatch
     assert result.success is True
     assert result.output == {"预计总金额 (含税）": "100.00"}
     assert result.trace.ai_execution.language == "snapshot"
-    assert result.trace.ai_execution.code == ""
+    assert "extract_snapshot" in result.trace.ai_execution.code
+    assert "预计总金额 (含税）" in result.trace.ai_execution.code
     assert result.trace.signals["extract_snapshot"]["source"] == "detail_views"
     assert result.trace.signals["extract_snapshot"]["fields"][0]["data_prop"] == "2652409177955720363"
 
