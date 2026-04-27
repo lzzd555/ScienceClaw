@@ -48,8 +48,9 @@ Schema:
   "allow_empty_output": false,
   "output_key": "optional_ascii_snake_case_result_key",
   "code": "async def run(page, results): ...",
-  "source": "detail_views|table_views",
+  "source": "detail_views",
   "section_title": "optional snapshot section title",
+  "frame_path": "optional iframe selector chain for extract_snapshot",
   "fields": "optional structured fields for extract_snapshot"
 }
 Rules:
@@ -59,8 +60,8 @@ Rules:
 - Use expected_effect="navigate" when the user asks to open, go to, enter, visit, or navigate to a target.
 - Use expected_effect="extract" when the user only asks to find, collect, summarize, or return data without opening it.
 - If code is returned, it must define async def run(page, results).
-- Use action_type="extract_snapshot" when the requested extract-only data is already present in snapshot.detail_views or snapshot.table_views.
-- For extract_snapshot, return the relevant observed fields/rows in the plan itself; do not generate Python code and do not reference `snapshot` inside `run()`.
+- Use action_type="extract_snapshot" only when the requested extract-only data is already present in snapshot.detail_views fields.
+- For extract_snapshot, return the relevant observed detail fields in the plan itself, including the detail view frame_path when present; do not generate Python code and do not reference `snapshot` inside `run()`.
 - `snapshot` is planner-only evidence. Generated Python can access only `page` and `results`.
 - 结果返回规则：
   - `results` 是普通 Python dict，只包含之前已成功步骤的输出结果。
@@ -572,10 +573,21 @@ def _execute_extract_snapshot_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             "extract_snapshot": {
                 "source": str(plan.get("source") or "").strip(),
                 "section_title": str(plan.get("section_title") or "").strip(),
+                "frame_path": _snapshot_plan_frame_path(plan),
                 "fields": selected_fields,
             }
         },
     }
+
+
+def _snapshot_plan_frame_path(plan: Dict[str, Any]) -> List[str]:
+    frame_path = plan.get("frame_path")
+    if isinstance(frame_path, list):
+        return [str(item) for item in frame_path if str(item or "").strip()]
+    extraction = plan.get("extraction")
+    if isinstance(extraction, dict) and isinstance(extraction.get("frame_path"), list):
+        return [str(item) for item in extraction["frame_path"] if str(item or "").strip()]
+    return []
 
 
 def _snapshot_plan_fields(plan: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -566,6 +566,9 @@ class TraceSkillCompiler:
         fields = self._snapshot_extract_fields(trace, signal)
         key = self._allocate_output_key(trace, trace.output_key or f"snapshot_extract_{index}", used_output_keys)
         lines = ["", f"    # trace {index}: {trace.description or 'snapshot extract'}"]
+        frame_path = signal.get("frame_path") if isinstance(signal.get("frame_path"), list) else trace.frame_path
+        scope_lines, scope_var = self._frame_scope_lines(list(frame_path or []))
+        lines.extend(scope_lines)
         lines.append("    _result = {}")
         for field in fields:
             label = str(field.get("label") or "").strip()
@@ -574,14 +577,14 @@ class TraceSkillCompiler:
                 continue
             if data_prop:
                 selector = f'[data-prop="{data_prop}"]'
-                lines.append(f"    _field = current_page.locator({selector!r}).first")
+                lines.append(f"    _field = {scope_var}.locator({selector!r}).first")
             else:
                 xpath = (
                     "xpath=//*[normalize-space()="
                     + _xpath_literal(label)
                     + "]/ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' aui-form-item ')][1]"
                 )
-                lines.append(f"    _field = current_page.locator({xpath!r}).first")
+                lines.append(f"    _field = {scope_var}.locator({xpath!r}).first")
             lines.append("    if await _field.count():")
             lines.append("        _value = await _extract_display_field_value(_field)")
             lines.append(f"        _result[{label!r}] = _value")

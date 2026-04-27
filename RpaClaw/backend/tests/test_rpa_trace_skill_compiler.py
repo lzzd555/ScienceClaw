@@ -88,6 +88,44 @@ def test_compiler_renders_snapshot_detail_extract_as_playwright_code():
     assert "100.00" not in body
 
 
+def test_compiler_renders_snapshot_detail_extract_in_frame_scope():
+    script = TraceSkillCompiler().generate_script(
+        [
+            RPAAcceptedTrace(
+                trace_type=RPATraceType.AI_OPERATION,
+                source="ai",
+                description="Extract iframe detail",
+                output_key="iframe_detail",
+                output={"Amount": "100.00"},
+                ai_execution=RPAAIExecution(language="snapshot", code="", output={"Amount": "100.00"}),
+                signals={
+                    "extract_snapshot": {
+                        "source": "detail_views",
+                        "section_title": "Detail",
+                        "frame_path": ["iframe[title='detail']"],
+                        "fields": [
+                            {
+                                "label": "Amount",
+                                "value": "100.00",
+                                "data_prop": "amount",
+                                "visible": True,
+                                "value_kind": "number",
+                            }
+                        ],
+                    }
+                },
+            )
+        ],
+        is_local=True,
+    )
+
+    body = _execute_body(script)
+
+    assert "frame_scope = current_page.frame_locator(\"iframe[title='detail']\")" in body
+    assert "frame_scope.locator('[data-prop=\"amount\"]')" in body
+    assert "current_page.locator('[data-prop=\"amount\"]')" not in body
+
+
 def test_compiler_renders_snapshot_extract_from_output_labels_when_field_evidence_missing():
     script = TraceSkillCompiler().generate_script(
         [
