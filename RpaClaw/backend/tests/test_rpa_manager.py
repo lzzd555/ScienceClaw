@@ -3,6 +3,7 @@ import importlib
 import sys
 import unittest
 import json
+import asyncio
 from types import SimpleNamespace
 from pathlib import Path
 from datetime import datetime
@@ -13,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 MANAGER_MODULE = importlib.import_module("backend.rpa.manager")
+TRACE_MODELS_MODULE = importlib.import_module("backend.rpa.trace_models")
 
 
 class _FakeContext:
@@ -21,6 +23,7 @@ class _FakeContext:
         self.exposed_bindings = []
         self.init_scripts = []
         self.pages = []
+        self.closed = False
 
     def on(self, event_name, handler):
         self.handlers[event_name] = handler
@@ -35,6 +38,9 @@ class _FakeContext:
         page = _FakePage("about:blank", "Blank", context=self)
         self.pages.append(page)
         return page
+
+    async def close(self):
+        self.closed = True
 
 
 class _FakeBrowser:
@@ -62,6 +68,7 @@ class _FakePage:
         self.closed = False
         self.expose_function_calls = []
         self.evaluate_calls = []
+        self.add_init_script_calls = []
 
     async def title(self):
         return self._title
@@ -72,6 +79,10 @@ class _FakePage:
 
     async def evaluate(self, _script):
         self.evaluate_calls.append(_script)
+        return None
+
+    async def add_init_script(self, script=None, path=None):
+        self.add_init_script_calls.append({"script": script, "path": path})
         return None
 
     async def goto(self, url):
@@ -161,6 +172,263 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         )
         self.manager.sessions[self.session.id] = self.session
 
+    async def test_session_stores_traces_and_runtime_results(self):
+        trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="trace-1",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.NAVIGATION,
+            source="manual",
+            after_page=TRACE_MODELS_MODULE.RPAPageState(url="https://example.test"),
+        )
+
+        await self.manager.append_trace(self.session.id, trace)
+        self.manager.write_runtime_result(
+            self.session.id,
+            "selected_project",
+            {"url": "https://github.com/owner/repo"},
+        )
+
+        self.assertEqual(self.session.traces[0].trace_id, "trace-1")
+        self.assertEqual(
+            self.session.runtime_results.resolve_ref("selected_project.url"),
+            "https://github.com/owner/repo",
+        )
+
+    async def test_delete_trace_rebuilds_runtime_results_from_remaining_traces(self):
+        deleted_trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="trace-delete",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.AI_OPERATION,
+            output_key="selected_project",
+            output={"url": "https://github.com/old/repo"},
+        )
+        kept_trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="trace-keep",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.AI_OPERATION,
+            output_key="latest_issue",
+            output={"title": "Current issue"},
+        )
+        overwritten_key_trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="trace-new-selected",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.AI_OPERATION,
+            output_key="selected_project",
+            output={"url": "https://github.com/new/repo"},
+        )
+        self.session.traces.extend([deleted_trace, kept_trace, overwritten_key_trace])
+        self.session.runtime_results.write("selected_project", deleted_trace.output)
+        self.session.runtime_results.write("latest_issue", kept_trace.output)
+
+        deleted = await self.manager.delete_trace(self.session.id, deleted_trace.trace_id)
+
+        self.assertTrue(deleted)
+        self.assertEqual(
+            self.session.runtime_results.values,
+            {
+                "latest_issue": {"title": "Current issue"},
+                "selected_project": {"url": "https://github.com/new/repo"},
+            },
+        )
+
+    async def test_add_step_records_manual_trace_without_breaking_steps(self):
+        step = await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "navigate",
+                "target": "",
+                "url": "https://example.test",
+                "description": "Open example",
+                "source": "record",
+            },
+        )
+
+        self.assertEqual(self.session.steps[0].id, step.id)
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].trace_type, "navigation")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.test")
+
+    async def test_add_step_records_manual_recorded_action_for_recoverable_locator(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "fill",
+                "target": "",
+                "description": '输入 "foo" 到 None',
+                "value": "foo",
+                "source": "record",
+                "locator_candidates": [
+                    {
+                        "kind": "role",
+                        "playwright_locator": 'page.get_by_role("textbox").first',
+                        "selected": True,
+                    }
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recorded_actions), 1)
+        self.assertEqual(len(self.session.recording_diagnostics), 0)
+        self.assertEqual(self.session.recorded_actions[0].target["method"], "nth")
+
+    async def test_add_step_records_manual_diagnostic_for_unrecoverable_locator(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": "",
+                "description": "点击 None",
+                "source": "record",
+                "locator_candidates": [
+                    {
+                        "playwright_locator": 'page.locator(".unknown")',
+                        "selected": True,
+                    }
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recorded_actions), 0)
+        self.assertEqual(len(self.session.recording_diagnostics), 1)
+        self.assertEqual(
+            self.session.recording_diagnostics[0].failure_reason,
+            "canonical_target_missing",
+        )
+
+    async def test_run_tracked_event_logs_and_finishes_when_handler_fails(self):
+        async def failing_handle_event(_session_id, _evt):
+            raise RuntimeError("boom")
+
+        self.manager._handle_event = failing_handle_event
+
+        await self.manager._run_tracked_event(
+            self.session.id,
+            {"action": "click", "url": "https://example.test", "locator": {"method": "testid", "value": "x"}},
+        )
+
+        self.assertEqual(self.manager._pending_event_counts.get(self.session.id), 0)
+        self.assertTrue(self.manager._ensure_pending_event_idle(self.session.id).is_set())
+
+    async def test_select_step_locator_candidate_rebuilds_manual_recording_outcomes(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": "",
+                "description": "点击 None",
+                "source": "record",
+                "locator_candidates": [
+                    {
+                        "kind": "role",
+                        "playwright_locator": 'page.locator(".unknown")',
+                        "selected": True,
+                    },
+                    {
+                        "kind": "role",
+                        "locator": {"method": "role", "role": "textbox", "name": "Search"},
+                        "selected": False,
+                        "strict_match_count": 1,
+                    },
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recorded_actions), 0)
+        self.assertEqual(len(self.session.recording_diagnostics), 1)
+
+        await self.manager.select_step_locator_candidate(self.session.id, 0, 1)
+
+        self.assertEqual(len(self.session.recorded_actions), 1)
+        self.assertEqual(len(self.session.recording_diagnostics), 0)
+        self.assertEqual(self.session.recorded_actions[0].target["method"], "role")
+
+    async def test_delete_step_rebuilds_manual_recording_outcomes(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": "",
+                "description": "点击 None",
+                "source": "record",
+                "locator_candidates": [
+                    {
+                        "playwright_locator": 'page.locator(".unknown")',
+                        "selected": True,
+                    }
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recording_diagnostics), 1)
+
+        deleted = await self.manager.delete_step(self.session.id, 0)
+
+        self.assertTrue(deleted)
+        self.assertEqual(len(self.session.recorded_actions), 0)
+        self.assertEqual(len(self.session.recording_diagnostics), 0)
+
+    async def test_delete_step_removes_corresponding_manual_trace_only(self):
+        step = await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "click",
+                "target": json.dumps({"method": "role", "role": "button", "name": "Search"}),
+                "description": 'click button("Search")',
+                "source": "record",
+                "validation": {"status": "ok"},
+            },
+        )
+        self.session.traces.append(
+            TRACE_MODELS_MODULE.RPAAcceptedTrace(
+                trace_id="trace-ai-keep",
+                trace_type=TRACE_MODELS_MODULE.RPATraceType.AI_OPERATION,
+                source="ai",
+                action="extract",
+                description="keep ai trace",
+            )
+        )
+
+        deleted = await self.manager.delete_step(self.session.id, 0)
+
+        self.assertTrue(deleted)
+        self.assertNotIn(f"trace-{step.id}", [trace.trace_id for trace in self.session.traces])
+        self.assertEqual([trace.trace_id for trace in self.session.traces], ["trace-ai-keep"])
+
+    async def test_fill_merge_rebuilds_recorded_action_value(self):
+        await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Search"}),
+                "description": '输入 "a" 到 textbox("Search")',
+                "value": "a",
+                "source": "record",
+                "validation": {"status": "ok"},
+                "sequence": 1,
+                "event_timestamp_ms": 1000,
+                "tab_id": "tab-1",
+            },
+        )
+
+        merged_step = await self.manager.add_step(
+            self.session.id,
+            {
+                "action": "fill",
+                "target": json.dumps({"method": "role", "role": "textbox", "name": "Search"}),
+                "description": '输入 "abc" 到 textbox("Search")',
+                "value": "abc",
+                "source": "record",
+                "validation": {"status": "ok"},
+                "sequence": 2,
+                "event_timestamp_ms": 1001,
+                "tab_id": "tab-1",
+            },
+        )
+
+        self.assertEqual(merged_step.value, "abc")
+        self.assertEqual(len(self.session.recorded_actions), 1)
+        self.assertEqual(self.session.recorded_actions[0].value, "abc")
+
     async def test_create_session_uses_https_ignoring_context(self):
         fake_browser = _FakeBrowser()
 
@@ -200,6 +468,8 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tabs[0]["url"], "https://example.com")
         self.assertIs(self.manager.get_active_page(self.session.id), page)
         self.assertEqual(page.bring_to_front_calls, 1)
+        self.assertEqual(len(page.add_init_script_calls), 1)
+        self.assertIn(tab_id, page.add_init_script_calls[0]["script"])
 
     async def test_register_page_injects_action_runtime_before_capture_script(self):
         context = _FakeContext()
@@ -300,6 +570,10 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
             self.session.steps[-1].frame_path,
             ["iframe[name='workspace']", "iframe[title='editor']"],
         )
+        self.assertEqual(
+            self.session.recorded_actions[-1].frame_path,
+            ["iframe[name='workspace']", "iframe[title='editor']"],
+        )
 
     async def test_handle_event_persists_locator_candidates_and_validation(self):
         page = _FakePage("https://example.com", "Example")
@@ -336,6 +610,37 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.steps[-1].locator_candidates[0]["kind"], "role")
         self.assertTrue(self.session.steps[-1].locator_candidates[0]["selected"])
         self.assertEqual(self.session.steps[-1].validation["status"], "ok")
+
+    async def test_handle_event_accepts_testid_locator_candidate(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "fill",
+                "tab_id": tab_id,
+                "tag": "INPUT",
+                "timestamp": 1234567890,
+                "value": "approver",
+                "locator_candidates": [
+                    {
+                        "kind": "testid",
+                        "playwright_locator": 'page.get_by_test_id("login-username")',
+                        "strict_match_count": 1,
+                        "selected": True,
+                        "score": 1,
+                    }
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recorded_actions), 1)
+        self.assertEqual(
+            self.session.recorded_actions[0].target,
+            {"method": "testid", "value": "login-username"},
+        )
 
     async def test_handle_event_prefers_best_scored_strict_candidate_over_earlier_nth(self):
         page = _FakePage("https://example.com", "Example")
@@ -429,6 +734,56 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step.validation["status"], "ok")
         self.assertEqual(step.validation["details"], "strict unique css match")
 
+    async def test_handle_event_prefers_stable_semantic_candidate_over_runtime_id_css(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "fill",
+                "tab_id": tab_id,
+                "tag": "INPUT",
+                "timestamp": 1234567892,
+                "value": "7260316102147H,000484261001AF",
+                "locator": {
+                    "method": "css",
+                    "value": "#el-collapse-content-830 > .el-collapse-item__content > .new-search-form > .el-form > .el-row > div > .el-form-item > .item-layout-container-flex > .item-layout-content > .el-form-item__content > .el-tooltip > .el-row > .el-col > .web-text-area",
+                },
+                "locator_candidates": [
+                    {
+                        "kind": "css",
+                        "score": 0,
+                        "strict_match_count": 1,
+                        "visible_match_count": 1,
+                        "selected": True,
+                        "locator": {
+                            "method": "css",
+                            "value": "#el-collapse-content-830 > .el-collapse-item__content > .new-search-form > .el-form > .el-row > div > .el-form-item > .item-layout-container-flex > .item-layout-content > .el-form-item__content > .el-tooltip > .el-row > .el-col > .web-text-area",
+                        },
+                        "reason": "selected Playwright candidate is strict unique",
+                    },
+                    {
+                        "kind": "placeholder",
+                        "score": 20,
+                        "strict_match_count": 1,
+                        "visible_match_count": 1,
+                        "selected": False,
+                        "locator": {"method": "placeholder", "value": "请输入ESN"},
+                        "reason": "stable placeholder candidate",
+                    },
+                ],
+                "validation": {"status": "ok", "details": "selected Playwright candidate is strict unique"},
+            },
+        )
+
+        step = self.session.steps[-1]
+        self.assertEqual(json.loads(step.target), {"method": "placeholder", "value": "请输入ESN"})
+        self.assertFalse(step.locator_candidates[0]["selected"])
+        self.assertTrue(step.locator_candidates[1]["selected"])
+        self.assertEqual(step.validation["selected_candidate_kind"], "placeholder")
+        self.assertEqual(step.validation["details"], "stable placeholder candidate")
+
     async def test_handle_event_recovers_target_from_playwright_candidate_when_top_level_locator_missing(self):
         page = _FakePage("https://example.com", "Example")
         tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
@@ -506,6 +861,32 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(step.value, "ContractList20260411111546.xlsx")
         self.assertNotEqual(step.action, "open_tab_click")
         self.assertNotEqual(step.action, "download_click")
+
+    async def test_paused_download_event_is_merged_into_next_ai_trace(self):
+        self.session.paused = True
+        self.session.pending_download_events.append(
+            {
+                "filename": "export.xlsx",
+                "tab_id": "tab-export",
+                "url": "https://example.com/exportQuery",
+            }
+        )
+        trace = TRACE_MODELS_MODULE.RPAAcceptedTrace(
+            trace_id="ai-export",
+            trace_type=TRACE_MODELS_MODULE.RPATraceType.AI_OPERATION,
+            source="ai",
+            description="Click table row column action",
+            ai_execution=TRACE_MODELS_MODULE.RPAAIExecution(
+                code="async def run(page, results):\n    return {'action_performed': True}"
+            ),
+        )
+
+        await self.manager.append_trace(self.session.id, trace)
+
+        self.assertEqual(trace.signals["download"]["filename"], "export.xlsx")
+        self.assertEqual(trace.signals["download"]["tab_id"], "tab-export")
+        self.assertEqual(trace.signals["download"]["count"], 1)
+        self.assertEqual(self.session.pending_download_events, [])
 
     async def test_select_step_locator_candidate_promotes_target_and_selection(self):
         await self.manager.add_step(
@@ -701,6 +1082,19 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("locator: locatorBundle.primary", bridge_block)
         self.assertIn("locator_candidates: locatorBundle.candidates", bridge_block)
 
+    def test_capture_js_prefers_page_tab_id_payload_when_available(self):
+        js = MANAGER_MODULE.CAPTURE_JS
+        emit_block = js.split("function emit(evt)", 1)[1].split("function emitAction", 1)[0]
+        self.assertIn("if (!evt.tab_id && window.__rpa_tab_id)", emit_block)
+        self.assertIn("evt.tab_id = window.__rpa_tab_id;", emit_block)
+
+    def test_capture_js_uses_document_scoped_install_guard(self):
+        js = MANAGER_MODULE.CAPTURE_JS
+        self.assertIn("var docMarker = '__rpa_capture_installed__';", js)
+        self.assertIn("if (document[docMarker]) return;", js)
+        self.assertIn("document[docMarker] = true;", js)
+        self.assertNotIn("window.__rpa_injected", js)
+
     def test_capture_js_no_longer_implements_raw_dom_listeners_inline(self):
         js = MANAGER_MODULE.CAPTURE_JS
         self.assertNotIn("document.addEventListener('click'", js)
@@ -735,6 +1129,19 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("var ROLE_MAP =", js)
         self.assertNotIn("function testUnique(", js)
 
+    def test_capture_js_prefers_page_tab_id_payload_when_available(self):
+        js = MANAGER_MODULE.CAPTURE_JS
+        emit_block = js.split("function emit(evt)", 1)[1].split("function emitAction", 1)[0]
+        self.assertIn("if (!evt.tab_id && window.__rpa_tab_id)", emit_block)
+        self.assertIn("evt.tab_id = window.__rpa_tab_id;", emit_block)
+
+    def test_capture_js_uses_document_scoped_install_guard(self):
+        js = MANAGER_MODULE.CAPTURE_JS
+        self.assertIn("var docMarker = '__rpa_capture_installed__';", js)
+        self.assertIn("if (document[docMarker]) return;", js)
+        self.assertIn("document[docMarker] = true;", js)
+        self.assertNotIn("window.__rpa_injected", js)
+
     def test_action_runtime_does_not_immediately_toggle_label_associated_checkbox_clicks(self):
         js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
         click_block = js.split("addListener('click'", 1)[1].split("addListener('input'", 1)[0]
@@ -751,6 +1158,22 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         change_block = js.split("addListener('change'", 1)[1].split("addListener('keydown'", 1)[0]
         self.assertIn("if (asCheckbox(target)) {", change_block)
         self.assertIn("emitLogicalAction(toggleState(target) ? 'check' : 'uncheck', target, {});", change_block)
+
+    def test_action_runtime_emits_hover_candidates(self):
+        js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
+        self.assertIn("addListener('mouseover'", js)
+        self.assertIn("emitLogicalAction('hover'", js)
+
+    def test_action_runtime_hover_targets_allow_interactive_links_and_buttons(self):
+        js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
+        self.assertIn("if (target.nodeName === 'BUTTON' || target.nodeName === 'A') return target;", js)
+        self.assertIn("if (role === 'button' || role === 'link') return target;", js)
+
+    def test_capture_runtime_hover_trigger_signals_are_not_generic_links(self):
+        js = MANAGER_MODULE.CAPTURE_SCRIPT_PATH.read_text(encoding="utf-8")
+        self.assertIn("function hasMenuPopupNearby", js)
+        self.assertNotIn("if (role === 'button' || role === 'link') return true;", js)
+        self.assertNotIn("return el.tagName === 'BUTTON' || el.tagName === 'A';", js)
 
     def test_action_runtime_preserves_label_clicks_for_associated_checkbox_targets(self):
         js = MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH.read_text(encoding="utf-8")
@@ -779,10 +1202,20 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.init_scripts[1]["path"], str(MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_PATH))
         self.assertIsNone(context.init_scripts[1]["script"])
         self.assertEqual(context.init_scripts[2]["script"], MANAGER_MODULE.CAPTURE_JS)
+        self.assertEqual(len(first_page.add_init_script_calls), 1)
         self.assertEqual(first_page.expose_function_calls, [])
         self.assertEqual(first_page.evaluate_calls, [])
         self.assertEqual(second_page.expose_function_calls, [])
-        self.assertEqual(second_page.evaluate_calls, [])
+        self.assertEqual(len(second_page.add_init_script_calls), 1)
+        self.assertEqual(
+            second_page.evaluate_calls,
+            [
+                second_page.add_init_script_calls[0]["script"],
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_JS,
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_JS,
+                MANAGER_MODULE.CAPTURE_JS,
+            ],
+        )
 
     async def test_context_binding_callback_derives_frame_path_from_source_frame(self):
         context = _FakeContext()
@@ -892,6 +1325,34 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
             ["iframe[title='editor']"],
         )
 
+    async def test_context_binding_callback_keeps_client_frame_path_when_source_frame_is_main(self):
+        context = _FakeContext()
+        page = _FakePage("https://example.com", "Example", context=context)
+        page.main_frame.page = page
+        await self.manager.register_page(self.session.id, page, make_active=True)
+
+        _, binding_callback, _ = context.exposed_bindings[0]
+        reported_frame_path = ["iframe[name='iframeResult']"]
+
+        await binding_callback(
+            SimpleNamespace(page=page, frame=page.main_frame),
+            json.dumps(
+                {
+                    "action": "click",
+                    "tag": "BUTTON",
+                    "timestamp": 1234567890,
+                    "frame_path": reported_frame_path,
+                    "locator": {"method": "role", "role": "button", "name": "Runoob Note"},
+                }
+            ),
+        )
+
+        self.assertEqual(self.session.steps[-1].frame_path, reported_frame_path)
+        self.assertEqual(
+            self.session.steps[-1].signals.get("reported_frame_path"),
+            reported_frame_path,
+        )
+
     async def test_build_frame_path_falls_back_to_frame_name_when_frame_element_fails(self):
         page = _FakePage("https://example.com", "Example")
         outer_frame = _FakeFrame(page, attrs={"name": "workspace"})
@@ -993,6 +1454,9 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.steps), 1)
         self.assertEqual(self.session.steps[-1].action, "navigate_click")
         self.assertEqual(self.session.steps[-1].url, "https://example.com/next")
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].action, "navigate_click")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.com/next")
 
     def test_make_description_formats_nth_locator(self):
         description = self.manager._make_description(
@@ -1025,6 +1489,264 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(checked, '勾选 checkbox("Subscribe")')
         self.assertEqual(unchecked, '取消勾选 checkbox("Subscribe")')
+
+    def test_make_description_formats_hover_action(self):
+        description = self.manager._make_description(
+            {
+                "action": "hover",
+                "locator": {"method": "role", "role": "button", "name": "Export"},
+            }
+        )
+
+        self.assertEqual(description, '悬停到 button("Export")')
+
+    async def test_hover_followed_by_menu_item_click_records_hover_before_click(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "button", "name": "Export"},
+                "signals": {"hover": {"is_menu_trigger_candidate": True}},
+            },
+        )
+
+        self.assertEqual(len(self.session.steps), 0)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "LI",
+                "timestamp": 1200,
+                "sequence": 11,
+                "locator": {"method": "text", "value": "Export Query"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        self.assertEqual([step.action for step in self.session.steps], ["hover", "click"])
+        self.assertEqual(self.session.steps[0].description, '悬停到 button("Export")')
+        self.assertEqual(self.session.steps[1].description, '点击 text("Export Query")')
+        self.assertEqual([action.action_kind.value for action in self.session.recorded_actions], ["hover", "click"])
+        self.assertEqual([trace.action for trace in self.session.traces], ["hover", "click"])
+
+    async def test_hover_without_followup_click_does_not_enter_timeline(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "button", "name": "Export"},
+                "signals": {"hover": {"is_menu_trigger_candidate": True}},
+            },
+        )
+
+        self.assertEqual(len(self.session.steps), 0)
+        self.assertEqual(len(self.session.recorded_actions), 0)
+        self.assertEqual(len(self.session.traces), 0)
+
+    async def test_hover_followed_by_non_menu_click_drops_hover_candidate(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "button", "name": "Export"},
+                "signals": {"hover": {"is_menu_trigger_candidate": True}},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1200,
+                "sequence": 11,
+                "locator": {"method": "role", "role": "button", "name": "Export"},
+            },
+        )
+
+        self.assertEqual([step.action for step in self.session.steps], ["click"])
+        self.assertEqual([action.action_kind.value for action in self.session.recorded_actions], ["click"])
+
+    async def test_intervening_menu_link_hover_does_not_replace_trigger_hover(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "button", "name": "Resources"},
+                "signals": {"hover": {"is_menu_trigger_candidate": True}},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1100,
+                "sequence": 11,
+                "locator": {"method": "role", "role": "link", "name": "Customer stories"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1200,
+                "sequence": 12,
+                "locator": {"method": "role", "role": "link", "name": "Customer stories"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        self.assertEqual([step.action for step in self.session.steps], ["hover", "click"])
+        self.assertEqual(self.session.steps[0].description, '悬停到 button("Resources")')
+        self.assertEqual(self.session.steps[1].description, '点击 link("Customer stories")')
+
+    async def test_generic_hover_can_be_promoted_for_menu_item_click_when_trigger_signal_missing(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "link", "name": "Open Source"},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1200,
+                "sequence": 11,
+                "locator": {"method": "role", "role": "link", "name": "Security Lab"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        self.assertEqual([step.action for step in self.session.steps], ["hover", "click"])
+        self.assertEqual(self.session.steps[0].description, '悬停到 link("Open Source")')
+        self.assertEqual(self.session.steps[1].description, '点击 link("Security Lab")')
+
+    async def test_menu_item_hover_does_not_replace_generic_trigger_hover(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1000,
+                "sequence": 10,
+                "locator": {"method": "role", "role": "link", "name": "Open Source"},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "hover",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1100,
+                "sequence": 11,
+                "locator": {"method": "role", "role": "link", "name": "Security Lab"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "A",
+                "timestamp": 1200,
+                "sequence": 12,
+                "locator": {"method": "role", "role": "link", "name": "Security Lab"},
+                "signals": {"menu_context": {"is_menu_item": True}},
+            },
+        )
+
+        self.assertEqual([step.action for step in self.session.steps], ["hover", "click"])
+        self.assertEqual(self.session.steps[0].description, '悬停到 link("Open Source")')
+        self.assertEqual(self.session.steps[1].description, '点击 link("Security Lab")')
+
+    async def test_stop_session_waits_for_pending_events_before_marking_stopped(self):
+        context = _FakeContext()
+        self.manager.attach_context(self.session.id, context)
+
+        self.manager._mark_pending_event_started(self.session.id)
+
+        async def delayed_click():
+            try:
+                await asyncio.sleep(0.05)
+                await self.manager._handle_event(
+                    self.session.id,
+                    {
+                        "action": "click",
+                        "tag": "BUTTON",
+                        "timestamp": 1234,
+                        "sequence": 1,
+                        "locator": {"method": "role", "role": "button", "name": "Search"},
+                    },
+                )
+            finally:
+                self.manager._mark_pending_event_finished(self.session.id)
+
+        task = asyncio.create_task(delayed_click())
+
+        await self.manager.stop_session(self.session.id)
+        await task
+
+        self.assertEqual(self.session.status, "stopped")
+        self.assertEqual([step.action for step in self.session.steps], ["click"])
+        self.assertEqual([trace.action for trace in self.session.traces], ["click"])
 
     async def test_handle_event_orders_steps_by_sequence_when_events_arrive_out_of_order(self):
         page = _FakePage("https://example.com", "Example")
@@ -1128,6 +1850,48 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.steps), 1)
         self.assertEqual(self.session.steps[-1].action, "navigate_press")
         self.assertEqual(self.session.steps[-1].url, "https://example.com/next")
+        self.assertEqual(len(self.session.traces), 1)
+        self.assertEqual(self.session.traces[0].action, "navigate_press")
+        self.assertEqual(self.session.traces[0].after_page.url, "https://example.com/next")
+
+    async def test_select_step_locator_candidate_refreshes_manual_trace(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "click",
+                "tab_id": tab_id,
+                "tag": "BUTTON",
+                "timestamp": 1234567890,
+                "locator": {"method": "css", "value": "button.primary"},
+                "locator_candidates": [
+                    {
+                        "kind": "css",
+                        "score": 500,
+                        "selected": True,
+                        "strict_match_count": 1,
+                        "locator": {"method": "css", "value": "button.primary"},
+                    },
+                    {
+                        "kind": "role",
+                        "score": 100,
+                        "selected": False,
+                        "strict_match_count": 1,
+                        "locator": {"method": "role", "role": "button", "name": "Search"},
+                    },
+                ],
+            },
+        )
+
+        await self.manager.select_step_locator_candidate(self.session.id, 0, 1)
+
+        self.assertEqual(
+            self.session.traces[0].locator_candidates[1]["locator"],
+            {"method": "role", "role": "button", "name": "Search"},
+        )
+        self.assertTrue(self.session.traces[0].locator_candidates[1]["selected"])
 
     async def test_navigation_upgrade_uses_sequence_predecessor_not_last_arrival(self):
         page = _FakePage("https://example.com", "Example")
@@ -1398,6 +2162,23 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.steps[-1].source_tab_id, source_tab_id)
         self.assertEqual(self.session.steps[-1].target_tab_id, target_tab_id)
         self.assertEqual(self.session.steps[-1].signals["popup"]["target_tab_id"], target_tab_id)
+
+    async def test_register_context_page_bootstraps_current_page_recorder_runtime(self):
+        source_page = _FakePage("https://example.com", "Example")
+        target_page = _FakePage("https://example.com/new", "Popup", context=source_page.context)
+
+        await self.manager.register_page(self.session.id, source_page, make_active=True)
+        await self.manager.register_context_page(self.session.id, target_page, make_active=True)
+
+        self.assertEqual(
+            target_page.evaluate_calls,
+            [
+                target_page.add_init_script_calls[0]["script"],
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_RUNTIME_JS,
+                MANAGER_MODULE.PLAYWRIGHT_RECORDER_ACTIONS_JS,
+                MANAGER_MODULE.CAPTURE_JS,
+            ],
+        )
 
     async def test_navigation_after_popup_signal_click_is_skipped(self):
         source_page = _FakePage("https://example.com", "Example")

@@ -1,0 +1,18 @@
+id: contract_filter_open_001
+name: 筛选并打开固定合同
+tags: [smoke, contracts]
+user:
+  username: buyer
+  password: buyer123
+start_path: /contracts
+timeout_s: 120
+instruction: >
+  当前在合同管理页面。请筛选有效的软件订阅合同，找到合同 CT-2026-RPA-001，
+  并打开该合同详情页。
+expected:
+  final_url_path: /contracts/CT-2026-RPA-001
+  entity_ids:
+    contract_number: CT-2026-RPA-001
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

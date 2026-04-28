@@ -12,12 +12,14 @@ from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.rpa.cdp_connector import get_cdp_connector
+from backend.rpa.execution_plan import build_rpa_mcp_execution_plan
 from backend.rpa.manager import rpa_manager
 from backend.rpa.mcp_converter import RpaMcpConverter
 from backend.rpa.mcp_executor import InvalidCookieError, RpaMcpExecutor
 from backend.rpa.mcp_models import RpaMcpToolDefinition
 from backend.rpa.mcp_preview_registry import RpaMcpPreviewDraftRegistry
 from backend.rpa.mcp_registry import RpaMcpToolRegistry
+from backend.rpa.mcp_step_projection import session_to_mcp_steps
 from backend.user.dependencies import User, require_user
 
 router = APIRouter(tags=["rpa-mcp"])
@@ -82,7 +84,7 @@ async def get_rpa_session_steps(session_id: str, user_id: str) -> dict[str, Any]
     if str(session.user_id) != str(user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
     return {
-        "steps": [step.model_dump() for step in session.steps],
+        "steps": session_to_mcp_steps(session),
         "params": getattr(session, 'params', {}) or {},
         "skill_name": getattr(session, 'skill_name', '') or getattr(session, 'title', '') or '',
     }
@@ -333,6 +335,14 @@ async def get_rpa_mcp_tool(tool_id: str, current_user: User = Depends(require_us
     if not tool:
         raise HTTPException(status_code=404, detail='RPA MCP tool not found')
     return ApiResponse(data=tool.model_dump(mode='python'))
+
+
+@router.get('/rpa-mcp/tools/{tool_id}/execution-plan', response_model=ApiResponse)
+async def get_rpa_mcp_execution_plan(tool_id: str, current_user: User = Depends(require_user)) -> ApiResponse:
+    tool = await RpaMcpToolRegistry().get_owned(tool_id, str(current_user.id))
+    if not tool:
+        raise HTTPException(status_code=404, detail='RPA MCP tool not found')
+    return ApiResponse(data=build_rpa_mcp_execution_plan(tool))
 
 
 @router.put('/rpa-mcp/tools/{tool_id}', response_model=ApiResponse)

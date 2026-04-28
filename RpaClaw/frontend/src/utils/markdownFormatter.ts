@@ -29,8 +29,17 @@ function preprocessMarkdown(text: string): string {
   let result = text;
 
   // 1. 移除开头的 ```markdown 或 ``` 标记（LLM 有时会错误地包裹整个输出）
-  result = result.replace(/^```(?:markdown|md)?\s*\n?/i, '');
-  result = result.replace(/\n?```\s*$/i, '');
+  const markdownWrapperMatch = result.match(/^```[ \t]*(?:markdown|md)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/i);
+  if (markdownWrapperMatch) {
+    result = markdownWrapperMatch[1];
+  }
+
+  result = result.replace(/^[ \t\u00a0\u3000]*```[ \t\u00a0\u3000]*([A-Za-z0-9_+#.-]+)?[ \t\u00a0\u3000]*$/gm, (_, lang = '') => {
+    return lang ? '```' + lang.toLowerCase() : '```';
+  });
+  result = result.replace(/([^\s`])([ \t\u00a0\u3000]*)```[ \t\u00a0\u3000]*([A-Za-z0-9_+#.-]*)[ \t\u00a0\u3000]*\r?\n/g, (_, prefix, _spacing, lang = '') => {
+    return prefix + '\n```' + lang.toLowerCase() + '\n';
+  });
 
   // 2. 修复连续的空行（超过2个空行压缩为2个）
   result = result.replace(/\n{3,}/g, '\n\n');
@@ -49,10 +58,10 @@ function preprocessMarkdown(text: string): string {
   result = result.replace(/(^#{1,6}\s[^\n]+)\n([^\n#])/gm, '$1\n\n$2');
 
   // 7. 修复代码块的语言标识符
-  result = result.replace(/```(\w+)(\s*)\n/g, (_, lang) => '```' + lang.toLowerCase() + '\n');
+  result = result.replace(/^```[ \t]*([A-Za-z0-9_+#.-]+)[ \t]*$/gm, (_, lang) => '```' + lang.toLowerCase());
 
   // 8. 修复行内代码的多余空格
-  result = result.replace(/`\s+([^`]+?)\s+`/g, '`$1`');
+  result = result.replace(/`[ \t]+([^`\n]+?)[ \t]+`/g, '`$1`');
 
   // 9. 修复链接格式
   result = result.replace(/\[([^\]]+)\]\s*\(\s*([^)\s]+)\s*\)/g, '[$1]($2)');

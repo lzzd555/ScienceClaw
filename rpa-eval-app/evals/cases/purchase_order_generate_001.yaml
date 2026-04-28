@@ -1,0 +1,40 @@
+id: purchase_order_generate_001
+name: 从已批准采购申请生成新订单
+tags: [purchase_orders]
+user:
+  username: buyer
+  password: buyer123
+start_path: /purchase-orders
+timeout_s: 120
+instruction: >
+  当前在采购订单页面。请使用已批准采购申请 PR-2026-RPA-001 生成高优先级采购订单。
+  可以点击“从 PR-2026-RPA-001 生成订单”。生成后确认新采购订单
+  PO-2026-RPA-NEW-001 的供应商、金额和待审批状态。
+expected:
+  entity_ids:
+    purchase_request_number: PR-2026-RPA-001
+    purchase_order_number: PO-2026-RPA-NEW-001
+  purchase_order:
+    status: pending_approval
+    priority: high
+    total_amount: 188000
+pre_api_assertions:
+  - name: new_purchase_order_not_present_before_run
+    path: /api/purchase-orders
+    find:
+      number: PO-2026-RPA-NEW-001
+    absent: true
+api_assertions:
+  - name: generated_purchase_order
+    path: /api/purchase-orders
+    find:
+      number: PO-2026-RPA-NEW-001
+    expect:
+      request_number: PR-2026-RPA-001
+      supplier_number: SUP-2026-001
+      status: pending_approval
+      priority: high
+      total_amount: 188000.0
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

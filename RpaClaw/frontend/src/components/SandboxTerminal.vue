@@ -113,14 +113,15 @@ const writeExecution = (toolName: string, command: string, output?: string, stat
   });
 };
 
-let renderedCount = 0;
+const renderHistorySnapshot = () => {
+  if (!terminal) {
+    initTerminal();
+  }
+  if (!terminal) return;
 
-const renderNewEntries = () => {
-  const entries = props.history || [];
-  while (renderedCount < entries.length) {
-    const entry = entries[renderedCount];
+  terminal.reset();
+  for (const entry of props.history || []) {
     writeExecution(entry.toolName, entry.command, entry.output, entry.status);
-    renderedCount++;
   }
 };
 
@@ -130,33 +131,33 @@ const cleanup = () => {
   terminal?.dispose();
   terminal = null;
   fitAddon = null;
-  renderedCount = 0;
 };
 
 watch(() => props.active, (active) => {
   if (active && !terminal) {
     initTerminal();
+    nextTick(renderHistorySnapshot);
   } else if (active && terminal) {
     requestAnimationFrame(() => fitAddon?.fit());
   }
 });
 
-watch(() => props.history?.length, () => {
-  nextTick(renderNewEntries);
-});
+watch(() => props.history, () => {
+  nextTick(renderHistorySnapshot);
+}, { deep: true });
 
 onMounted(() => {
   if (props.active) {
     initTerminal();
   }
-  renderNewEntries();
+  renderHistorySnapshot();
 });
 
 onBeforeUnmount(() => {
   cleanup();
 });
 
-defineExpose({ cleanup, writeExecution });
+defineExpose({ cleanup });
 </script>
 
 <style scoped>

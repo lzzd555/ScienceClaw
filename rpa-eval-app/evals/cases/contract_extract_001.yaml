@@ -1,0 +1,29 @@
+id: contract_extract_001
+name: 抽取合同关键字段
+tags: [contracts, extraction]
+user:
+  username: buyer
+  password: buyer123
+start_path: /contracts/CT-2026-RPA-001
+timeout_s: 90
+instruction: >
+  当前已经在合同详情页。请从页面字段中提取合同编号、供应商编号、供应商名称、合同金额、
+  归口部门、开始日期、结束日期和合规条款摘要，并在回答中列出。
+expected:
+  final_url_path: /contracts/CT-2026-RPA-001
+  entity_ids:
+    contract_number: CT-2026-RPA-001
+  extracted_fields:
+    contract_number: CT-2026-RPA-001
+    supplier_number: SUP-2026-001
+    supplier_name: 上海智采云科技有限公司
+    amount: 680000
+    owner_department: 采购管理部
+    start_date: 2026-01-01
+    end_date: 2026-12-31
+    compliance_keyword_1: 数据本地化
+    compliance_keyword_2: 操作留痕
+    compliance_keyword_3: 年度安全审计
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

@@ -1,0 +1,65 @@
+id: purchase_request_then_order_001
+name: 新建采购申请后生成采购订单
+tags: [e2e, purchase_requests, purchase_orders, data_flow]
+user:
+  username: buyer
+  password: buyer123
+start_path: /purchase-requests/new
+timeout_s: 240
+instruction: >
+  当前在新建采购申请页面。请先基于合同 CT-2026-RPA-001 创建采购申请 PR-2026-RPA-NEW-001：标题为
+  采购流程RPA追加许可申请，申请部门采购管理部，申请人王敏，明细为
+  RPA采购审批机器人许可 5 个、单价 6800、成本中心 PROC-RPA-2026。
+  提交成功后进入采购订单页面，点击“从 PR-2026-RPA-NEW-001 生成订单”，
+  从 PR-2026-RPA-NEW-001 生成高优先级采购订单，最后确认生成的
+  PO-2026-RPA-NEW-001 状态为待审批、金额为 34000。
+expected:
+  entity_ids:
+    contract_number: CT-2026-RPA-001
+    purchase_request_number: PR-2026-RPA-NEW-001
+    purchase_order_number: PO-2026-RPA-NEW-001
+  purchase_request:
+    status: submitted
+    total_amount: 34000
+  purchase_order:
+    status: pending_approval
+    priority: high
+    total_amount: 34000
+pre_api_assertions:
+  - name: purchase_request_not_present_before_run
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    absent: true
+  - name: purchase_order_not_present_before_run
+    path: /api/purchase-orders
+    find:
+      number: PO-2026-RPA-NEW-001
+    absent: true
+api_assertions:
+  - name: created_purchase_request
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    expect:
+      contract_number: CT-2026-RPA-001
+      status: submitted
+      total_amount: 34000.0
+      items:
+        - name: RPA采购审批机器人许可
+          quantity: 5
+          unit_price: 6800.0
+          cost_center: PROC-RPA-2026
+  - name: generated_purchase_order
+    path: /api/purchase-orders
+    find:
+      number: PO-2026-RPA-NEW-001
+    expect:
+      request_number: PR-2026-RPA-NEW-001
+      supplier_number: SUP-2026-001
+      status: pending_approval
+      priority: high
+      total_amount: 34000.0
+assertions:
+  accepted_trace_min: 2
+  diagnostics_max: 0

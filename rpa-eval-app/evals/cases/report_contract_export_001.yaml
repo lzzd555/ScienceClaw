@@ -1,0 +1,36 @@
+id: report_contract_export_001
+name: 导出合同台账报表
+tags: [reports]
+user:
+  username: buyer
+  password: buyer123
+start_path: /reports
+timeout_s: 90
+instruction: >
+  当前在报表中心页面。请导出合同台账 Excel，并确认浏览器触发了 contracts_2026.xlsx 下载。
+expected:
+  entity_ids:
+    contract_number: CT-2026-RPA-001
+pre_api_assertions:
+  - name: contracts_export_not_downloaded_before_run
+    path: /api/reports/download-events
+    find:
+      filename: contracts_2026.xlsx
+    absent: true
+api_assertions:
+  - name: exported_contract_source_exists
+    path: /api/contracts
+    find:
+      number: CT-2026-RPA-001
+    expect:
+      supplier_number: SUP-2026-001
+      status: effective
+  - name: contracts_export_download_triggered
+    path: /api/reports/download-events
+    find:
+      filename: contracts_2026.xlsx
+    expect:
+      source: contracts_export
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

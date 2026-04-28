@@ -1,0 +1,42 @@
+id: supplier_complete_001
+name: 补全供应商联系信息
+tags: [suppliers]
+user:
+  username: buyer
+  password: buyer123
+start_path: /suppliers
+timeout_s: 120
+instruction: >
+  当前在供应商管理页面。请筛选待补联系人供应商，找到 SUP-2026-002，
+  补全联系人周嘉宁、电话 139-0000-2602、邮箱 zhoujn@compliance-data.example 并保存。
+expected:
+  entity_ids:
+    supplier_number: SUP-2026-002
+  supplier:
+    contact_person: 周嘉宁
+    contact_phone: 139-0000-2602
+    contact_email: zhoujn@compliance-data.example
+    status: active
+pre_api_assertions:
+  - name: supplier_requires_contact_before_run
+    path: /api/suppliers
+    find:
+      number: SUP-2026-002
+    expect:
+      status: pending_contact
+      contact_person: null
+      contact_phone: null
+      contact_email: null
+api_assertions:
+  - name: supplier_contact_state
+    path: /api/suppliers
+    find:
+      number: SUP-2026-002
+    expect:
+      contact_person: 周嘉宁
+      contact_phone: 139-0000-2602
+      contact_email: zhoujn@compliance-data.example
+      status: active
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

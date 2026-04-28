@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from backend.rpa.generator import PlaywrightGenerator
@@ -11,7 +12,9 @@ from backend.rpa.mcp_models import (
     RpaMcpToolDefinition,
     build_rpa_mcp_output_schema,
 )
-from backend.rpa.mcp_semantic_inferer import RpaMcpSemanticInferer
+
+if TYPE_CHECKING:
+    from backend.rpa.mcp_semantic_inferer import RpaMcpSemanticInferer
 
 
 _LOGIN_BUTTON_RE = re.compile(r"\b(login|log in|sign in|sign-in|signin)\b|登录|登入|登陆", re.IGNORECASE)
@@ -41,16 +44,12 @@ _PARAM_NAME_HINTS = [
 
 
 class RpaMcpConverter:
-    def __init__(self, semantic_inferer: RpaMcpSemanticInferer | None = None) -> None:
+    def __init__(self, semantic_inferer: "RpaMcpSemanticInferer | None" = None) -> None:
         self._generator = PlaywrightGenerator()
         self._semantic_inferer = semantic_inferer
 
     def preview(self, *, user_id: str, session_id: str, skill_name: str, name: str, description: str, steps: list[dict], params: dict) -> RpaMcpToolDefinition:
-        normalized = self._generator._normalize_step_signals(
-            self._generator._infer_missing_tab_transitions(
-                self._generator._deduplicate_steps(steps)
-            )
-        )
+        normalized = self._normalize_preview_steps(steps)
         login_range = self._detect_login_range(normalized)
         sanitized_steps, report = self._strip_login_steps(normalized, login_range)
         sanitized_params = self._strip_login_params(params, report)
@@ -70,16 +69,17 @@ class RpaMcpConverter:
         )
 
     async def preview_with_semantics(self, *, user_id: str, session_id: str, skill_name: str, name: str, description: str, steps: list[dict], params: dict) -> RpaMcpToolDefinition:
-        normalized = self._generator._normalize_step_signals(
-            self._generator._infer_missing_tab_transitions(
-                self._generator._deduplicate_steps(steps)
-            )
-        )
+        normalized = self._normalize_preview_steps(steps)
         login_range = self._detect_login_range(normalized)
         sanitized_steps, report = self._strip_login_steps(normalized, login_range)
         sanitized_params = self._strip_login_params(params, report)
         sanitized_params = self._infer_step_params(sanitized_steps, sanitized_params)
-        recommendation = await (self._semantic_inferer or RpaMcpSemanticInferer()).infer(
+        semantic_inferer = self._semantic_inferer
+        if semantic_inferer is None:
+            from backend.rpa.mcp_semantic_inferer import RpaMcpSemanticInferer
+
+            semantic_inferer = RpaMcpSemanticInferer()
+        recommendation = await semantic_inferer.infer(
             user_id=user_id,
             requested_name=name,
             requested_description=description,
@@ -100,6 +100,19 @@ class RpaMcpConverter:
             report=report,
             semantic_recommendation=recommendation,
         )
+
+    def _normalize_preview_steps(self, steps: list[dict]) -> list[dict]:
+        if self._has_trace_backed_steps(steps):
+            return [dict(step) for step in steps]
+        return self._generator._normalize_step_signals(
+            self._generator._infer_missing_tab_transitions(
+                self._generator._deduplicate_steps(steps)
+            )
+        )
+
+    @staticmethod
+    def _has_trace_backed_steps(steps: list[dict]) -> bool:
+        return any(isinstance(step.get("rpa_trace"), dict) for step in steps)
 
     def _build_preview_from_parts(
         self,

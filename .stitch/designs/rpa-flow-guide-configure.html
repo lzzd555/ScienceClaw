@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>RpaClaw - Configure Workflow</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "surface-container-high": "#e7e8ea",
+                      "secondary-container": "#9e42f2",
+                      "on-primary-fixed": "#001b3c",
+                      "surface-container": "#edeef0",
+                      "primary-fixed": "#d5e3ff",
+                      "on-secondary-container": "#fffbff",
+                      "outline": "#717785",
+                      "inverse-surface": "#2e3132",
+                      "on-primary-container": "#fefcff",
+                      "outline-variant": "#c0c6d6",
+                      "tertiary-container": "#cc2fa4",
+                      "surface-tint": "#005eb3",
+                      "surface-bright": "#f8f9fb",
+                      "inverse-primary": "#a7c8ff",
+                      "on-error": "#ffffff",
+                      "tertiary": "#ac0189",
+                      "secondary-fixed-dim": "#ddb7ff",
+                      "secondary": "#841cd8",
+                      "error": "#ba1a1a",
+                      "on-background": "#191c1e",
+                      "surface-variant": "#e1e2e4",
+                      "tertiary-fixed-dim": "#ffaedf",
+                      "primary-fixed-dim": "#a7c8ff",
+                      "on-tertiary-container": "#fffbff",
+                      "surface-dim": "#d9dadc",
+                      "secondary-fixed": "#f0dbff",
+                      "on-secondary-fixed-variant": "#6900b3",
+                      "on-primary-fixed-variant": "#004689",
+                      "background": "#f8f9fb",
+                      "tertiary-fixed": "#ffd8ec",
+                      "surface-container-low": "#f2f4f6",
+                      "on-surface": "#191c1e",
+                      "on-surface-variant": "#404753",
+                      "primary": "#005caf",
+                      "on-tertiary": "#ffffff",
+                      "surface-container-lowest": "#ffffff",
+                      "on-tertiary-fixed-variant": "#87006b",
+                      "on-tertiary-fixed": "#3b002d",
+                      "on-error-container": "#93000a",
+                      "on-primary": "#ffffff",
+                      "inverse-on-surface": "#f0f1f3",
+                      "surface-container-highest": "#e1e2e4",
+                      "surface": "#f8f9fb",
+                      "on-secondary-fixed": "#2c0050",
+                      "primary-container": "#0074db",
+                      "error-container": "#ffdad6",
+                      "on-secondary": "#ffffff"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {},
+              "fontFamily": {
+                      "headline": [
+                              "Inter"
+                      ],
+                      "display": [
+                              "Inter"
+                      ],
+                      "body": [
+                              "Inter"
+                      ],
+                      "label": [
+                              "Inter"
+                      ],
+                      "mono": [
+                          "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"
+                      ]
+              },
+              "fontSize": {}
+      },
+          },
+        }
+      </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8f9fb; color: #191c1e; }
+        .ambient-shadow { box-shadow: 0 4px 24px -2px rgba(25, 28, 30, 0.04), 0 0 1px rgba(25, 28, 30, 0.1); }
+      </style>
+</head>
+<body class="bg-surface h-screen flex flex-col overflow-hidden text-sm">
+<!-- TopNav - Component from JSON mapping -->
+<nav class="bg-[#F8F9FB] dark:bg-slate-900 flex justify-between items-center w-full px-6 h-14 docked full-width top-0 z-50 bg-[#F2F4F6] dark:bg-slate-800 flat no shadows shrink-0">
+<div class="flex items-center gap-6">
+<div class="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="smart_toy">smart_toy</span>
+<span>RPA Workbench</span>
+</div>
+<div class="hidden md:flex items-center space-x-1">
+<a class="text-slate-500 hover:text-slate-700 px-3 py-2 text-sm font-medium tracking-tight Inter hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors rounded-md scale-95 duration-150" href="#">Record</a>
+<a class="text-[#005CAF] border-b-2 border-[#005CAF] pb-1 px-3 py-2 text-sm font-medium tracking-tight Inter" href="#">Configure</a>
+<a class="text-slate-500 hover:text-slate-700 px-3 py-2 text-sm font-medium tracking-tight Inter hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors rounded-md scale-95 duration-150" href="#">Test</a>
+<a class="text-slate-500 hover:text-slate-700 px-3 py-2 text-sm font-medium tracking-tight Inter hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors rounded-md scale-95 duration-150" href="#">Save</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center text-on-surface-variant gap-2 mr-4">
+<span class="material-symbols-outlined text-[18px]">timer</span> <span class="font-mono text-xs">02:45</span>
+<span class="w-px h-4 bg-outline-variant/30 mx-2"></span>
+<span class="material-symbols-outlined text-[18px]">list</span> <span class="text-xs">Steps: 12</span>
+<span class="w-px h-4 bg-outline-variant/30 mx-2"></span>
+<span class="bg-surface-container-high text-on-surface text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full">Pending Validation</span>
+</div>
+<button class="material-symbols-outlined text-slate-500 hover:text-slate-700 p-2 hover:bg-slate-200/50 rounded-full transition-colors" data-icon="settings">settings</button>
+<button class="material-symbols-outlined text-slate-500 hover:text-slate-700 p-2 hover:bg-slate-200/50 rounded-full transition-colors" data-icon="help">help</button>
+<button class="text-on-surface-variant px-3 py-1.5 rounded-md hover:bg-surface-container-high text-xs font-medium transition-colors">Reset</button>
+<button class="bg-gradient-to-r from-primary to-secondary text-on-primary px-4 py-1.5 rounded-md text-xs font-medium hover:opacity-90 transition-opacity flex items-center gap-2 shadow-sm">
+                Deploy Flow
+                <span class="material-symbols-outlined text-[16px]">rocket_launch</span>
+</button>
+<img alt="User Profile" class="w-8 h-8 rounded-full border border-surface-container-high ml-2" data-alt="professional headshot of a man with short hair wearing a dark shirt against a neutral background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD0sKkAQiADaSNRNsOkg3ruwkvEhsW6qXRLnPMIhEY6-9YDt2m32Ni6MEmb4R0ET7xks5qdsQx1yjRctdsIqiZP5CnhpR4aLr8VbK3MO8dgBSSWHPP78ocwWMxSYyBUUvDc7noS6tQsn2WU4P6Xj14h_pRnYU-JOgePCruakxZk9X4D4IzPa3CPL6UGQOL7jfjpK30i7n83b0jaYZLty9SUPQIBsxcT9OG8GLRooLVAUXEA6Z10hQR475anERnwGx0aLiStTRFmAIkr"/>
+</div>
+</nav>
+<div class="flex flex-1 overflow-hidden relative">
+<!-- Left Nav / Timeline Panel (Substituting SideNavBar for Timeline functionality as requested by layout) -->
+<aside class="w-72 bg-surface-container-low border-r border-outline-variant/10 flex flex-col shrink-0 h-full overflow-y-auto">
+<div class="p-4 bg-surface-container-high/50 sticky top-0 z-10 flex justify-between items-center backdrop-blur-sm">
+<h2 class="font-semibold text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">history</span>
+                    Timeline
+                 </h2>
+<button class="text-xs text-primary font-medium hover:underline flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">add</span> New Step
+                 </button>
+</div>
+<div class="p-4 flex flex-col gap-1 relative">
+<!-- Breadcrumb Trace Line -->
+<div class="absolute left-7 top-6 bottom-4 w-[2px] bg-outline-variant/20 z-0"></div>
+<!-- Timeline Items -->
+<div class="relative z-10 flex gap-3 group cursor-pointer p-2 rounded-lg hover:bg-surface transition-colors">
+<div class="w-6 h-6 rounded-full bg-surface border border-outline-variant/30 flex items-center justify-center shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-[14px] text-secondary">open_in_new</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start">
+<span class="font-medium text-on-surface">Navigate</span>
+<span class="text-[10px] text-on-surface-variant font-mono">0.1s</span>
+</div>
+<div class="text-xs text-on-surface-variant truncate w-44 mt-0.5 font-mono">https://portal.sap.com/invoices</div>
+<div class="mt-1.5"><span class="bg-surface-variant text-on-surface-variant text-[10px] px-1.5 py-0.5 rounded">URL OK</span></div>
+</div>
+</div>
+<div class="relative z-10 flex gap-3 group cursor-pointer p-2 rounded-lg hover:bg-surface transition-colors">
+<div class="w-6 h-6 rounded-full bg-surface border border-outline-variant/30 flex items-center justify-center shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-[14px] text-secondary">keyboard</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start">
+<span class="font-medium text-on-surface">Type</span>
+<span class="text-[10px] text-on-surface-variant font-mono">1.2s</span>
+</div>
+<div class="text-xs text-on-surface-variant truncate w-44 mt-0.5">Input username</div>
+<div class="mt-1.5"><span class="bg-surface-variant text-on-surface-variant text-[10px] px-1.5 py-0.5 rounded">Locator OK</span></div>
+</div>
+</div>
+<div class="relative z-10 flex gap-3 p-2 rounded-lg bg-surface-container-highest shadow-sm border border-secondary/20">
+<div class="w-6 h-6 rounded-full bg-secondary text-on-secondary flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+<span class="material-symbols-outlined text-[14px]">ads_click</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start">
+<span class="font-semibold text-secondary">Click "Download"</span>
+<span class="text-[10px] text-on-surface-variant font-mono">0.4s</span>
+</div>
+<div class="text-xs text-on-surface-variant truncate w-44 mt-0.5">Button: btn-export-csv</div>
+<div class="mt-1.5"><span class="bg-secondary/10 text-secondary border border-secondary/20 text-[10px] px-1.5 py-0.5 rounded font-medium">Needs Parameter</span></div>
+</div>
+</div>
+<div class="relative z-10 flex gap-3 group cursor-pointer p-2 rounded-lg hover:bg-surface transition-colors">
+<div class="w-6 h-6 rounded-full bg-surface border border-outline-variant/30 flex items-center justify-center shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-[14px] text-secondary">data_object</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start">
+<span class="font-medium text-on-surface text-on-surface-variant">Extract Table</span>
+<span class="text-[10px] text-on-surface-variant font-mono">--</span>
+</div>
+<div class="text-xs text-outline truncate w-44 mt-0.5 italic">Pending prior step</div>
+</div>
+</div>
+</div>
+</aside>
+<!-- Center Viewport -->
+<main class="flex-1 bg-surface-container flex flex-col relative p-4 overflow-hidden">
+<!-- Browser Chrome -->
+<div class="w-full h-full flex flex-col bg-surface-container-lowest rounded-lg border border-outline-variant/20 shadow-sm overflow-hidden relative">
+<div class="h-10 bg-surface-container-low border-b border-outline-variant/10 flex items-center px-4 gap-4 shrink-0">
+<div class="flex gap-1.5">
+<div class="w-3 h-3 rounded-full bg-outline-variant/50"></div>
+<div class="w-3 h-3 rounded-full bg-outline-variant/50"></div>
+<div class="w-3 h-3 rounded-full bg-outline-variant/50"></div>
+</div>
+<div class="flex-1 bg-surface rounded text-xs text-on-surface-variant px-3 py-1 font-mono flex items-center gap-2 border border-outline-variant/10">
+<span class="material-symbols-outlined text-[14px]">lock</span>
+                        https://portal.sap.com/invoices/q3-batch
+                    </div>
+</div>
+<!-- Viewport Content (Simulated Screen) -->
+<div class="flex-1 bg-surface relative overflow-hidden" data-alt="blurred abstract representation of a complex corporate software dashboard with charts and data tables in cool blue and gray tones" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCj5e8Y4HOTkKVlwyAYmfj6nM504EC1Tj_JNmiO6aW1FuEbWDgfW1tvsGHvVIeZxGMM6psuk_kPr1iRoFVXbJhSMPUKtYUfw7RTcoiKm8842ciciBRRFPjWSY-ZYsN8Jtk09LLxWCcPJeRssT_FqX00ZTg5EcJDF-aJAExOyabQDtZPPm2XCeJer2ch7-tyacBGm1bRBuE5bjJZfvJ46dZEwcNRQ6cMmJxbWauIXVy4ZK9n_Za5Vd8Fer4V-nbPuMPpJOhykXIJy8_V'); background-size: cover; background-position: center;">
+<div class="absolute inset-0 bg-surface/80 backdrop-blur-sm"></div> <!-- Overlay to fade background -->
+<!-- Highlighted Element on Screen -->
+<div class="absolute top-[30%] left-[60%] border-2 border-secondary bg-secondary/10 rounded w-32 h-10 flex items-center justify-center shadow-[0_0_0_4px_rgba(132,28,216,0.1)]">
+<span class="bg-secondary text-on-secondary text-[10px] font-bold px-1.5 py-0.5 rounded absolute -top-5 -left-0.5">TARGET</span>
+</div>
+<!-- Step Configuration Floating Card -->
+<div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-[420px] bg-surface-container-lowest rounded-lg ambient-shadow border border-outline-variant/20 flex flex-col z-20">
+<div class="h-8 bg-surface-container-high rounded-t-lg flex items-center px-4 cursor-move border-b border-outline-variant/10">
+<span class="text-xs font-semibold text-on-surface">Step Configuration</span>
+</div>
+<div class="p-5 flex flex-col gap-4">
+<div>
+<h3 class="text-lg font-bold text-on-surface tracking-tight flex items-center gap-2">
+                                    Click "Download"
+                                    <span class="material-symbols-outlined text-[18px] text-secondary">ads_click</span>
+</h3>
+<p class="text-xs text-on-surface-variant mt-1">Select the primary locator strategy for this action.</p>
+</div>
+<div class="flex flex-col gap-2 mt-2">
+<!-- Locator Option 1 -->
+<div class="border border-secondary rounded-md p-3 bg-secondary/5 relative cursor-pointer">
+<div class="absolute top-3 right-3 text-secondary font-mono text-xs font-bold">98%</div>
+<div class="flex items-center gap-2 mb-1">
+<input checked="" class="text-secondary focus:ring-secondary w-3.5 h-3.5" type="radio"/>
+<span class="text-sm font-semibold text-on-surface">CSS Selector</span>
+</div>
+<div class="font-mono text-xs text-on-surface bg-surface p-2 rounded border border-outline-variant/20 ml-5 mt-2">button#btn-export-csv.action-primary</div>
+</div>
+<!-- Locator Option 2 -->
+<div class="border border-outline-variant/30 rounded-md p-3 hover:bg-surface-container-low transition-colors cursor-pointer">
+<div class="absolute top-3 right-3 text-on-surface-variant font-mono text-xs font-bold">85%</div>
+<div class="flex items-center gap-2 mb-1">
+<input class="text-secondary focus:ring-secondary w-3.5 h-3.5" type="radio"/>
+<span class="text-sm font-medium text-on-surface">XPath</span>
+</div>
+<div class="font-mono text-[11px] text-on-surface-variant ml-5 truncate">//div[@id='toolbar']/button[contains(text(), 'Download')]</div>
+</div>
+</div>
+<div class="flex items-center justify-between mt-2 pt-3 border-t border-outline-variant/10">
+<div class="flex items-center gap-2">
+<div class="w-8 h-4 bg-secondary rounded-full relative cursor-pointer">
+<div class="w-3 h-3 bg-white rounded-full absolute right-0.5 top-0.5 shadow-sm"></div>
+</div>
+<span class="text-xs font-medium text-on-surface">Enable AI Healing</span>
+</div>
+<span class="material-symbols-outlined text-[16px] text-secondary" title="AI will attempt to find the element if locators fail">auto_fix_high</span>
+</div>
+<div class="flex justify-end gap-2 mt-2">
+<button class="px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors">Cancel</button>
+<button class="px-4 py-1.5 bg-primary text-on-primary text-xs font-medium rounded-md hover:bg-primary/90 transition-colors">Apply Config</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Right Panel - Properties -->
+<aside class="w-64 bg-surface border-l border-outline-variant/10 flex flex-col shrink-0 h-full overflow-y-auto">
+<div class="p-4 border-b border-outline-variant/10 flex items-center justify-between">
+<h2 class="text-sm font-semibold text-on-surface">Properties</h2>
+</div>
+<div class="p-4 flex flex-col gap-5">
+<!-- Skill Metadata -->
+<div>
+<h3 class="text-xs font-semibold text-on-surface uppercase tracking-wider mb-2 text-outline">Skill Metadata</h3>
+<div class="bg-surface-container-low rounded-lg p-3 space-y-2 text-xs border border-outline-variant/10">
+<div class="flex justify-between">
+<span class="text-on-surface-variant">Name</span>
+<span class="font-medium text-on-surface">Invoice Scraper v2</span>
+</div>
+<div class="flex justify-between">
+<span class="text-on-surface-variant">System</span>
+<span class="font-medium text-on-surface">SAP Fiori</span>
+</div>
+<div class="flex justify-between">
+<span class="text-on-surface-variant">Author</span>
+<span class="font-medium text-on-surface">Admin</span>
+</div>
+</div>
+</div>
+<!-- Parameter Settings -->
+<div>
+<div class="flex justify-between items-center mb-2">
+<h3 class="text-xs font-semibold text-on-surface uppercase tracking-wider text-outline">Parameters</h3>
+<button class="material-symbols-outlined text-[14px] text-tertiary">add</button>
+</div>
+<div class="space-y-2">
+<div class="flex items-center gap-2 bg-surface-container-lowest border border-outline-variant/20 p-2 rounded-md focus-within:border-tertiary focus-within:ring-1 focus-within:ring-tertiary transition-all">
+<span class="w-2 h-2 rounded-full bg-tertiary shrink-0"></span>
+<input class="bg-transparent border-none text-xs p-0 focus:ring-0 flex-1 font-mono text-tertiary" readonly="" type="text" value="date_range"/>
+<span class="text-[10px] text-on-surface-variant bg-surface-container-high px-1 rounded">IN</span>
+</div>
+<div class="flex items-center gap-2 bg-surface-container-lowest border border-outline-variant/20 p-2 rounded-md focus-within:border-tertiary focus-within:ring-1 focus-within:ring-tertiary transition-all">
+<span class="w-2 h-2 rounded-full border border-tertiary shrink-0"></span>
+<input class="bg-transparent border-none text-xs p-0 focus:ring-0 flex-1 font-mono text-on-surface" readonly="" type="text" value="csv_file"/>
+<span class="text-[10px] text-on-surface-variant bg-surface-container-high px-1 rounded">OUT</span>
+</div>
+</div>
+</div>
+<!-- Script Preview -->
+<div>
+<h3 class="text-xs font-semibold text-on-surface uppercase tracking-wider mb-2 text-outline flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">code</span> Script Preview
+                     </h3>
+<div class="bg-inverse-surface text-inverse-on-surface rounded-lg p-3 font-mono text-[10px] overflow-x-auto border border-outline-variant/20 leading-relaxed">
+<pre><code>await page.locator(
+  'button#btn-export-csv'
+).click({
+  timeout: 5000
+});
+
+// AI Healing enabled
+if (healingActive) {
+  // fallback logic
+}</code></pre>
+</div>
+</div>
+</div>
+</aside>
+</div>
+</body></html>

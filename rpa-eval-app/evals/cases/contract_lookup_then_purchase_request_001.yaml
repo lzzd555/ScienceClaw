@@ -1,0 +1,58 @@
+id: contract_lookup_then_purchase_request_001
+name: 先核对合同再创建采购申请
+tags: [e2e, contracts, purchase_requests, data_flow]
+user:
+  username: buyer
+  password: buyer123
+start_path: /contracts
+timeout_s: 240
+instruction: >
+  先在合同管理中查找并打开合同 CT-2026-RPA-001，读取详情页中的供应商编号、
+  归口部门和有效期截止日，确认合同处于生效中。确认合同信息后，进入新建采购申请页面，
+  基于该合同创建采购申请 PR-2026-RPA-NEW-001，标题为采购流程RPA追加许可申请。
+  申请部门使用刚才从合同详情读取到的归口部门，申请人为王敏，明细为
+  RPA采购审批机器人许可 5 个、单价 6800，成本中心使用“供应商编号-RPA-2026”的格式，
+  并提交申请。
+expected:
+  entity_ids:
+    source_contract_number: CT-2026-RPA-001
+    supplier_number: SUP-2026-001
+    purchase_request_number: PR-2026-RPA-NEW-001
+  purchase_request:
+    status: submitted
+    total_amount: 34000
+pre_api_assertions:
+  - name: purchase_request_not_present_before_run
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    absent: true
+api_assertions:
+  - name: source_contract_still_available
+    path: /api/contracts
+    find:
+      number: CT-2026-RPA-001
+    expect:
+      supplier_number: SUP-2026-001
+      status: effective
+      amount: 680000.0
+      end_date: "2026-12-31"
+  - name: created_purchase_request_from_verified_contract
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    expect:
+      title: 采购流程RPA追加许可申请
+      contract_number: CT-2026-RPA-001
+      department: 采购管理部
+      requester: 王敏
+      status: submitted
+      total_amount: 34000.0
+      items:
+        - name: RPA采购审批机器人许可
+          quantity: 5
+          unit_price: 6800.0
+          cost_center: SUP-2026-001-RPA-2026
+assertions:
+  accepted_trace_min: 2
+  diagnostics_max: 0

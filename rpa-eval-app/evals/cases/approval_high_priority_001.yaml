@@ -1,0 +1,30 @@
+id: approval_high_priority_001
+name: 审批高优先级采购订单
+tags: [approvals]
+user:
+  username: approver
+  password: approver123
+start_path: /approvals
+timeout_s: 120
+instruction: >
+  当前在审批待办页面。请找到采购订单 PO-2026-RPA-001 的高优先级审批，
+  添加意见“同意采购订单进入执行”，并完成审批。
+expected:
+  entity_ids:
+    purchase_order_number: PO-2026-RPA-001
+    approval_task_id: TASK-2026-RPA-001
+  approval:
+    status: approved
+    decision: approved
+api_assertions:
+  - name: approval_task_state
+    path: /api/approvals
+    find:
+      task_id: TASK-2026-RPA-001
+    expect:
+      purchase_order_number: PO-2026-RPA-001
+      status: approved
+      decision: approved
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

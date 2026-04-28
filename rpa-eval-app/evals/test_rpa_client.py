@@ -1,0 +1,114 @@
+import json
+import sys
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from rpa_client import RpaClawClient, RpaClawTimeoutError, parse_sse_lines
+
+
+class FakeResponse:
+    def __init__(self, body: dict):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return json.dumps(self.body).encode("utf-8")
+
+
+class RpaClawClientTests(unittest.TestCase):
+    def test_resolves_model_config_id_by_model_name(self):
+        requests = []
+
+        def fake_urlopen(req, timeout):
+            requests.append(req)
+            return FakeResponse(
+                {
+                    "data": [
+                        {"id": "model-a", "name": "Fast", "model_name": "fast-model"},
+                        {"id": "model-b", "name": "Deep", "model_name": "deep-model"},
+                    ]
+                }
+            )
+
+        with patch("rpa_client.request.urlopen", fake_urlopen):
+            client = RpaClawClient("http://rpaclaw", model_name="deep-model")
+
+        self.assertEqual(client.model_config_id, "model-b")
+        self.assertEqual(requests[0].full_url, "http://rpaclaw/api/v1/models")
+
+    def test_chat_payload_includes_resolved_model_config_id(self):
+        client = RpaClawClient("http://rpaclaw", model_config_id="model-b")
+        req = client._request("POST", "/api/v1/rpa/session/s1/chat", {"message": "do it", "mode": "chat"})
+
+        self.assertEqual(json.loads(req.data.decode("utf-8"))["model_config_id"], "model-b")
+
+    def test_stop_session_posts_to_stop_endpoint(self):
+        requests = []
+
+        def fake_urlopen(req, timeout):
+            requests.append(req)
+            return FakeResponse({"status": "success"})
+
+        with patch("rpa_client.request.urlopen", fake_urlopen):
+            client = RpaClawClient("http://rpaclaw")
+            client.stop_session("session-1")
+
+        self.assertEqual(requests[0].get_method(), "POST")
+        self.assertEqual(requests[0].full_url, "http://rpaclaw/api/v1/rpa/session/session-1/stop")
+
+    def test_run_instruction_times_out_and_stops_session(self):
+        client = RpaClawClient("http://rpaclaw")
+        stopped = []
+
+        client.start_session = lambda _case_id: "session-1"
+        client.navigate = lambda _session_id, _url: None
+        client.stop_session = lambda session_id, ignore_errors=False: stopped.append((session_id, ignore_errors))
+
+        def slow_events(_session_id, _instruction):
+            yield {"event": "agent_thought", "data": {"message": "started"}}
+            time.sleep(0.2)
+            yield {"event": "agent_done", "data": {}}
+
+        client.iter_chat_events = slow_events
+
+        with self.assertRaises(RpaClawTimeoutError) as raised:
+            client.run_instruction(
+                case_id="case-1",
+                start_url="http://eval/login",
+                instruction="do it",
+                timeout_s=0.05,
+            )
+
+        self.assertEqual(raised.exception.session_id, "session-1")
+        self.assertEqual(raised.exception.raw_events[0]["event"], "agent_thought")
+        self.assertIn(("session-1", True), stopped)
+
+    def test_parse_sse_lines_stops_after_agent_aborted(self):
+        lines = [
+            "event: agent_thought\n",
+            "data: {\"text\":\"thinking\"}\n",
+            "\n",
+            "event: agent_aborted\n",
+            "data: {\"reason\":\"failed\"}\n",
+            "\n",
+            "event: agent_thought\n",
+            "data: {\"text\":\"should not be consumed\"}\n",
+            "\n",
+        ]
+
+        events = list(parse_sse_lines(lines, stop_on_terminal=True))
+
+        self.assertEqual([event["event"] for event in events], ["agent_thought", "agent_aborted"])
+
+
+if __name__ == "__main__":
+    unittest.main()

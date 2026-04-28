@@ -1,0 +1,45 @@
+id: purchase_request_create_001
+name: 创建固定采购申请
+tags: [purchase_requests]
+user:
+  username: buyer
+  password: buyer123
+start_path: /purchase-requests/new
+timeout_s: 150
+instruction: >
+  当前在新建采购申请页面。请基于合同 CT-2026-RPA-001 创建采购申请 PR-2026-RPA-NEW-001，标题为
+  采购流程RPA追加许可申请，申请部门采购管理部，申请人王敏，明细为
+  RPA采购审批机器人许可 5 个、单价 6800、成本中心 PROC-RPA-2026。
+expected:
+  entity_ids:
+    contract_number: CT-2026-RPA-001
+    purchase_request_number: PR-2026-RPA-NEW-001
+  purchase_request:
+    status: submitted
+    total_amount: 34000
+pre_api_assertions:
+  - name: purchase_request_not_present_before_run
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    absent: true
+api_assertions:
+  - name: created_purchase_request
+    path: /api/purchase-requests
+    find:
+      number: PR-2026-RPA-NEW-001
+    expect:
+      title: 采购流程RPA追加许可申请
+      contract_number: CT-2026-RPA-001
+      department: 采购管理部
+      requester: 王敏
+      status: submitted
+      total_amount: 34000.0
+      items:
+        - name: RPA采购审批机器人许可
+          quantity: 5
+          unit_price: 6800.0
+          cost_center: PROC-RPA-2026
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

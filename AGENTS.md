@@ -114,6 +114,23 @@ Routes defined in `src/main.ts`:
 
 The RPA module records user browser actions and generates Playwright scripts. Supports two modes: **Docker sandbox mode** and **local mode**.
 
+### RPA/Agent 架构专项军规
+
+- **军规 1：RPA 录制主路径坚持 Trace-first。**
+  录制阶段优先真实操作浏览器并记录 trace，不在录制时构建重型 contract 中间层。自然语言步骤可以生成 Python Playwright 代码完成当前操作，但录制目标是“快速、可观察、可追踪地完成当前步骤”，泛化与去冗余主要留到录制完成后的技能编译与回放验证阶段处理。
+
+- **军规 2：禁止做经验规则驱动的 Agent。**
+  经验库、失败模式、selector 经验、站点经验只能作为 repair 的轻量提示，不能替代 Planner/LLM 的语义理解职责，不能强制改写执行策略，也不能因为“看起来可能不稳定”而阻止非危险代码先真实执行。
+
+- **军规 3：失败事实优先，经验提示辅助。**
+  repair 输入必须优先保留原始错误日志、当前 URL/title、失败代码/计划摘要和执行结果。经验提示只允许作为低优先级 advisory hint；当事实日志与经验提示冲突时，必须以事实日志和当前页面状态为准。
+
+- **军规 4：安全拦截和稳定性建议必须分层。**
+  shell、文件系统破坏、无限循环、敏感本地访问等安全风险可以在执行前拦截；selector 脆弱、空提取、导航慢、页面结构变化等稳定性问题不应预拦截，而应执行后基于失败事实进入 repair。
+
+- **军规 5：Fallback 只能救急，不能反客为主。**
+  `_infer_*`、关键词匹配、站点模板、经验提示、候选 selector 表都只能辅助局部失败恢复。一旦它们开始主导主路径行为，应回到第一性原理重新审视架构边界，而不是继续补规则。
+
 ### Modes
 - **Docker mode** (`STORAGE_BACKEND=docker`): Playwright runs in sandbox container, uses VNC for display
 - **Local mode** (`STORAGE_BACKEND=local`): Playwright runs on host machine, uses CDP screencast for display

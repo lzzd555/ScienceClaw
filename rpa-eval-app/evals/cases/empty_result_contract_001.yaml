@@ -1,0 +1,21 @@
+id: empty_result_contract_001
+name: 合同空结果处理
+tags: [smoke, contracts, empty_result]
+user:
+  username: buyer
+  password: buyer123
+start_path: /contracts
+timeout_s: 90
+instruction: >
+  当前在合同管理页面。请搜索不存在的合同编号 CT-2026-RPA-NOT-FOUND，确认列表为空，
+  不要误打开其他合同，并给出没有匹配结果的结论。
+expected:
+  final_url_path: /contracts
+  empty_result:
+    query: CT-2026-RPA-NOT-FOUND
+    should_open_record: false
+  output_text:
+    - 没有匹配结果
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

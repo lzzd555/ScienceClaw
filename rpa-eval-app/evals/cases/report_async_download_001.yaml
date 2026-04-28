@@ -1,0 +1,41 @@
+id: report_async_download_001
+name: 生成并下载异步汇总报表
+tags: [reports, async]
+user:
+  username: buyer
+  password: buyer123
+start_path: /reports
+timeout_s: 150
+instruction: >
+  当前在报表中心页面。请发起供应商采购汇总异步报表，轮询任务 RPT-2026-RPA-001 直到完成，
+  下载 supplier_purchase_summary_2026.xlsx。
+expected:
+  entity_ids:
+    report_job_id: RPT-2026-RPA-001
+  report:
+    status: completed
+    filename: supplier_purchase_summary_2026.xlsx
+pre_api_assertions:
+  - name: async_report_not_downloaded_before_run
+    path: /api/reports/download-events
+    find:
+      filename: supplier_purchase_summary_2026.xlsx
+    absent: true
+api_assertions:
+  - name: async_report_state
+    path: /api/reports
+    find:
+      job_id: RPT-2026-RPA-001
+    expect:
+      job_id: RPT-2026-RPA-001
+      status: completed
+      filename: supplier_purchase_summary_2026.xlsx
+  - name: async_report_download_triggered
+    path: /api/reports/download-events
+    find:
+      filename: supplier_purchase_summary_2026.xlsx
+    expect:
+      source: async_supplier_purchase_summary
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

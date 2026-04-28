@@ -52,7 +52,7 @@ from backend.user.dependencies import get_current_user, require_user, User
 from backend.models import get_model_config
 from backend.config import settings
 from backend.browser_preview import browser_preview_registry
-from backend.rpa.screencast import ScreencastService
+from backend.rpa.screencast import SessionScreencastController
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -110,7 +110,7 @@ class GetSessionData(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(default="", description="User message content")
     timestamp: Optional[int] = Field(default=None, description="Message timestamp")
-    event_id: Optional[str] = Field(default=None, description="Event ID")
+    event_id: Optional[str] = Field(default=None, description="SSE reconnection cursor event ID")
     attachments: Optional[List[str]] = Field(default=None, description="Attachment path list")
     language: Optional[str] = Field(default=None, description="User interface language (e.g. 'zh', 'en')")
     model_config_id: Optional[str] = Field(default=None, description="Model config ID to use (overrides session default)")
@@ -194,6 +194,20 @@ def _append_session_event(session: Any, event: Dict[str, Any]) -> None:
         if isinstance(content, str) and content.strip():
             setattr(session, "latest_message", content)
             setattr(session, "latest_message_at", int(data.get("timestamp") or _now_ts()))
+
+
+def _create_user_message_event(
+    message: str,
+    attachments: List[str],
+    timestamp: Optional[int] = None,
+) -> Dict[str, Any]:
+    return _wrap_event("message", {
+        "event_id": _new_event_id(),
+        "timestamp": timestamp or _now_ts(),
+        "content": message,
+        "role": "user",
+        "attachments": attachments,
+    })
 
 
 def _count_user_messages(events: List[Dict[str, Any]]) -> int:
@@ -762,6 +776,54 @@ def _list_skill_dirs(base_dir: str, builtin: bool = False) -> List[Dict[str, Any
     return skills
 
 
+def _read_recorded_skill_meta(skill_dir: _Path) -> Dict[str, Any] | None:
+    meta_path = skill_dir / "skill.meta.json"
+    if not meta_path.is_file():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("kind") != "rpa-recording":
+        return None
+    return payload
+
+
+async def _get_skill_files_payload(skill_name: str, current_user: User) -> List[Dict[str, str]]:
+    if settings.storage_backend == "local":
+        skill_dir = _Path(settings.external_skills_dir) / skill_name
+        if not skill_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+        items = []
+        for file_path in sorted(skill_dir.rglob("*")):
+            if should_skip_file(file_path):
+                continue
+            if file_path.is_file():
+                rel_path = str(file_path.relative_to(skill_dir))
+                items.append({
+                    "name": file_path.name,
+                    "path": rel_path,
+                    "type": "file",
+                })
+        return items
+
+    col = _get_repo("skills")
+    doc = await col.find_one(
+        {"user_id": current_user.id, "name": skill_name},
+        projection={"files": 1}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+    return [
+        {
+            "name": fname,
+            "path": fname,
+            "type": "file",
+        }
+        for fname in sorted(doc.get("files", {}).keys())
+    ]
+
+
 class SkillBlockRequest(BaseModel):
     blocked: bool = Field(default=True)
 
@@ -990,45 +1052,49 @@ async def list_skill_files(
 ) -> ApiResponse:
     """列出某个外置 skill 内部的文件结构。"""
     try:
-        if settings.storage_backend == "local":
-            # List from filesystem
-            skill_dir = _Path(settings.external_skills_dir) / skill_name
-            if not skill_dir.is_dir():
-                raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
-            items = []
-            for file_path in sorted(skill_dir.rglob("*")):
-                # 跳过不需要展示的文件
-                if should_skip_file(file_path):
-                    continue
-                if file_path.is_file():
-                    rel_path = str(file_path.relative_to(skill_dir))
-                    items.append({
-                        "name": file_path.name,
-                        "path": rel_path,
-                        "type": "file",
-                    })
-            return ApiResponse(data=items)
-        else:
-            # List from MongoDB
-            col = _get_repo("skills")
-            doc = await col.find_one(
-                {"user_id": current_user.id, "name": skill_name},
-                projection={"files": 1}
-            )
-            if not doc:
-                raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
-            items = []
-            for fname in sorted(doc.get("files", {}).keys()):
-                items.append({
-                    "name": fname,
-                    "path": fname,
-                    "type": "file",
-                })
-            return ApiResponse(data=items)
+        return ApiResponse(data=await _get_skill_files_payload(skill_name, current_user))
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("list_skill_files failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/skills/{skill_name}/detail", response_model=ApiResponse)
+async def get_skill_detail(
+    skill_name: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    """Return overview data for recorded RPA skills when metadata is available."""
+    try:
+        if settings.storage_backend != "local":
+            return ApiResponse(data={"can_use_overview": False, "mode": "files"})
+
+        skill_dir = _Path(settings.external_skills_dir) / skill_name
+        if not skill_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+
+        meta = _read_recorded_skill_meta(skill_dir)
+        if not meta:
+            return ApiResponse(data={"can_use_overview": False, "mode": "files"})
+
+        return ApiResponse(data={
+            "kind": "skill",
+            "mode": "recorded-overview",
+            "can_use_overview": True,
+            "name": meta.get("name") or skill_name,
+            "description": meta.get("description") or "",
+            "entry_script": meta.get("entry_script") or "skill.py",
+            "generated_at": meta.get("generated_at") or "",
+            "params": meta.get("params") or {},
+            "steps": meta.get("steps") or [],
+            "artifacts": meta.get("artifacts") or [],
+            "files": await _get_skill_files_payload(skill_name, current_user),
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("get_skill_detail failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -1657,7 +1723,6 @@ async def _agent_background_worker(
     session_id: str,
     message: str,
     attachments: List[str],
-    event_id: Optional[str] = None,
     timestamp: Optional[int] = None,
     language: Optional[str] = None,
 ) -> None:
@@ -1666,13 +1731,7 @@ async def _agent_background_worker(
     user_attachments = attachments or []
 
     if message.strip():
-        user_event = _wrap_event("message", {
-            "event_id": event_id or _new_event_id(),
-            "timestamp": timestamp or _now_ts(),
-            "content": message,
-            "role": "user",
-            "attachments": user_attachments,
-        })
+        user_event = _create_user_message_event(message, user_attachments, timestamp)
         _append_session_event(session, user_event)
         await session.save()
 
@@ -1919,7 +1978,7 @@ async def chat_with_session(
             _agent_background_worker(
                 session, session_id,
                 body.message or "", body.attachments or [],
-                event_id=body.event_id, timestamp=body.timestamp,
+                timestamp=body.timestamp,
                 language=body.language,
             )
         )
@@ -2118,9 +2177,56 @@ async def download_sandbox_file(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/{session_id}/browser/tabs/{tab_id}/activate", response_model=ApiResponse)
+async def activate_session_browser_tab(
+    session_id: str,
+    tab_id: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    if settings.storage_backend != "local":
+        raise HTTPException(status_code=400, detail="Local mode only")
+
+    try:
+        session = await async_get_science_session(session_id)
+        if session.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except ScienceSessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        result = await browser_preview_registry.activate_tab(session_id, tab_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return ApiResponse(data={
+        "result": result,
+        "tabs": browser_preview_registry.list_tabs(session_id),
+    })
+
+
+@router.get("/{session_id}/browser/tabs", response_model=ApiResponse)
+async def list_session_browser_tabs(
+    session_id: str,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    if settings.storage_backend != "local":
+        raise HTTPException(status_code=400, detail="Local mode only")
+
+    try:
+        session = await async_get_science_session(session_id)
+        if session.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except ScienceSessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return ApiResponse(data={
+        "tabs": browser_preview_registry.list_tabs(session_id),
+    })
+
+
 @router.websocket("/{session_id}/browser/screencast")
 async def session_browser_screencast(websocket: WebSocket, session_id: str):
-    """Stream a local-mode chat browser page via CDP screencast."""
+    """Stream a local-mode chat browser page via CDP screencast with tab switching."""
     await websocket.accept()
 
     if settings.storage_backend != "local":
@@ -2138,14 +2244,10 @@ async def session_browser_screencast(websocket: WebSocket, session_id: str):
         await websocket.close(code=1008, reason="No active browser page")
         return
 
-    try:
-        cdp_session = await page.context.new_cdp_session(page)
-    except Exception as exc:
-        logger.error(f"Failed to create chat preview CDP session: {exc}")
-        await websocket.close(code=1011, reason="CDP session failed")
-        return
-
-    screencast = ScreencastService(cdp_session)
+    screencast = SessionScreencastController(
+        page_provider=lambda: browser_preview_registry.get_active_page(session_id),
+        tabs_provider=lambda: browser_preview_registry.list_tabs(session_id),
+    )
     try:
         await screencast.start(websocket)
     except WebSocketDisconnect:
@@ -2154,7 +2256,3 @@ async def session_browser_screencast(websocket: WebSocket, session_id: str):
         logger.error(f"Chat browser screencast error: {exc}")
     finally:
         await screencast.stop()
-        try:
-            await cdp_session.detach()
-        except Exception:
-            pass

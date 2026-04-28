@@ -1,7 +1,8 @@
 (() => {
-    if (window.__rpa_injected) return;
-    window.__rpa_injected = true;
-    window.__rpa_paused = false;
+    var docMarker = '__rpa_capture_installed__';
+    if (document[docMarker]) return;
+    document[docMarker] = true;
+    if (typeof window.__rpa_paused === 'undefined') window.__rpa_paused = false;
 
     function norm(value) {
         return (value || '').replace(/\s+/g, ' ').trim();
@@ -22,6 +23,8 @@
             if (role && INTERACTIVE_ROLES.indexOf(role) >= 0) return cur;
             cur = cur.parentElement;
         }
+        var controlledTrigger = controlledMenuTrigger(el);
+        if (controlledTrigger) return controlledTrigger;
         return el;
     }
 
@@ -155,6 +158,116 @@
         };
     }
 
+    function hasClassToken(el, pattern) {
+        if (!el || typeof el.className !== 'string') return false;
+        return pattern.test(el.className);
+    }
+
+    function closestElement(el, selector) {
+        if (!el || !el.closest) return null;
+        return el.closest(selector);
+    }
+
+    function isMenuLikeElement(el) {
+        if (!el || !el.getAttribute) return false;
+        var role = (el.getAttribute('role') || '').toLowerCase();
+        if (role === 'menu' || role === 'listbox') return true;
+        return hasClassToken(el, /(menu|dropdown|popover|popup|listbox)/i);
+    }
+
+    function controlledMenuTrigger(el) {
+        if (!isMenuLikeElement(el)) return null;
+        var id = el.id || (el.getAttribute && el.getAttribute('id')) || '';
+        if (!id || !document.querySelector) return null;
+        var owner = null;
+        try {
+            owner = document.querySelector('[aria-controls="' + cssEsc(id) + '"]');
+        } catch (error) {
+            return null;
+        }
+        if (!owner || !owner.getAttribute) return null;
+        var role = (owner.getAttribute('role') || '').toLowerCase();
+        if (owner.tagName === 'BUTTON' || owner.tagName === 'A' || role === 'button' || role === 'link') {
+            return owner;
+        }
+        return null;
+    }
+
+    function hasMenuPopupNearby(el) {
+        if (!el) return false;
+        var next = el.nextElementSibling;
+        if (isMenuLikeElement(next)) return true;
+
+        var parent = el.parentElement;
+        if (!parent) return false;
+
+        for (var child = parent.firstElementChild; child; child = child.nextElementSibling) {
+            if (child === el) continue;
+            if (isMenuLikeElement(child)) return true;
+        }
+
+        var container = closestElement(el, 'details, .js-details-container, [data-menu-trigger], [data-dropdown]');
+        if (!container) return false;
+        for (var cur = container.firstElementChild; cur; cur = cur.nextElementSibling) {
+            if (cur === el || cur.contains(el)) continue;
+            if (isMenuLikeElement(cur)) return true;
+        }
+        return false;
+    }
+
+    function isMenuItemElement(el) {
+        if (!el || !el.getAttribute) return false;
+        var role = (el.getAttribute('role') || '').toLowerCase();
+        if (['menuitem', 'menuitemcheckbox', 'menuitemradio', 'option'].indexOf(role) >= 0) return true;
+        if (closestElement(el, '[role="menu"], [role="listbox"]')) return true;
+        var cur = el;
+        while (cur && cur !== document.body) {
+            if (isMenuLikeElement(cur)) return true;
+            cur = cur.parentElement;
+        }
+        return false;
+    }
+
+    function isMenuTriggerCandidate(el) {
+        if (!el || !el.getAttribute) return false;
+        var role = (el.getAttribute('role') || '').toLowerCase();
+        var hasPopup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+        if (hasPopup === 'menu' || hasPopup === 'list' || hasPopup === 'listbox' || hasPopup === 'true') return true;
+        if (el.hasAttribute('aria-expanded')) return true;
+        var isInteractiveTriggerLike = role === 'button' || role === 'link' || el.tagName === 'BUTTON' || el.tagName === 'A';
+        return isInteractiveTriggerLike && hasMenuPopupNearby(el);
+    }
+
+    function mergeSignals(existingSignals, patchSignals) {
+        var next = Object.assign({}, existingSignals || {});
+        for (var key in patchSignals) {
+            if (!Object.prototype.hasOwnProperty.call(patchSignals, key)) continue;
+            next[key] = Object.assign({}, next[key] || {}, patchSignals[key] || {});
+        }
+        return next;
+    }
+
+    function annotateActionPayload(action, el, payload) {
+        var next = Object.assign({}, payload || {});
+        var target = retarget(el);
+        if (!target) return next;
+        if (action === 'hover' && isMenuTriggerCandidate(target)) {
+            next.signals = mergeSignals(next.signals, {
+                hover: {
+                    is_menu_trigger_candidate: true
+                }
+            });
+        }
+        if ((action === 'click' || action === 'hover') && isMenuItemElement(target)) {
+            next.signals = mergeSignals(next.signals, {
+                menu_context: {
+                    is_menu_item: true
+                }
+            });
+        }
+        return next;
+    }
+
     var _eventSequence = 0;
 
     function emit(evt) {
@@ -163,12 +276,14 @@
         evt.sequence = _eventSequence;
         evt.url = location.href;
         evt.frame_path = getFramePath();
+        if (!evt.tab_id && window.__rpa_tab_id) evt.tab_id = window.__rpa_tab_id;
         window.__rpa_emit(JSON.stringify(evt));
     }
 
     function emitAction(action, el, extra) {
         var locatorBundle = buildLocatorBundle(el);
         var payload = extra && typeof extra === 'object' ? extra : {};
+        payload = annotateActionPayload(action, el, payload);
         emit(Object.assign({
             action: action,
             locator: locatorBundle.primary,

@@ -1,0 +1,24 @@
+id: login_navigation_001
+name: 登录并进入合同管理
+tags: [smoke, login, navigation]
+user:
+  username: buyer
+  password: buyer123
+start_path: /dashboard
+timeout_s: 90
+instruction: >
+  当前在工作台页面。请通过左侧导航进入合同管理页面，确认已经打开合同台账，
+  并确认页面中可以找到合同 CT-2026-RPA-001。
+expected:
+  final_url_path: /contracts
+api_assertions:
+  - name: contract_exists_after_navigation
+    path: /api/contracts
+    find:
+      number: CT-2026-RPA-001
+    expect:
+      status: effective
+      amount: 680000.0
+assertions:
+  accepted_trace_min: 1
+  diagnostics_max: 0

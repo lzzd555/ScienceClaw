@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from backend.rpa.mcp_converter import RpaMcpConverter
 from backend.rpa.mcp_models import RpaMcpToolDefinition
@@ -6,9 +7,7 @@ from backend.rpa.mcp_models import RpaMcpToolDefinition
 
 class FakeSemanticInferer:
     async def infer(self, **_kwargs):
-        from backend.rpa.mcp_semantic_inferer import RpaMcpSemanticRecommendation
-
-        return RpaMcpSemanticRecommendation(
+        return SimpleNamespace(
             source="ai_inferred",
             tool_name="search_reports",
             display_name="Search reports",
@@ -183,6 +182,59 @@ def test_preview_builds_recommended_output_schema_from_recording_signals():
     assert preview.recommended_output_schema["properties"]["downloads"]["items"]["properties"]["filename"]["type"] == "string"
     assert "recording_signals" in preview.output_inference_report
     assert any(signal["kind"] == "extract_text" for signal in preview.output_inference_report["recording_signals"])
+
+
+def test_preview_preserves_distinct_trace_backed_steps_with_same_action_and_target():
+    target = {"method": "label", "value": "Search"}
+    steps = [
+        {
+            "id": "trace-step-1",
+            "action": "fill",
+            "target": target,
+            "value": "first query",
+            "description": "Fill first query",
+            "rpa_trace": {
+                "trace_id": "trace-first-query",
+                "trace_type": "manual_action",
+                "source": "manual",
+                "action": "fill",
+                "description": "Fill first query",
+                "locator_candidates": [{"locator": target, "selected": True}],
+                "value": "first query",
+            },
+        },
+        {
+            "id": "trace-step-2",
+            "action": "fill",
+            "target": target,
+            "value": "second query",
+            "description": "Fill second query",
+            "rpa_trace": {
+                "trace_id": "trace-second-query",
+                "trace_type": "manual_action",
+                "source": "manual",
+                "action": "fill",
+                "description": "Fill second query",
+                "locator_candidates": [{"locator": target, "selected": True}],
+                "value": "second query",
+            },
+        },
+    ]
+
+    preview = RpaMcpConverter().preview(
+        user_id="user-1",
+        session_id="session-1",
+        skill_name="search_skill",
+        name="search tool",
+        description="Search tool",
+        steps=steps,
+        params={},
+    )
+
+    assert [step["rpa_trace"]["trace_id"] for step in preview.steps] == [
+        "trace-first-query",
+        "trace-second-query",
+    ]
 
 
 def test_preview_strips_chinese_login_steps_and_infers_business_params():

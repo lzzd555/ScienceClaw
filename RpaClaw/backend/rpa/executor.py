@@ -1,15 +1,41 @@
 import json
 import logging
 import asyncio
-from typing import Dict, Any, Callable, Optional
+import inspect
+import re
+from typing import TYPE_CHECKING, Dict, Any, Callable, Optional
 
-from playwright.async_api import Browser
+if TYPE_CHECKING:
+    from playwright.async_api import Browser
+else:
+    Browser = Any
 
 from .playwright_security import get_context_kwargs
 
 logger = logging.getLogger(__name__)
 
 RPA_PAGE_TIMEOUT_MS = 60000
+TRACE_LOG_RE = re.compile(r"^TRACE_(START|DONE|ERROR)\s+(\d+):")
+
+
+def _accepts_kwarg(func: Callable[..., Any], name: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for param in signature.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == name:
+            return True
+    return False
+
+
+def _current_failed_trace_index(trace_state: Dict[str, Optional[int]]) -> Optional[int]:
+    active_index = trace_state.get("active_index")
+    if active_index is not None:
+        return active_index
+    return trace_state.get("failed_index")
 
 
 class ScriptExecutor:
@@ -37,18 +63,40 @@ class ScriptExecutor:
         namespace: Dict[str, Any] = {}
         exec(compile(script, "<rpa_script>", "exec"), namespace)
 
-        if "execute_skill" not in namespace:
+        execute_skill = namespace.get("execute_skill")
+        if not execute_skill:
             return {"success": False, "output": "", "error": "No execute_skill() function in script"}
 
         skill_kwargs = dict(kwargs or {})
         if downloads_dir:
             skill_kwargs.setdefault("_downloads_dir", downloads_dir)
 
+        trace_state: Dict[str, Optional[int]] = {"active_index": None, "failed_index": None}
+
+        def _emit_log(message: str) -> None:
+            text = str(message)
+            match = TRACE_LOG_RE.match(text)
+            if match:
+                event = match.group(1)
+                trace_index = int(match.group(2))
+                if event == "START":
+                    trace_state["active_index"] = trace_index
+                elif event == "DONE" and trace_state.get("active_index") == trace_index:
+                    trace_state["active_index"] = None
+                elif event == "ERROR":
+                    trace_state["failed_index"] = trace_index
+                    if trace_state.get("active_index") == trace_index:
+                        trace_state["active_index"] = None
+            if on_log:
+                on_log(text)
+
+        if _accepts_kwarg(execute_skill, "_on_log"):
+            skill_kwargs.setdefault("_on_log", _emit_log)
+
         async def _run():
             context = None
             try:
-                if on_log:
-                    on_log("Creating browser context...")
+                _emit_log("Creating browser context...")
                 context = await browser.new_context(**get_context_kwargs())
                 page = await context.new_page()
                 page.set_default_timeout(RPA_PAGE_TIMEOUT_MS)
@@ -71,11 +119,10 @@ class ScriptExecutor:
 
                     context.on("page", on_context_page)
 
-                if on_log:
-                    on_log("Executing script...")
+                _emit_log("Executing script...")
 
                 _result = await asyncio.wait_for(
-                    namespace["execute_skill"](page, **skill_kwargs),
+                    execute_skill(page, **skill_kwargs),
                     timeout=timeout,
                 )
                 await page.wait_for_timeout(3000)
@@ -84,15 +131,19 @@ class ScriptExecutor:
                     output = "SKILL_DATA:" + json.dumps(_result, ensure_ascii=False, default=str) + "\nSKILL_SUCCESS"
                 else:
                     output = "SKILL_SUCCESS"
-                if on_log:
-                    on_log("Execution completed successfully")
+                _emit_log("Execution completed successfully")
                 return {"success": True, "output": output, "data": _result or {}}
 
             except asyncio.TimeoutError:
                 output = f"SKILL_ERROR: Script did not complete within {timeout}s"
-                if on_log:
-                    on_log(output)
-                return {"success": False, "output": output, "error": f"Timeout after {timeout}s", "failed_step_index": None}
+                _emit_log(output)
+                failed_step_index = _current_failed_trace_index(trace_state)
+                return {
+                    "success": False,
+                    "output": output,
+                    "error": f"Timeout after {timeout}s",
+                    "failed_step_index": failed_step_index,
+                }
 
             except Exception as e:
                 failed_step_index = None
@@ -108,11 +159,12 @@ class ScriptExecutor:
                         pass
 
                 output = f"SKILL_ERROR: {original_error}"
-                if on_log:
-                    if failed_step_index is not None:
-                        on_log(f"Step {failed_step_index + 1} failed: {original_error}")
-                    else:
-                        on_log(f"Execution failed: {original_error}")
+                if failed_step_index is None:
+                    failed_step_index = _current_failed_trace_index(trace_state)
+                if failed_step_index is not None:
+                    _emit_log(f"Step {failed_step_index + 1} failed: {original_error}")
+                else:
+                    _emit_log(f"Execution failed: {original_error}")
                 return {
                     "success": False,
                     "output": output,

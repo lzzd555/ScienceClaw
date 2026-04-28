@@ -3,9 +3,9 @@ from __future__ import annotations
 
 SNAPSHOT_V2_JS = r"""() => {
     const ACTIONABLE = 'a,button,input,textarea,select,[role=button],[role=link],[role=menuitem],[role=menuitemradio],[role=tab],[role=checkbox],[role=radio],[contenteditable=true]';
-    const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,label,[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
+    const CONTENT = 'h1,h2,h3,h4,h5,h6,th,td,dt,dd,li,p,span,label,[data-field],[data-label],[data-value],[role=heading],[role=cell],[role=rowheader],[role=columnheader]';
     const recorder = globalThis.__rpaPlaywrightRecorder || null;
-    const result = { actionable_nodes: [], content_nodes: [], containers: [] };
+    const result = { actionable_nodes: [], content_nodes: [], containers: [], table_views: [], detail_views: [] };
     const containerMap = new Map();
     let actionableIndex = 1;
     let contentIndex = 1;
@@ -15,6 +15,18 @@ SNAPSHOT_V2_JS = r"""() => {
         return String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit || 160);
     }
 
+    function textOf(el, limit) {
+        return normalizeText(el ? (el.innerText || el.textContent || '') : '', limit || 200);
+    }
+
+    function classText(el) {
+        return normalizeText(el ? (el.className || '') : '', 160);
+    }
+
+    function attr(el, name, limit) {
+        return normalizeText(el ? el.getAttribute(name) || '' : '', limit || 120);
+    }
+
     function isVisible(el, rect) {
         if (!rect || rect.width <= 0 || rect.height <= 0)
             return false;
@@ -22,6 +34,14 @@ SNAPSHOT_V2_JS = r"""() => {
         if (!style)
             return false;
         return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+
+    function isHiddenByStyle(el) {
+        if (!el)
+            return true;
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return !style || style.display === 'none' || style.visibility === 'hidden' || rect.width <= 0 || rect.height <= 0;
     }
 
     function centerPoint(rect) {
@@ -50,6 +70,25 @@ SNAPSHOT_V2_JS = r"""() => {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
         };
+    }
+
+    function escapeCssAttributeValue(value) {
+        return String(value || '')
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function escapeCssIdentifier(value) {
+        const raw = String(value || '').trim();
+        if (!raw)
+            return '';
+        try {
+            if (globalThis.CSS && CSS.escape)
+                return CSS.escape(raw);
+        } catch (e) {}
+        return raw.replace(/[^a-zA-Z0-9_-]/g, match => '\\' + match);
     }
 
     function fallbackRole(el) {
@@ -99,6 +138,7 @@ SNAPSHOT_V2_JS = r"""() => {
             return '';
         const tag = el.tagName.toLowerCase();
         const role = el.getAttribute('role') || '';
+        const className = normalizeText(el.className || '', 120).toLowerCase();
         if (tag === 'table' || role === 'table' || role === 'grid')
             return 'table';
         if (tag === 'ul' || tag === 'ol' || role === 'list')
@@ -111,6 +151,22 @@ SNAPSHOT_V2_JS = r"""() => {
             return 'form_section';
         if (tag === 'article')
             return 'card_group';
+        if (/\bcard\b/.test(className))
+            return 'card';
+        if (/\bpanel\b/.test(className))
+            return 'panel';
+        if (/\bform\b/.test(className))
+            return 'form_section';
+        if (/\bdetail\b|\binfo\b|\bsummary\b|\bprofile\b/.test(className))
+            return 'detail_section';
+        if (el.hasAttribute('data-section') || el.hasAttribute('data-region'))
+            return 'section';
+        if (role === 'region')
+            return 'section';
+        if (el.querySelector('table,[role=table],[role=grid]'))
+            return 'detail_section';
+        if (el.querySelector('label,[data-field],[data-value],[data-label],dt,dd'))
+            return 'detail_section';
         return '';
     }
 
@@ -127,8 +183,60 @@ SNAPSHOT_V2_JS = r"""() => {
         return direct;
     }
 
+    function isMeaningfulBusinessContainer(el) {
+        if (!el)
+            return false;
+        const tag = el.tagName.toLowerCase();
+        const role = el.getAttribute('role') || '';
+        if (!['div', 'main', 'aside', 'nav', 'header', 'footer'].includes(tag) && !['region', 'group'].includes(role))
+            return false;
+
+        const className = normalizeText(el.className || '', 120).toLowerCase();
+        const directLabel = normalizeText(
+            [
+                el.getAttribute('aria-label'),
+                el.getAttribute('title'),
+                el.getAttribute('data-section'),
+                el.getAttribute('data-region'),
+                el.getAttribute('data-card'),
+                el.getAttribute('data-panel'),
+            ].filter(Boolean).join(' '),
+            120
+        ).toLowerCase();
+        const hasExplicitCue = Boolean(
+            directLabel ||
+            el.hasAttribute('aria-label') ||
+            el.hasAttribute('title') ||
+            el.hasAttribute('data-section') ||
+            el.hasAttribute('data-region') ||
+            el.hasAttribute('data-card') ||
+            el.hasAttribute('data-panel')
+        );
+        const keywordHit = /\b(card|panel|section|form|detail|info|summary|profile|content|record)\b/.test(className + ' ' + directLabel);
+        if (!hasExplicitCue && !keywordHit)
+            return false;
+
+        const structuralHit = Boolean(el.querySelector('h1,h2,h3,h4,h5,h6,table,[role=table],[role=grid],label,[data-field],[data-value],[data-label],dt,dd'));
+        const meaningfulChildren = el.querySelectorAll('h1,h2,h3,h4,h5,h6,table,[role=table],[role=grid],label,[data-field],[data-value],[data-label],dt,dd,button,a,input,textarea,select').length;
+        return structuralHit || meaningfulChildren >= 3;
+    }
+
+    function findContainerElement(el) {
+        const explicitContainer = el.closest('table,[role=table],[role=grid],ul,ol,[role=list],form,[role=toolbar],section,article');
+        if (explicitContainer)
+            return explicitContainer;
+
+        let current = el.parentElement;
+        while (current) {
+            if (isMeaningfulBusinessContainer(current))
+                return current;
+            current = current.parentElement;
+        }
+        return null;
+    }
+
     function ensureContainer(el) {
-        const containerEl = el.closest('table,[role=table],[role=grid],ul,ol,[role=list],form,[role=toolbar],section,article');
+        const containerEl = findContainerElement(el);
         if (!containerEl)
             return '';
         if (containerMap.has(containerEl))
@@ -147,6 +255,36 @@ SNAPSHOT_V2_JS = r"""() => {
         containerMap.set(containerEl, container);
         result.containers.push(container);
         return container.container_id;
+    }
+
+    function buildContentLocator(el, role, name, text, placeholder, title) {
+        const dataField = normalizeText(el.getAttribute('data-field') || '', 80);
+        const dataLabel = normalizeText(el.getAttribute('data-label') || '', 80);
+        const dataValue = normalizeText(el.getAttribute('data-value') || '', 80);
+        const stableAttributes = [
+            { attr: 'data-field', value: dataField, reason: 'stable data-field locator' },
+            { attr: 'data-label', value: dataLabel, reason: 'stable data-label locator' },
+            { attr: 'data-value', value: dataValue, reason: 'stable data-value locator' },
+        ];
+        for (const item of stableAttributes) {
+            if (!item.value)
+                continue;
+            const cssValue = escapeCssAttributeValue(item.value);
+            const cssSelector = '[' + item.attr + '="' + cssValue + '"]';
+            return {
+                primary: { method: 'css', value: cssSelector },
+                candidates: [{
+                    kind: 'css',
+                    selected: true,
+                    locator: { method: 'css', value: cssSelector },
+                    strict_match_count: 1,
+                    visible_match_count: 1,
+                    reason: item.reason,
+                }],
+                validation: { status: 'stable', details: item.reason, selected_candidate_index: 0, selected_candidate_kind: 'css' },
+            };
+        }
+        return buildFallbackLocator(el, role, name, text, placeholder, title);
     }
 
     function buildFallbackLocator(el, role, name, text, placeholder, title) {
@@ -219,6 +357,10 @@ SNAPSHOT_V2_JS = r"""() => {
 
     function semanticKind(el, role) {
         const tag = el.tagName.toLowerCase();
+        const className = normalizeText(el.className || '', 80);
+        const dataField = normalizeText(el.getAttribute('data-field') || '', 80);
+        const dataLabel = normalizeText(el.getAttribute('data-label') || '', 80);
+        const dataValue = normalizeText(el.getAttribute('data-value') || '', 80);
         if (role === 'heading' || /^h[1-6]$/.test(tag))
             return 'heading';
         if (tag === 'td' || role === 'cell')
@@ -227,9 +369,378 @@ SNAPSHOT_V2_JS = r"""() => {
             return 'header_cell';
         if (tag === 'li')
             return 'item';
-        if (tag === 'label')
+        if (tag === 'label' || /label/i.test(className) || dataLabel)
             return 'label';
+        if (dataField || dataValue || /value/i.test(className))
+            return 'field_value';
         return 'text';
+    }
+
+    function columnRole(header, colId, sampleTexts, hasCheckbox, hasLink) {
+        const text = normalizeText([header, colId, sampleTexts.join(' ')].join(' '), 240).toLowerCase();
+        if (hasCheckbox || /selection|select/.test(text))
+            return 'selection';
+        if (/index|序号|编号/.test(text) || (sampleTexts.length > 0 && sampleTexts.every(value => /^\d+$/.test(value))))
+            return 'row_index';
+        if (hasLink || /\.xlsx|\.xls|\.csv|file|文件/.test(text))
+            return 'file_link';
+        if (/finish|success|failed|status|状态/.test(text))
+            return 'status';
+        if (/\d{4}-\d{2}-\d{2}|time|date|时间|日期/.test(text))
+            return 'datetime';
+        return 'text';
+    }
+
+    function valueKind(text) {
+        const value = normalizeText(text || '', 120);
+        if (!value || value === '-')
+            return 'empty';
+        if (/^-?\d+(?:\.\d+)?$/.test(value))
+            return 'number';
+        if (/^\d{4}-\d{2}-\d{2}/.test(value))
+            return 'date';
+        if (/^(finish|success|failed|approved|pending)$/i.test(value))
+            return 'status';
+        return 'text';
+    }
+
+    function colIdFrom(el) {
+        return attr(el, 'data-colid', 80) || Array.from(el.classList || []).find(cls => /^col_/.test(cls)) || '';
+    }
+
+    function headingText(el) {
+        if (!el)
+            return '';
+        if (el.matches && el.matches('h1,h2,h3,h4,h5,h6,[role=heading],.title,.panel-title,.card-title,.aui-title'))
+            return textOf(el, 120);
+        const heading = el.querySelector && el.querySelector('h1,h2,h3,h4,h5,h6,[role=heading],.title,.panel-title,.card-title,.aui-title');
+        return textOf(heading, 120);
+    }
+
+    function nearestTableTitle(root) {
+        let current = root;
+        let depth = 0;
+        while (current && current !== document.body && depth < 6) {
+            const internalTitle = headingText(current);
+            if (internalTitle)
+                return { title: internalTitle, source: 'ancestor_heading' };
+
+            let sibling = current.previousElementSibling;
+            let siblingDistance = 0;
+            while (sibling && siblingDistance < 4) {
+                const title = headingText(sibling);
+                if (title)
+                    return { title, source: 'nearest_preceding_heading' };
+                sibling = sibling.previousElementSibling;
+                siblingDistance += 1;
+            }
+
+            current = current.parentElement;
+            depth += 1;
+        }
+        return { title: '', source: '' };
+    }
+
+    function collectJalorGridTableView(root) {
+        const headerCells = Array.from(root.querySelectorAll('.jalor-igrid-head tbody.igrid-head td'));
+        const bodyRows = Array.from(root.querySelectorAll('.jalor-igrid-body tbody.igrid-data tr.grid-row'))
+            .filter(row => !row.matches('tr.grid-row-group') && row.querySelector('td'));
+        if (!headerCells.length || !bodyRows.length)
+            return null;
+
+        const headerByField = new Map();
+        const headerByCol = new Map();
+        const headers = [];
+        headerCells.forEach((cell, index) => {
+            const fieldName = attr(cell, 'field', 80);
+            const colNumber = attr(cell, '_col', 40);
+            const header = textOf(cell, 120);
+            const columnId = fieldName || colNumber || `index:${index}`;
+            const record = {
+                index,
+                column_id: columnId,
+                field: fieldName,
+                col: colNumber,
+                header,
+                role: '',
+            };
+            headers.push(record);
+            if (fieldName)
+                headerByField.set(fieldName, record);
+            if (colNumber)
+                headerByCol.set(colNumber, record);
+        });
+
+        const bodyTable = root.querySelector('.jalor-igrid-body table');
+        const bodyTableId = attr(bodyTable, 'id', 120);
+        const rowSelector = bodyTableId ? `#${escapeCssIdentifier(bodyTableId)} tbody.igrid-data tr.grid-row` : '.jalor-igrid-body tbody.igrid-data tr.grid-row';
+        const rows = [];
+        const columnSamples = new Map();
+        for (const row of bodyRows.slice(0, 10)) {
+            const rowIndex = rows.length;
+            const cells = [];
+            const cellEls = Array.from(row.querySelectorAll('td')).filter(cell => !cell.closest('tr.grid-row-group'));
+            cellEls.forEach((cell, cellIndex) => {
+                const fieldName = attr(cell, 'field', 80);
+                const colNumber = attr(cell, '_col', 40);
+                const columnKey = fieldName || colNumber || `index:${cellIndex}`;
+                const headerRecord = (fieldName ? headerByField.get(fieldName) : null) || (colNumber ? headerByCol.get(colNumber) : null) || headers[cellIndex];
+                const text = textOf(cell, 200);
+                const actions = Array.from(cell.querySelectorAll('a,button,input[type=checkbox],[role=button],[role=link]')).slice(0, 4).map(action => {
+                    const tag = action.tagName.toLowerCase();
+                    const role = getRole(action) || tag;
+                    const label = getAccessibleName(action) || textOf(action, 120) || role;
+                    const selector = fieldName
+                        ? `td[field="${escapeCssAttributeValue(fieldName)}"] ${tag}`
+                        : (colNumber ? `td[_col="${escapeCssAttributeValue(colNumber)}"] ${tag}` : `td:nth-child(${cellIndex + 1}) ${tag}`);
+                    return {
+                        kind: role,
+                        label,
+                        locator: { method: 'relative_css', scope: 'row', value: selector },
+                    };
+                });
+                cells.push({
+                    column_id: headerRecord ? headerRecord.column_id : columnKey,
+                    field: fieldName,
+                    col: colNumber,
+                    column_index: cellIndex,
+                    column_header: headerRecord ? headerRecord.header : '',
+                    text,
+                    value_kind: valueKind(text),
+                    row_local_actions: actions,
+                    actions,
+                });
+                if (!columnSamples.has(columnKey))
+                    columnSamples.set(columnKey, { texts: [], hasCheckbox: false, hasLink: false });
+                const sample = columnSamples.get(columnKey);
+                if (text)
+                    sample.texts.push(text);
+                sample.hasCheckbox = sample.hasCheckbox || Boolean(cell.querySelector('input[type=checkbox]'));
+                sample.hasLink = sample.hasLink || Boolean(cell.querySelector('a,[role=link]'));
+            });
+            rows.push({
+                index: rowIndex,
+                source_row_index: attr(row, '_row', 40),
+                cells,
+                locator_hints: [
+                    {
+                        kind: 'playwright',
+                        expression: "page.locator('" + rowSelector + "').nth(" + rowIndex + ")",
+                    },
+                ],
+            });
+        }
+
+        const columns = headers.map((header, index) => {
+            const sample = columnSamples.get(header.field || header.col || `index:${index}`) || { texts: [], hasCheckbox: false, hasLink: false };
+            return {
+                index,
+                column_id: header.column_id,
+                field: header.field,
+                col: header.col,
+                header: header.header,
+                role: columnRole(header.header, header.column_id, sample.texts.slice(0, 5), sample.hasCheckbox, sample.hasLink),
+                sample_values: sample.texts.slice(0, 3),
+            };
+        });
+
+        const explicitTitle = attr(root, 'aria-label', 120) || attr(root, 'title', 120);
+        const nearbyTitle = nearestTableTitle(root);
+        const title = explicitTitle || nearbyTitle.title;
+        return {
+            kind: 'table_view',
+            framework_hint: 'jalor-igrid',
+            title,
+            title_source: explicitTitle ? 'root_attribute' : nearbyTitle.source,
+            nearby_headings: nearbyTitle.title ? [nearbyTitle.title] : [],
+            row_count_observed: bodyRows.length,
+            columns,
+            rows,
+            auxiliary_text: [],
+        };
+    }
+
+    function collectTableViews() {
+        const views = [];
+        const jalorViews = Array.from(document.querySelectorAll('.jalor-igrid'))
+            .map(root => collectJalorGridTableView(root))
+            .filter(Boolean);
+        views.push(...jalorViews);
+
+        const gridRoots = Array.from(document.querySelectorAll('.aui-grid, [role=grid], table'))
+            .map(el => el.closest('.aui-grid') || el)
+            .filter((el, index, arr) => el && !el.closest('.jalor-igrid') && arr.indexOf(el) === index);
+
+        for (const root of gridRoots.slice(0, 8)) {
+            const headerCells = Array.from(root.querySelectorAll('thead th,[role=columnheader]'));
+            const bodyRows = Array.from(root.querySelectorAll('tbody tr,[role=row]'))
+                .filter(row => row.querySelector('td,[role=cell]'));
+            if (!bodyRows.length)
+                continue;
+
+            const headerByColId = new Map();
+            const headers = [];
+            headerCells.forEach((cell, index) => {
+                const colId = colIdFrom(cell);
+                const header = textOf(cell, 120);
+                const record = { index, column_id: colId, header, role: '' };
+                headers.push(record);
+                if (colId)
+                    headerByColId.set(colId, record);
+            });
+
+            const rows = [];
+            const columnSamples = new Map();
+            for (const row of bodyRows.slice(0, 10)) {
+                const rowIndex = rows.length;
+                const cells = [];
+                const cellEls = Array.from(row.querySelectorAll('td,[role=cell]'));
+                cellEls.forEach((cell, cellIndex) => {
+                    const colId = colIdFrom(cell);
+                    const headerRecord = colId ? headerByColId.get(colId) : headers[cellIndex];
+                    const text = textOf(cell, 200);
+                    const actions = Array.from(cell.querySelectorAll('a,button,input[type=checkbox],[role=button],[role=link]')).slice(0, 4).map(action => {
+                        const tag = action.tagName.toLowerCase();
+                        const role = getRole(action) || tag;
+                        const label = getAccessibleName(action) || textOf(action, 120) || role;
+                        const selector = colId
+                            ? `td[data-colid="${escapeCssAttributeValue(colId)}"] ${tag}`
+                            : `td:nth-child(${cellIndex + 1}) ${tag}`;
+                        return {
+                            kind: role,
+                            label,
+                            locator: { method: 'relative_css', scope: 'row', value: selector },
+                        };
+                    });
+                    const record = {
+                        column_id: colId,
+                        column_index: cellIndex,
+                        column_header: headerRecord ? headerRecord.header : '',
+                        text,
+                        value_kind: valueKind(text),
+                        row_local_actions: actions,
+                        actions,
+                    };
+                    cells.push(record);
+                    const key = colId || `index:${cellIndex}`;
+                    if (!columnSamples.has(key))
+                        columnSamples.set(key, { texts: [], hasCheckbox: false, hasLink: false });
+                    const sample = columnSamples.get(key);
+                    if (text)
+                        sample.texts.push(text);
+                    sample.hasCheckbox = sample.hasCheckbox || Boolean(cell.querySelector('input[type=checkbox]'));
+                    sample.hasLink = sample.hasLink || Boolean(cell.querySelector('a,[role=link]'));
+                });
+                rows.push({
+                    index: rowIndex,
+                    cells,
+                    locator_hints: [
+                        {
+                            kind: 'playwright',
+                            expression: "page.locator('tbody tr').nth(" + rowIndex + ")",
+                        },
+                    ],
+                });
+            }
+
+            const columns = [];
+            const maxCells = Math.max(...rows.map(row => row.cells.length));
+            for (let index = 0; index < maxCells; index++) {
+                const firstCell = rows.map(row => row.cells[index]).find(Boolean) || {};
+                const colId = firstCell.column_id || (headers[index] || {}).column_id || '';
+                const header = (headers.find(item => item.column_id && item.column_id === colId) || headers[index] || {}).header || '';
+                const sample = columnSamples.get(colId || `index:${index}`) || { texts: [], hasCheckbox: false, hasLink: false };
+                columns.push({
+                    index,
+                    column_id: colId,
+                    header,
+                    role: columnRole(header, colId, sample.texts.slice(0, 5), sample.hasCheckbox, sample.hasLink),
+                    sample_values: sample.texts.slice(0, 3),
+                });
+            }
+
+            const auxiliaryText = [];
+            for (const empty of Array.from(root.querySelectorAll('.aui-grid__empty-text')).slice(0, 3)) {
+                const text = textOf(empty, 120);
+                if (text)
+                    auxiliaryText.push({ kind: 'empty_state', text, outside_rows: true });
+            }
+            for (const tip of Array.from(root.parentElement ? root.parentElement.querySelectorAll('[role=tooltip]') : []).slice(0, 3)) {
+                const text = textOf(tip, 120);
+                if (text)
+                    auxiliaryText.push({ kind: 'tooltip', text, outside_rows: true });
+            }
+
+            const explicitTitle = attr(root, 'aria-label', 120) || attr(root, 'title', 120);
+            const nearbyTitle = nearestTableTitle(root);
+            const title = explicitTitle || nearbyTitle.title;
+
+            views.push({
+                kind: 'table_view',
+                framework_hint: classText(root).includes('aui-grid') ? 'aui-grid' : '',
+                title,
+                title_source: explicitTitle ? 'root_attribute' : nearbyTitle.source,
+                nearby_headings: nearbyTitle.title ? [nearbyTitle.title] : [],
+                row_count_observed: bodyRows.length,
+                columns,
+                rows,
+                auxiliary_text: auxiliaryText,
+            });
+        }
+        return views;
+    }
+
+    function collectDetailViews() {
+        const views = [];
+        const sections = Array.from(document.querySelectorAll('.aui-collapse-item, section, article, form, fieldset,[role=region],[role=group]'));
+        for (const section of sections.slice(0, 12)) {
+            const titleEl = section.querySelector('.aui-collapse-item__word-overflow,legend,h1,h2,h3,h4,[role=heading]');
+            const sectionTitle = textOf(titleEl, 120) || attr(section, 'aria-label', 120) || attr(section, 'title', 120);
+            const fieldEls = Array.from(section.querySelectorAll('.aui-form-item,[data-prop],dt'))
+                .filter((field, index, arr) => arr.indexOf(field) === index);
+            if (!sectionTitle && fieldEls.length < 2)
+                continue;
+
+            const fields = [];
+            for (const field of fieldEls.slice(0, 40)) {
+                const labelEl = field.querySelector('.aui-form-item__label,.field-header .label,label,dt');
+                const contentEl = field.querySelector('.aui-form-item__content,dd') || field;
+                const label = textOf(labelEl, 120).replace(/^\*\s*/, '');
+                if (!label)
+                    continue;
+                const visible = !isHiddenByStyle(field);
+                const dataProp = attr(field, 'data-prop', 120) || attr(contentEl, 'prop', 120);
+                const required = classText(field).includes('is-required') || Boolean(field.querySelector('.required'));
+                const displayValueEl = contentEl.querySelector('.aui-input-display-only__content,.aui-numeric-display-only__value,.aui-range-editor-display-only,.aui-input-display-only,.no-value,input,textarea,select');
+                let value = textOf(displayValueEl, 200);
+                if (!value && displayValueEl && ('value' in displayValueEl))
+                    value = normalizeText(displayValueEl.value || '', 200);
+                fields.push({
+                    label,
+                    value,
+                    data_prop: dataProp,
+                    required,
+                    visible,
+                    hidden_reason: visible ? '' : 'hidden',
+                    value_kind: valueKind(value),
+                    locator_hints: dataProp ? [
+                        {
+                            kind: 'field_container',
+                            expression: `page.locator('[data-prop="${escapeCssAttributeValue(dataProp)}"]')`,
+                        },
+                    ] : [],
+                });
+            }
+            if (fields.length) {
+                views.push({
+                    kind: 'detail_view',
+                    section_title: sectionTitle,
+                    section_locator: sectionTitle ? { method: 'text', value: sectionTitle } : {},
+                    fields,
+                });
+            }
+        }
+        return views;
     }
 
     const actionableSeen = new Set();
@@ -309,10 +820,14 @@ SNAPSHOT_V2_JS = r"""() => {
             role,
             text,
             bbox: bbox(rect),
-            locator: buildFallbackLocator(el, role, '', text, '', '').primary,
+            locator: buildContentLocator(el, role, '', text, '', '').primary,
             element_snapshot: {
                 tag: el.tagName.toLowerCase(),
                 text,
+                class: normalizeText(el.className || '', 80),
+                data_field: normalizeText(el.getAttribute('data-field') || '', 80),
+                data_label: normalizeText(el.getAttribute('data-label') || '', 80),
+                data_value: normalizeText(el.getAttribute('data-value') || '', 80),
             },
         };
         result.content_nodes.push(node);
@@ -325,5 +840,7 @@ SNAPSHOT_V2_JS = r"""() => {
             break;
     }
 
+    result.table_views = collectTableViews();
+    result.detail_views = collectDetailViews();
     return JSON.stringify(result);
 }"""
