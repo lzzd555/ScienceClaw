@@ -492,9 +492,10 @@ def _flow_profile_doc(flow: _TokenFlow) -> dict[str, Any]:
         f"{flow.producer.method} {flow.producer.url_pattern} "
         f"{flow.producer.source_kind}.{_display_path(flow.producer.source_path)}"
     )
+    deduped_consumers, source_call_ids = _dedupe_consumers(flow.consumers)
     consumer_summaries = [
         f"{c.method} {c.url_pattern} {c.location}.{_display_path(c.path)}"
-        for c in flow.consumers
+        for c in deduped_consumers
     ]
     return {
         "id": flow.id,
@@ -504,32 +505,37 @@ def _flow_profile_doc(flow: _TokenFlow) -> dict[str, Any]:
         "confidence": flow.confidence,
         "enabled_by_default": flow.confidence in ("high", "medium"),
         "reasons": flow.reasons,
+        "sample_count": len(flow.consumers),
+        "source_call_ids": source_call_ids,
     }
 
 
 def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
-    """Convert a matched flow into a persisted runtime config for injection."""
+    """Convert a matched flow into a persisted V2 runtime config."""
     producer = flow.producer
     extract_from = producer.source_kind
     extract_path = _runtime_extract_path(producer.source_kind, producer.source_path)
 
-    inject: dict[str, dict[str, str]] = {}
-    applies_to: list[dict[str, str]] = []
+    deduped_consumers, _ = _dedupe_consumers(flow.consumers)
+    consumers_v2: list[dict[str, Any]] = []
     consumer_summaries: list[str] = []
 
-    for consumer in flow.consumers:
-        applies_to.append({"method": consumer.method, "url": consumer.url_pattern})
+    for consumer in deduped_consumers:
         consumer_summaries.append(
             f"{consumer.method} {consumer.url_pattern} {consumer.location}.{consumer.path}"
         )
+        inject_doc: dict[str, dict[str, str]] = {"headers": {}, "query": {}, "body": {}}
         if consumer.location == "request.headers":
-            inject.setdefault("headers", {})[consumer.path] = "{{ " + flow.name + " }}"
-
-    setup = [{
-        "method": producer.method,
-        "url": producer.url_pattern,
-        "extract": {"from": extract_from, "path": extract_path},
-    }]
+            inject_doc["headers"][consumer.path] = "{{ " + flow.name + " }}"
+        elif consumer.location == "request.query":
+            inject_doc["query"][consumer.path] = "{{ " + flow.name + " }}"
+        elif consumer.location == "request.body":
+            inject_doc["body"][consumer.path] = "{{ " + flow.name + " }}"
+        consumers_v2.append({
+            "method": consumer.method,
+            "url": consumer.url_pattern,
+            "inject": inject_doc,
+        })
 
     producer_summary = (
         f"{producer.method} {producer.url_pattern} "
@@ -539,14 +545,28 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
     return {
         "id": flow.id,
         "name": flow.name,
-        "setup": setup,
-        "inject": inject,
-        "applies_to": applies_to,
+        "source": "auto",
+        "enabled": True,
+        "producer": {
+            "request": {
+                "method": producer.method,
+                "url": producer.url_pattern,
+                "headers": {},
+                "query": {},
+                "body": None,
+                "content_type": "",
+            },
+            "extract": [
+                {"name": flow.name, "from": extract_from, "path": extract_path, "secret": True}
+            ],
+        },
+        "consumers": consumers_v2,
         "refresh_on_status": [401, 403, 419],
         "confidence": flow.confidence,
         "summary": {
             "producer": producer_summary,
             "consumers": consumer_summaries,
+            "sample_count": len(flow.consumers),
             "reasons": flow.reasons,
         },
     }
@@ -621,3 +641,192 @@ def _parse_set_cookie(header_value: str) -> list[tuple[str, str]]:
         if name and value:
             results.append((name, value))
     return results
+
+
+# ── Consumer dedup ───────────────────────────────────────────────────────
+
+
+def _dedupe_consumers(consumers: list[_TokenConsumer]) -> tuple[list[_TokenConsumer], list[str]]:
+    seen: dict[tuple[str, str, str, str], _TokenConsumer] = {}
+    source_call_ids: list[str] = []
+    for consumer in consumers:
+        key = (consumer.method.upper(), consumer.url_pattern, consumer.location, consumer.path)
+        if key not in seen:
+            seen[key] = consumer
+        if consumer.call_id not in source_call_ids:
+            source_call_ids.append(consumer.call_id)
+    return list(seen.values()), source_call_ids
+
+
+# ── Manual token flow validation ────────────────────────────────────────
+
+ALLOWED_EXTRACT_SOURCES = {"response.body", "response.headers", "cookie", "set-cookie"}
+ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+KNOWN_PROFILE_VARIABLES = {"auth_token"}
+TOKEN_TEMPLATE_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+
+
+def _template_variables(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return set(TOKEN_TEMPLATE_RE.findall(value))
+    if isinstance(value, dict):
+        found: set[str] = set()
+        for item in value.values():
+            found.update(_template_variables(item))
+        return found
+    if isinstance(value, list):
+        found: set[str] = set()
+        for item in value:
+            found.update(_template_variables(item))
+        return found
+    return set()
+
+
+def validate_manual_token_flow(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("token flow must be an object")
+    flow_id = str(value.get("id") or "").strip()
+    name = str(value.get("name") or "").strip()
+    if not flow_id:
+        raise ValueError("token flow id is required")
+    if not name:
+        raise ValueError("token flow name is required")
+
+    producer = value.get("producer") or {}
+    request = producer.get("request") or {}
+    method = str(request.get("method") or "GET").upper()
+    url = str(request.get("url") or "").strip()
+    if method not in ALLOWED_METHODS:
+        raise ValueError("producer.request.method is invalid")
+    if not url:
+        raise ValueError("producer.request.url is required")
+
+    extracts = producer.get("extract") or []
+    if not isinstance(extracts, list) or not extracts:
+        raise ValueError("producer.extract must contain at least one item")
+    normalized_extracts = []
+    for item in extracts:
+        source = str(item.get("from") or "").strip()
+        path = str(item.get("path") or item.get("name") or "").strip()
+        token_name = str(item.get("name") or name).strip()
+        if source not in ALLOWED_EXTRACT_SOURCES:
+            raise ValueError("producer.extract.from is invalid")
+        if not path:
+            raise ValueError("producer.extract.path is required")
+        normalized_extracts.append({"name": token_name, "from": source, "path": path, "secret": True})
+    available_variables = {item["name"] for item in normalized_extracts} | KNOWN_PROFILE_VARIABLES
+
+    consumers = value.get("consumers") or []
+    if not isinstance(consumers, list) or not consumers:
+        raise ValueError("consumers must contain at least one item")
+    normalized_consumers = []
+    for consumer in consumers:
+        consumer_method = str(consumer.get("method") or "").upper()
+        consumer_url = str(consumer.get("url") or "").strip()
+        inject = consumer.get("inject") or {}
+        if consumer_method not in ALLOWED_METHODS:
+            raise ValueError("consumer.method is invalid")
+        if not consumer_url:
+            raise ValueError("consumer.url is required")
+        if not any((inject.get("headers") or {}, inject.get("query") or {}, inject.get("body") or {})):
+            raise ValueError("consumer.inject must include headers, query, or body")
+        for variable_name in sorted(_template_variables(inject)):
+            if variable_name not in available_variables:
+                raise ValueError(f"unknown template variable: {variable_name}")
+        normalized_consumers.append(
+            {
+                "method": consumer_method,
+                "url": consumer_url,
+                "inject": {
+                    "headers": dict(inject.get("headers") or {}),
+                    "query": dict(inject.get("query") or {}),
+                    "body": dict(inject.get("body") or {}),
+                },
+            }
+        )
+
+    return {
+        "id": flow_id,
+        "name": name,
+        "source": "manual",
+        "enabled": bool(value.get("enabled", True)),
+        "producer": {
+            "request": {
+                "method": method,
+                "url": url,
+                "headers": dict(request.get("headers") or {}),
+                "query": dict(request.get("query") or {}),
+                "body": request.get("body"),
+                "content_type": str(request.get("content_type") or ""),
+            },
+            "extract": normalized_extracts,
+        },
+        "consumers": normalized_consumers,
+        "refresh_on_status": list(value.get("refresh_on_status") or [401, 403, 419]),
+        "confidence": "manual",
+        "summary": value.get("summary") or {"producer": f"{method} {url}", "consumers": []},
+    }
+
+
+# ── V1 to V2 migration ──────────────────────────────────────────────────
+
+
+def normalize_token_flow_config(flow: dict[str, Any]) -> dict[str, Any]:
+    if "producer" in flow and "consumers" in flow:
+        return flow
+    if "setup" in flow and "extract" in flow and "inject" in flow:
+        return legacy_v1_to_v2(flow)
+    raise ValueError("token flow config is neither V2 nor migratable V1")
+
+
+def legacy_v1_to_v2(flow: dict[str, Any]) -> dict[str, Any]:
+    setup = flow.get("setup") or {}
+    extract = flow.get("extract") or {}
+    inject = flow.get("inject") or {}
+    method = str(inject.get("method") or "").upper()
+    url = str(inject.get("url") or "").strip()
+    location = str(inject.get("to") or "")
+    header_or_param_name = str(inject.get("name") or "").strip()
+    token_name = str(extract.get("name") or flow.get("name") or "token").strip()
+    template = "{{ " + token_name + " }}"
+    if not method or not url:
+        raise ValueError("legacy token flow inject method/url is required")
+    if location == "request.headers":
+        inject_doc: dict[str, Any] = {"headers": {header_or_param_name: template}, "query": {}, "body": {}}
+    elif location == "request.query":
+        inject_doc = {"headers": {}, "query": {header_or_param_name: template}, "body": {}}
+    elif location == "request.body":
+        inject_doc = {"headers": {}, "query": {}, "body": {header_or_param_name: template}}
+    else:
+        raise ValueError("legacy token flow inject target is unsupported")
+    return {
+        "id": str(flow.get("id") or f"flow_{token_name}"),
+        "name": token_name,
+        "source": str(flow.get("source") or "auto"),
+        "enabled": bool(flow.get("enabled", True)),
+        "producer": {
+            "request": {
+                "method": str(setup.get("method") or "GET").upper(),
+                "url": str(setup.get("url") or ""),
+                "headers": {},
+                "query": {},
+                "body": None,
+                "content_type": "",
+            },
+            "extract": [
+                {
+                    "name": token_name,
+                    "from": str(extract.get("from") or "response.body"),
+                    "path": str(extract.get("path") or ""),
+                    "secret": True,
+                }
+            ],
+        },
+        "consumers": [{"method": method, "url": url, "inject": inject_doc}],
+        "refresh_on_status": list(flow.get("refresh_on_status") or [401, 403, 419]),
+        "confidence": str(flow.get("confidence") or "medium"),
+        "summary": flow.get("summary") or {
+            "producer": f"{setup.get('method', 'GET')} {setup.get('url', '')}",
+            "consumers": [f"{method} {url} {location}.{header_or_param_name}"],
+        },
+    }

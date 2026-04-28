@@ -2,11 +2,15 @@
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
 from backend.rpa.api_monitor_token_flow import (
     build_api_monitor_token_flow_profile,
     entropy_per_char,
     is_dynamic_value_candidate,
+    validate_manual_token_flow,
+    normalize_token_flow_config,
 )
 
 
@@ -424,3 +428,154 @@ def test_profile_never_contains_token_value():
     profile_str = str(profile)
 
     assert token_value not in profile_str
+
+
+# ── Consumer dedup ────────────────────────────────────────────────────────
+
+
+def test_profile_deduplicates_repeated_same_endpoint_consumers():
+    calls = [
+        _call(
+            "producer",
+            method="GET",
+            url="https://example.test/api/session",
+            response_body='{"csrfToken":"8fa7c91e2d8a4c90b0f7"}',
+            seconds=0,
+        ),
+        _call(
+            "orders_1",
+            method="GET",
+            url="https://example.test/api/orders",
+            request_headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+            seconds=1,
+        ),
+        _call(
+            "orders_2",
+            method="GET",
+            url="https://example.test/api/orders",
+            request_headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+            seconds=2,
+        ),
+    ]
+
+    profile = build_api_monitor_token_flow_profile(calls)
+
+    assert profile["flow_count"] == 1
+    flow = profile["flows"][0]
+    assert flow["consumer_summaries"] == ["GET /api/orders request.headers.X-CSRF-Token"]
+    assert flow["sample_count"] == 2
+    assert flow["source_call_ids"] == ["orders_1", "orders_2"]
+
+
+# ── Manual token flow validation ──────────────────────────────────────────
+
+
+def test_validate_manual_token_flow_accepts_complete_config():
+    flow = validate_manual_token_flow(
+        {
+            "id": "manual_csrf",
+            "name": "csrf_token",
+            "enabled": True,
+            "source": "manual",
+            "producer": {
+                "request": {"method": "GET", "url": "/api/session"},
+                "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+            },
+            "consumers": [
+                {
+                    "method": "GET",
+                    "url": "/api/orders",
+                    "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                }
+            ],
+        }
+    )
+
+    assert flow["id"] == "manual_csrf"
+    assert flow["producer"]["request"]["method"] == "GET"
+    assert flow["consumers"][0]["inject"]["headers"] == {"X-CSRF-Token": "{{ csrf_token }}"}
+
+
+def test_validate_manual_token_flow_rejects_missing_extract():
+    with pytest.raises(ValueError, match="producer.extract"):
+        validate_manual_token_flow(
+            {
+                "id": "manual_csrf",
+                "name": "csrf_token",
+                "producer": {"request": {"method": "GET", "url": "/api/session"}, "extract": []},
+                "consumers": [{"method": "GET", "url": "/api/orders", "inject": {"headers": {}}}],
+            }
+        )
+
+
+def test_validate_manual_token_flow_rejects_unknown_template_variable():
+    with pytest.raises(ValueError, match="unknown template variable: missing_token"):
+        validate_manual_token_flow(
+            {
+                "id": "manual_csrf",
+                "name": "csrf_token",
+                "producer": {
+                    "request": {"method": "GET", "url": "/api/session"},
+                    "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                },
+                "consumers": [
+                    {
+                        "method": "GET",
+                        "url": "/api/orders",
+                        "inject": {"headers": {"X-CSRF-Token": "{{ missing_token }}"}},
+                    }
+                ],
+            }
+        )
+
+
+# ── V1 migration ──────────────────────────────────────────────────────────
+
+
+def test_normalize_token_flow_config_converts_legacy_v1_flow():
+    flow = normalize_token_flow_config(
+        {
+            "id": "legacy_csrf",
+            "name": "csrf_token",
+            "setup": {"method": "GET", "url": "/api/session"},
+            "extract": {"from": "response.body", "path": "$.csrfToken", "name": "csrf_token"},
+            "inject": {
+                "method": "GET",
+                "url": "/api/orders",
+                "to": "request.headers",
+                "name": "X-CSRF-Token",
+            },
+        }
+    )
+
+    assert flow["producer"]["request"]["method"] == "GET"
+    assert flow["producer"]["request"]["url"] == "/api/session"
+    assert flow["producer"]["extract"] == [
+        {"name": "csrf_token", "from": "response.body", "path": "$.csrfToken", "secret": True}
+    ]
+    assert flow["consumers"] == [
+        {
+            "method": "GET",
+            "url": "/api/orders",
+            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}, "query": {}, "body": {}},
+        }
+    ]
+
+
+def test_normalize_token_flow_config_passes_through_v2_flow():
+    v2_flow = {
+        "id": "flow_v2",
+        "name": "csrf_token",
+        "producer": {
+            "request": {"method": "GET", "url": "/api/session"},
+            "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+        },
+        "consumers": [
+            {
+                "method": "GET",
+                "url": "/api/orders",
+                "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+            }
+        ],
+    }
+    assert normalize_token_flow_config(v2_flow) == v2_flow
