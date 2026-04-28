@@ -23,7 +23,8 @@ from backend.rpa.api_monitor_mcp_contract import (
     sanitize_preview_mapping,
     sanitize_preview_url,
 )
-from backend.rpa.api_monitor_auth import apply_api_monitor_auth_to_request
+from backend.rpa.api_monitor_auth import apply_api_monitor_auth_to_request, apply_api_monitor_auth_to_profile
+from backend.rpa.api_monitor_runtime_profile import ApiMonitorRuntimeProfile, ApiMonitorRuntimeProfileError
 from backend.credential.vault import get_vault
 from backend.storage import get_repository
 
@@ -261,6 +262,19 @@ class ApiMonitorMcpRuntime:
             return {"success": False, "error": f"API Monitor tool '{tool_name}' has no callable URL"}
 
         has_api_monitor_auth = bool(self._server.api_monitor_auth)
+        token_flows_config = (self._server.api_monitor_auth or {}).get("token_flows", [])
+        is_v2_flows = bool(token_flows_config) and any(
+            "producer" in f and "consumers" in f for f in token_flows_config
+        )
+
+        if is_v2_flows:
+            return await self._call_tool_v2(
+                doc=doc, method=method, url=url, rendered_arguments=rendered_arguments,
+                request_base_url=request_base_url, query_mapping=query_mapping,
+                body_mapping=body_mapping, header_mapping=header_mapping,
+            )
+
+        # V1 legacy path
         request_query = _api_monitor_base_query(self._server) if not has_api_monitor_auth else {}
         request_query.update(render_mapping(query_mapping, rendered_arguments))
         request_headers: dict[str, Any] = dict(self._server.headers) if not has_api_monitor_auth else {}
@@ -283,23 +297,16 @@ class ApiMonitorMcpRuntime:
         request_body = auth_application.body
         json_body = request_body or None
 
-        # Token flow: setup/extract/inject with retry
-        token_flows_config = (self._server.api_monitor_auth or {}).get("token_flows", [])
+        # V1 Token flow: setup/extract/inject with retry
         matching_flows = _matching_token_flows(token_flows_config, method, url, doc)
 
         async with httpx.AsyncClient(timeout=_api_monitor_timeout_seconds(self._server)) as client:
             token_previews: list[dict[str, Any]] = []
-
-            # Execute setup requests for matching flows
             token_cache: dict[str, str] = {}
             for flow in matching_flows:
                 token_name = flow.get("name", "")
                 flow_id = flow.get("id", "")
                 inject_config = flow.get("inject", {})
-                refresh_statuses = flow.get("refresh_on_status", [401, 403, 419])
-                applies_to = flow.get("applies_to", [])
-
-                # Setup + extract
                 extracted_value, setup_error = await _execute_token_flow_setup(
                     client, flow, self._server,
                     base_url=request_base_url,
@@ -307,15 +314,9 @@ class ApiMonitorMcpRuntime:
                     auth_query=request_query,
                 )
                 if extracted_value is None:
-                    return {
-                        "success": False,
-                        "error": setup_error,
-                    }
+                    return {"success": False, "error": setup_error}
                 token_cache[token_name] = extracted_value
-
-                # Inject into request
                 _inject_token_values(inject_config, token_cache, request_headers, request_query)
-
                 token_previews.append({
                     "name": token_name,
                     "id": flow_id,
@@ -324,17 +325,11 @@ class ApiMonitorMcpRuntime:
                     "injected": list(inject_config.get("headers", {}).keys()),
                 })
 
-            # Build request kwargs
-            request_kwargs: dict[str, Any] = {
-                "params": request_query,
-                "headers": request_headers,
-            }
+            request_kwargs: dict[str, Any] = {"params": request_query, "headers": request_headers}
             if json_body is not None:
                 request_kwargs["json"] = json_body
-
             response = await client.request(method, url, **request_kwargs)
 
-            # Retry once on auth failure statuses
             if matching_flows and response.status_code in _all_refresh_statuses(matching_flows):
                 token_cache.clear()
                 for flow in matching_flows:
@@ -350,7 +345,6 @@ class ApiMonitorMcpRuntime:
                         _inject_token_values(
                             flow.get("inject", {}), token_cache, request_headers, request_query
                         )
-
                 request_kwargs["params"] = request_query
                 request_kwargs["headers"] = request_headers
                 response = await client.request(method, url, **request_kwargs)
@@ -376,6 +370,136 @@ class ApiMonitorMcpRuntime:
                 "query": sanitize_preview_mapping(request_query),
                 "headers": sanitize_headers(request_headers),
                 "body": sanitize_preview_mapping(json_body) if json_body is not None else None,
+                "auth": auth_preview,
+            },
+        }
+
+    async def _call_tool_v2(
+        self,
+        *,
+        doc: Mapping[str, Any],
+        method: str,
+        url: str,
+        rendered_arguments: dict[str, Any],
+        request_base_url: str,
+        query_mapping: dict[str, Any],
+        body_mapping: dict[str, Any],
+        header_mapping: dict[str, Any],
+    ) -> dict[str, Any]:
+        profile = ApiMonitorRuntimeProfile(base_url=request_base_url)
+
+        def _build_target_request_parts() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+            target_headers = {**profile.headers, **render_mapping(header_mapping, rendered_arguments)}
+            target_query = render_mapping(query_mapping, rendered_arguments)
+            target_body = render_mapping(body_mapping, rendered_arguments)
+            return target_headers, target_query, target_body
+
+        async with httpx.AsyncClient(timeout=_api_monitor_timeout_seconds(self._server)) as client:
+            # Step 1: Auth -> profile
+            auth_application = await apply_api_monitor_auth_to_profile(
+                user_id=self._server.user_id,
+                auth_config=self._server.api_monitor_auth,
+                profile=profile,
+                client=client,
+                vault=get_vault(),
+            )
+            if auth_application.error:
+                return {"success": False, "error": auth_application.error}
+
+            # Step 2: Match V2 token flows
+            token_flows_config = (self._server.api_monitor_auth or {}).get("token_flows", [])
+            tool_url = _api_monitor_tool_url(doc)
+            matching_flows = _matching_v2_token_flows(token_flows_config, method, tool_url, url)
+
+            # Step 3: Execute producers
+            for flow in matching_flows:
+                _, producer_error = await _resolve_v2_token_producer(
+                    client=client,
+                    profile=profile,
+                    base_url=request_base_url,
+                    flow=flow,
+                    build_url=_build_api_monitor_url,
+                )
+                if producer_error:
+                    return {"success": False, "error": producer_error}
+
+            # Step 4: Build target request and apply consumers
+            request_headers, request_query, request_body = _build_target_request_parts()
+            token_previews = _apply_v2_token_consumers(
+                profile=profile,
+                flows=matching_flows,
+                method=method,
+                tool_url=tool_url,
+                absolute_url=url,
+                headers=request_headers,
+                query=request_query,
+                body=request_body,
+            )
+            consumer_error = next((p.get("error") for p in token_previews if p.get("error")), "")
+            if consumer_error:
+                return {"success": False, "error": consumer_error}
+
+            # Step 5: Send target request
+            request_kwargs: dict[str, Any] = {"params": request_query, "headers": request_headers}
+            if request_body:
+                request_kwargs["json"] = request_body
+            response = await client.request(method, url, **request_kwargs)
+
+            # Step 6: Refresh on auth failure
+            refresh_statuses = _v2_refresh_statuses(matching_flows)
+            if matching_flows and response.status_code in refresh_statuses:
+                for flow in matching_flows:
+                    _, producer_error = await _resolve_v2_token_producer(
+                        client=client,
+                        profile=profile,
+                        base_url=request_base_url,
+                        flow=flow,
+                        build_url=_build_api_monitor_url,
+                    )
+                    if producer_error:
+                        return {"success": False, "error": producer_error}
+                request_headers, request_query, request_body = _build_target_request_parts()
+                token_previews = _apply_v2_token_consumers(
+                    profile=profile,
+                    flows=matching_flows,
+                    method=method,
+                    tool_url=tool_url,
+                    absolute_url=url,
+                    headers=request_headers,
+                    query=request_query,
+                    body=request_body,
+                )
+                for p in token_previews:
+                    p["refreshed"] = True
+                consumer_error = next((p.get("error") for p in token_previews if p.get("error")), "")
+                if consumer_error:
+                    return {"success": False, "error": consumer_error}
+                request_kwargs = {"params": request_query, "headers": request_headers}
+                if request_body:
+                    request_kwargs["json"] = request_body
+                response = await client.request(method, url, **request_kwargs)
+
+        content_type = response.headers.get("content-type", "")
+        try:
+            body: Any = response.json() if "json" in content_type else response.text
+        except ValueError:
+            body = response.text
+
+        auth_preview = dict(auth_application.preview) if auth_application.preview else {}
+        auth_preview["profile"] = profile.preview()
+        auth_preview["token_flows"] = token_previews
+
+        return {
+            "success": response.is_success,
+            "status_code": response.status_code,
+            "headers": dict(response.headers),
+            "body": body,
+            "request_preview": {
+                "method": method,
+                "url": sanitize_preview_url(url, url_template=_api_monitor_tool_url(doc), arguments=rendered_arguments),
+                "query": sanitize_preview_mapping(request_query),
+                "headers": sanitize_headers(request_headers),
+                "body": sanitize_preview_mapping(request_body) if request_body else None,
                 "auth": auth_preview,
             },
         }
@@ -516,6 +640,152 @@ def coerce_mcp_tool_definition(tool: McpToolDefinition | Mapping[str, Any]) -> M
 
 
 # ── Token flow runtime helpers ──────────────────────────────────────────
+
+
+# ── V2 helpers ──────────────────────────────────────────────────────────
+
+
+def _normalize_token_path(value: str) -> str:
+    parsed = urlsplit(str(value or ""))
+    path = parsed.path or str(value or "")
+    return "/" + path.strip("/")
+
+
+def _token_urls_match(expected: str, tool_url: str, absolute_url: str) -> bool:
+    expected = str(expected or "").strip()
+    if not expected:
+        return False
+    expected_parts = urlsplit(expected)
+    absolute_parts = urlsplit(absolute_url)
+    if expected_parts.scheme and expected_parts.netloc:
+        return (
+            expected_parts.scheme == absolute_parts.scheme
+            and expected_parts.netloc == absolute_parts.netloc
+            and _normalize_token_path(expected) == _normalize_token_path(absolute_url)
+        )
+    return _normalize_token_path(expected) == _normalize_token_path(tool_url) == _normalize_token_path(absolute_url)
+
+
+def _matching_v2_token_flows(
+    token_flows: list[dict[str, Any]], method: str, tool_url: str, absolute_url: str
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for flow in token_flows or []:
+        if flow.get("enabled") is False:
+            continue
+        consumers = flow.get("consumers") or []
+        for consumer in consumers:
+            target_method = str(consumer.get("method") or "").upper()
+            target_url = str(consumer.get("url") or "")
+            if target_method == method and _token_urls_match(target_url, tool_url, absolute_url):
+                matches.append(flow)
+                break
+    return matches
+
+
+async def _resolve_v2_token_producer(
+    *,
+    client: httpx.AsyncClient,
+    profile: ApiMonitorRuntimeProfile,
+    base_url: str,
+    flow: dict[str, Any],
+    build_url,
+) -> tuple[list[str], str]:
+    producer = flow.get("producer") or {}
+    request = producer.get("request") or {}
+    extracts = producer.get("extract") or []
+    method = str(request.get("method") or "GET").upper()
+    raw_url = str(request.get("url") or "")
+    url = build_url(base_url, raw_url, {})
+    if not url:
+        return [], f"Token flow '{flow.get('name', 'unknown')}' producer URL is not callable"
+    try:
+        headers = {**profile.headers, **profile.render_value(request.get("headers") or {})}
+        query = profile.render_value(request.get("query") or {})
+        body = profile.render_value(request.get("body"))
+    except ApiMonitorRuntimeProfileError as exc:
+        return [], f"Token flow '{flow.get('name', 'unknown')}' producer render failed: {exc}"
+    kwargs: dict[str, Any] = {"headers": headers, "params": query}
+    if body is not None:
+        kwargs["json"] = body
+    response = await client.request(method, url, **kwargs)
+    if not response.is_success:
+        return [], f"Token flow '{flow.get('name', 'unknown')}' producer got HTTP {response.status_code} from {method} {_token_safe_url(url)}"
+    extracted_names: list[str] = []
+    for extract in extracts:
+        value = _extract_token_from_response(response, {"from": extract.get("from"), "path": extract.get("path")})
+        if value is not None:
+            name = str(extract.get("name") or flow.get("name") or "token")
+            try:
+                profile.set_variable(name, value, secret=bool(extract.get("secret", True)), source=str(flow.get("id") or ""))
+            except ApiMonitorRuntimeProfileError as exc:
+                return [], str(exc)
+            extracted_names.append(name)
+    if not extracted_names:
+        return [], f"Token flow '{flow.get('name', 'unknown')}' producer did not extract any values"
+    profile.has_cookies = profile.has_cookies or bool(getattr(client, "cookies", None))
+    return extracted_names, ""
+
+
+def _apply_v2_token_consumers(
+    *,
+    profile: ApiMonitorRuntimeProfile,
+    flows: list[dict[str, Any]],
+    method: str,
+    tool_url: str,
+    absolute_url: str,
+    headers: dict[str, Any],
+    query: dict[str, Any],
+    body: dict[str, Any],
+) -> list[dict[str, Any]]:
+    previews: list[dict[str, Any]] = []
+    for flow in flows:
+        applied: list[str] = []
+        matched_consumers: list[str] = []
+        for consumer in flow.get("consumers") or []:
+            target_method = str(consumer.get("method") or "").upper()
+            target_url = str(consumer.get("url") or "")
+            if target_method != method:
+                continue
+            if not _token_urls_match(target_url, tool_url, absolute_url):
+                continue
+            matched_consumers.append(f"{target_method} {target_url}")
+            try:
+                applied.extend(profile.apply_injection(consumer.get("inject") or {}, headers=headers, query=query, body=body))
+            except ApiMonitorRuntimeProfileError as exc:
+                previews.append(
+                    {
+                        "id": flow.get("id", ""),
+                        "name": flow.get("name", ""),
+                        "producer_applied": True,
+                        "consumer_applied": False,
+                        "error": str(exc),
+                    }
+                )
+                return previews
+        previews.append(
+            {
+                "id": flow.get("id", ""),
+                "name": flow.get("name", ""),
+                "producer_applied": True,
+                "consumer_applied": bool(applied),
+                "matched_consumers": matched_consumers,
+                "injected": applied,
+            }
+        )
+    return previews
+
+
+def _v2_refresh_statuses(flows: list[dict[str, Any]]) -> set[int]:
+    statuses: set[int] = set()
+    for flow in flows:
+        for code in flow.get("refresh_on_status") or [401, 403, 419]:
+            if isinstance(code, int):
+                statuses.add(code)
+    return statuses
+
+
+# ── V1 legacy helpers ───────────────────────────────────────────────────
 
 
 def _matching_token_flows(

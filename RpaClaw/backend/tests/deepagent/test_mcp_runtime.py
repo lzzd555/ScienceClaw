@@ -1321,3 +1321,284 @@ def test_token_flow_setup_failure_returns_error(monkeypatch):
 
     assert result["success"] is False
     assert "Token flow 'csrf_token' setup got HTTP 500" in result.get("error", "")
+
+
+# ── V2 runtime profile tests ─────────────────────────────────────────────
+
+
+def test_api_monitor_runtime_profile_auth_then_producer_then_consumer(monkeypatch):
+    repo = _MemoryRepo([
+        {
+            "mcp_server_id": "mcp_api_monitor",
+            "name": "list_orders",
+            "validation_status": "valid",
+            "method": "GET",
+            "url": "/api/orders",
+            "base_url": "http://localhost:11451",
+            "query_mapping": {"name": "{{ name }}"},
+        }
+    ])
+
+    class _SeqClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+            self.cookies = {"sid": "cookie"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if url.endswith("/api/login"):
+                return _ApiResponse(json_body={"token": "auth-token"})
+            if url.endswith("/api/session"):
+                assert kwargs["headers"]["Authorization"] == "Bearer auth-token"
+                return _ApiResponse(json_body={"csrfToken": "csrf-token"})
+            assert kwargs["headers"]["Authorization"] == "Bearer auth-token"
+            assert kwargs["headers"]["X-CSRF-Token"] == "csrf-token"
+            assert "csrf" not in kwargs.get("params", {})
+            return _ApiResponse(json_body={"orders": []})
+
+    client = _SeqClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id, cred_id):
+            return {"username": "alice", "password": "secret"}
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", lambda: _Vault())
+
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="user-1",
+        name="Orders MCP",
+        transport="api_monitor",
+        scope="user",
+        api_monitor_auth={
+            "credential_type": "test",
+            "credential_id": "cred_1",
+            "login_url": "http://localhost:11451/api/login",
+            "token_flows": [
+                {
+                    "id": "flow_csrf",
+                    "name": "csrf_token",
+                    "enabled": True,
+                    "producer": {
+                        "request": {"method": "GET", "url": "/api/session"},
+                        "extract": [
+                            {"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}
+                        ],
+                    },
+                    "consumers": [
+                        {
+                            "method": "GET",
+                            "url": "/api/orders",
+                            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                        },
+                        {
+                            "method": "POST",
+                            "url": "/api/orders",
+                            "inject": {"query": {"csrf": "{{ csrf_token }}"}},
+                        }
+                    ],
+                    "refresh_on_status": [401, 403, 419],
+                }
+            ],
+        },
+    )
+
+    result = asyncio.run(mcp_runtime.ApiMonitorMcpRuntime(server).call_tool("list_orders", {"name": "sample"}))
+
+    assert result["success"] is True
+    assert [call[1] for call in client.calls] == [
+        "http://localhost:11451/api/login",
+        "http://localhost:11451/api/session",
+        "http://localhost:11451/api/orders",
+    ]
+    assert result["request_preview"]["auth"]["token_flows"][0]["consumer_applied"] is True
+    assert result["request_preview"]["auth"]["token_flows"][0]["matched_consumers"] == ["GET /api/orders"]
+    assert "csrf-token" not in str(result)
+    assert "auth-token" not in str(result)
+
+
+def test_api_monitor_runtime_preview_empty_token_flows_when_consumer_does_not_match(monkeypatch):
+    repo = _MemoryRepo([
+        {
+            "mcp_server_id": "mcp_api_monitor",
+            "name": "list_orders",
+            "validation_status": "valid",
+            "method": "GET",
+            "url": "/api/orders",
+            "base_url": "http://localhost:11451",
+        }
+    ])
+
+    class _SeqClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+            self.cookies = {"sid": "cookie"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if url.endswith("/api/login"):
+                return _ApiResponse(json_body={"token": "auth-token"})
+            assert url.endswith("/api/orders")
+            assert kwargs["headers"]["Authorization"] == "Bearer auth-token"
+            assert "X-CSRF-Token" not in kwargs["headers"]
+            return _ApiResponse(status_code=403, json_body={"message": "missing csrf"})
+
+    client = _SeqClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id, cred_id):
+            return {"username": "alice", "password": "secret"}
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", lambda: _Vault())
+
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="user-1",
+        name="Orders MCP",
+        transport="api_monitor",
+        scope="user",
+        api_monitor_auth={
+            "credential_type": "test",
+            "credential_id": "cred_1",
+            "login_url": "http://localhost:11451/api/login",
+            "token_flows": [
+                {
+                    "id": "flow_csrf",
+                    "name": "csrf_token",
+                    "enabled": True,
+                    "producer": {
+                        "request": {"method": "GET", "url": "/api/session"},
+                        "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                    },
+                    "consumers": [
+                        {
+                            "method": "POST",
+                            "url": "/api/orders",
+                            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    result = asyncio.run(mcp_runtime.ApiMonitorMcpRuntime(server).call_tool("list_orders", {}))
+
+    assert result["success"] is False
+    assert [call[1] for call in client.calls] == [
+        "http://localhost:11451/api/login",
+        "http://localhost:11451/api/orders",
+    ]
+    assert result["request_preview"]["auth"]["profile"]["variables"] == ["auth_token"]
+    assert result["request_preview"]["auth"]["token_flows"] == []
+
+
+def test_api_monitor_runtime_refreshes_token_and_retries_once_on_403(monkeypatch):
+    repo = _MemoryRepo([
+        {
+            "mcp_server_id": "mcp_api_monitor",
+            "name": "list_orders",
+            "validation_status": "valid",
+            "method": "GET",
+            "url": "/api/orders",
+            "base_url": "http://localhost:11451",
+        }
+    ])
+
+    class _SeqClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+            self.cookies = {"sid": "cookie"}
+            self.session_count = 0
+            self.order_count = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if url.endswith("/api/login"):
+                return _ApiResponse(json_body={"token": "auth-token"})
+            if url.endswith("/api/session"):
+                self.session_count += 1
+                return _ApiResponse(json_body={"csrfToken": f"csrf-token-{self.session_count}"})
+            self.order_count += 1
+            assert kwargs["headers"]["X-CSRF-Token"] == f"csrf-token-{self.order_count}"
+            if self.order_count == 1:
+                return _ApiResponse(status_code=403, json_body={"message": "stale csrf"})
+            return _ApiResponse(json_body={"orders": []})
+
+    client = _SeqClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(mcp_runtime, "get_repository", lambda collection_name: repo)
+
+    class _Vault:
+        async def resolve_credential_values(self, user_id, cred_id):
+            return {"username": "alice", "password": "secret"}
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", lambda: _Vault())
+
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="user-1",
+        name="Orders MCP",
+        transport="api_monitor",
+        scope="user",
+        api_monitor_auth={
+            "credential_type": "test",
+            "credential_id": "cred_1",
+            "login_url": "http://localhost:11451/api/login",
+            "token_flows": [
+                {
+                    "id": "flow_csrf",
+                    "name": "csrf_token",
+                    "enabled": True,
+                    "producer": {
+                        "request": {"method": "GET", "url": "/api/session"},
+                        "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                    },
+                    "consumers": [
+                        {
+                            "method": "GET",
+                            "url": "/api/orders",
+                            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                        }
+                    ],
+                    "refresh_on_status": [403, 419],
+                }
+            ],
+        },
+    )
+
+    result = asyncio.run(mcp_runtime.ApiMonitorMcpRuntime(server).call_tool("list_orders", {}))
+
+    assert result["success"] is True
+    assert [call[1] for call in client.calls] == [
+        "http://localhost:11451/api/login",
+        "http://localhost:11451/api/session",
+        "http://localhost:11451/api/orders",
+        "http://localhost:11451/api/session",
+        "http://localhost:11451/api/orders",
+    ]
+    assert result["request_preview"]["auth"]["token_flows"][0]["refreshed"] is True
+    assert "csrf-token-1" not in str(result)
+    assert "csrf-token-2" not in str(result)
