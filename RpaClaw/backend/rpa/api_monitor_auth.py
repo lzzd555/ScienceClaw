@@ -8,6 +8,7 @@ import httpx
 
 from backend.credential.vault import get_vault
 from backend.rpa.api_monitor.models import ApiMonitorSession
+from backend.rpa.api_monitor_runtime_profile import ApiMonitorRuntimeProfile
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,81 @@ async def apply_api_monitor_auth_to_request(
                 "credential_configured": True,
                 "injected": True,
                 "login_url": login_url,
+            },
+        )
+
+    return ApiMonitorAuthApplication(error=f"Unsupported API Monitor credential type: {credential_type}")
+
+
+async def apply_api_monitor_auth_to_profile(
+    *,
+    user_id: str,
+    auth_config: Mapping[str, Any] | None,
+    profile: ApiMonitorRuntimeProfile,
+    client: Any,
+    vault: CredentialValueResolver | None = None,
+) -> ApiMonitorAuthApplication:
+    config = normalize_api_monitor_auth_config(auth_config)
+    if not config:
+        return ApiMonitorAuthApplication(headers=dict(profile.headers), preview={})
+
+    credential_id = config.get("credential_id", "")
+    credential_configured = bool(credential_id)
+    resolved = None
+    if credential_id:
+        resolved = await (vault or get_vault()).resolve_credential_values(user_id, credential_id)
+        if resolved is None:
+            return ApiMonitorAuthApplication(error="API Monitor credential not found")
+
+    credential_type = config["credential_type"]
+    if credential_type == PLACEHOLDER_CREDENTIAL_TYPE:
+        return ApiMonitorAuthApplication(
+            headers=dict(profile.headers),
+            preview={
+                "credential_type": PLACEHOLDER_CREDENTIAL_TYPE,
+                "credential_configured": credential_configured,
+                "injected": False,
+            },
+        )
+
+    if credential_type == TEST_CREDENTIAL_TYPE:
+        login_url = config.get("login_url", "")
+        if not login_url:
+            return ApiMonitorAuthApplication(error="Login URL is required for test credential type")
+        if not resolved:
+            return ApiMonitorAuthApplication(error="Credential is required for test credential type")
+        username = resolved.get("username", "")
+        password = resolved.get("password", "")
+        if not username or not password:
+            return ApiMonitorAuthApplication(error="Credential must have both username and password")
+        try:
+            login_resp = await client.request(
+                "POST",
+                login_url,
+                json={"username": username, "password": password},
+            )
+        except httpx.HTTPError as exc:
+            return ApiMonitorAuthApplication(error=f"Login request failed: {exc}")
+        if not login_resp.is_success:
+            return ApiMonitorAuthApplication(error=f"Login failed (HTTP {login_resp.status_code})")
+        try:
+            token_data = login_resp.json()
+        except ValueError:
+            return ApiMonitorAuthApplication(error="Login response is not valid JSON")
+        token = token_data.get("token") or token_data.get("access_token") or ""
+        if not token:
+            return ApiMonitorAuthApplication(error="Login response did not contain a token")
+        profile.set_variable("auth_token", token, secret=True)
+        profile.set_header("Authorization", f"Bearer {token}", secret=True)
+        profile.has_cookies = bool(getattr(client, "cookies", None))
+        return ApiMonitorAuthApplication(
+            headers=dict(profile.headers),
+            preview={
+                "credential_type": TEST_CREDENTIAL_TYPE,
+                "credential_configured": True,
+                "injected": True,
+                "login_url": login_url,
+                "profile": profile.preview(),
             },
         )
 

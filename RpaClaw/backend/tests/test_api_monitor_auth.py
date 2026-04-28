@@ -9,10 +9,12 @@ from backend.rpa.api_monitor.models import (
     CapturedRequest,
 )
 from backend.rpa.api_monitor_auth import (
+    apply_api_monitor_auth_to_profile,
     build_api_monitor_auth_profile,
     normalize_api_monitor_auth_config,
     validate_api_monitor_auth_config,
 )
+from backend.rpa.api_monitor_runtime_profile import ApiMonitorRuntimeProfile
 
 
 class FakeVault:
@@ -136,3 +138,57 @@ async def test_validate_api_monitor_auth_config_accepts_empty_credential_id():
     )
 
     assert config == {"credential_type": "placeholder", "credential_id": ""}
+
+
+# ── Profile-based auth ─────────────────────────────────────────────────
+
+
+class _LoginResponse:
+    status_code = 200
+    is_success = True
+    headers = {"content-type": "application/json"}
+    text = '{"token":"login-token"}'
+
+    def json(self):
+        return {"token": "login-token"}
+
+
+class _LoginClient:
+    def __init__(self):
+        self.calls = []
+        self.cookies = {"sid": "cookie-value"}
+
+    async def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return _LoginResponse()
+
+
+@pytest.mark.anyio
+async def test_test_credential_auth_writes_authorization_to_profile():
+    profile = ApiMonitorRuntimeProfile(base_url="https://api.example.test")
+    client = _LoginClient()
+
+    app = await apply_api_monitor_auth_to_profile(
+        user_id="user-1",
+        auth_config={
+            "credential_type": "test",
+            "credential_id": "cred_1",
+            "login_url": "https://api.example.test/api/login",
+        },
+        profile=profile,
+        client=client,
+        vault=FakeVault({"cred_1": {"username": "alice", "password": "secret"}}),
+    )
+
+    assert app.error == ""
+    assert client.calls == [
+        (
+            "POST",
+            "https://api.example.test/api/login",
+            {"json": {"username": "alice", "password": "secret"}},
+        )
+    ]
+    assert profile.headers == {"Authorization": "Bearer login-token"}
+    assert profile.variables["auth_token"] == "login-token"
+    assert profile.has_cookies is True
+    assert "login-token" not in str(app.preview)
