@@ -165,6 +165,54 @@ def strip_json_fence(value: str) -> str:
     return text.strip()
 
 
+def _normalize_optional_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _normalize_step_decision_payload(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {
+            "goal_status": "blocked",
+            "summary": "Planner returned a non-object decision payload",
+            "next_action": None,
+            "expected_change": "",
+            "done_reason": "Planner returned a non-object decision payload",
+        }
+
+    payload = dict(parsed)
+    goal_status = str(payload.get("goal_status") or "continue").strip().lower()
+    if goal_status not in ("continue", "done", "blocked"):
+        goal_status = "blocked"
+    payload["goal_status"] = goal_status
+
+    for field_name in ("summary", "expected_change", "done_reason"):
+        payload[field_name] = _normalize_optional_text(payload.get(field_name))
+
+    next_action = payload.get("next_action")
+    if goal_status != "continue" or next_action in (None, "", {}, []):
+        payload["next_action"] = None
+        return payload
+    if not isinstance(next_action, dict):
+        payload["next_action"] = None
+        return payload
+
+    action_payload = dict(next_action)
+    if not action_payload.get("action"):
+        payload["next_action"] = None
+        return payload
+
+    locator = action_payload.get("locator")
+    action_payload["locator"] = locator if isinstance(locator, dict) else {}
+    for field_name in ("value", "key", "description", "reason"):
+        action_payload[field_name] = _normalize_optional_text(action_payload.get(field_name))
+    if action_payload.get("timeout_ms") is None:
+        action_payload["timeout_ms"] = 500
+    if not action_payload.get("risk"):
+        action_payload["risk"] = "safe"
+    payload["next_action"] = action_payload
+    return payload
+
+
 async def build_directed_plan(
     *,
     instruction: str,
@@ -235,7 +283,7 @@ async def build_directed_step_decision(
         ]
         repaired = await model.ainvoke(repair_messages)
         parsed = json.loads(strip_json_fence(_message_text(repaired, AIMessage)))
-    decision = DirectedStepDecision.model_validate(parsed)
+    decision = DirectedStepDecision.model_validate(_normalize_step_decision_payload(parsed))
     if decision.goal_status == "continue" and decision.next_action is None:
         return DirectedStepDecision(
             goal_status="blocked",

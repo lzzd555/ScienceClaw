@@ -366,6 +366,76 @@ def test_directed_step_decision_repairs_invalid_json_response(monkeypatch):
     assert "上一次返回不是合法 JSON" in captured_messages[-1].content
 
 
+def test_directed_step_decision_normalizes_loose_completion_payload(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from backend.rpa.api_monitor import directed_analyzer
+
+    class _FakeModel:
+        async def ainvoke(self, messages):
+            return AIMessage(
+                content=json.dumps(
+                    {
+                        "goal_status": "done",
+                        "summary": "已创建已支付订单",
+                        "next_action": {},
+                        "expected_change": None,
+                        "done_reason": None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(directed_analyzer, "get_llm_model", lambda config=None, streaming=False: _FakeModel())
+
+    decision = asyncio.run(
+        directed_analyzer.build_directed_step_decision(
+            instruction="点击新增订单并创建已支付订单",
+            compact_snapshot={"url": "http://localhost:11451/", "title": "订单管理"},
+            run_history=[{"step": 2, "result": "success", "new_calls": ["POST /api/orders -> 200"]}],
+            observation={"completion_check": True, "new_call_count": 1},
+        )
+    )
+
+    assert decision.goal_status == "done"
+    assert decision.next_action is None
+    assert decision.expected_change == ""
+    assert decision.done_reason == ""
+
+
+def test_directed_step_decision_blocks_continue_with_empty_action(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from backend.rpa.api_monitor import directed_analyzer
+
+    class _FakeModel:
+        async def ainvoke(self, messages):
+            return AIMessage(
+                content=json.dumps(
+                    {
+                        "goal_status": "continue",
+                        "summary": "还想继续但没有给出动作",
+                        "next_action": {},
+                        "expected_change": None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(directed_analyzer, "get_llm_model", lambda config=None, streaming=False: _FakeModel())
+
+    decision = asyncio.run(
+        directed_analyzer.build_directed_step_decision(
+            instruction="搜索订单",
+            compact_snapshot={"url": "https://example.test/orders"},
+            run_history=[],
+            observation={"url": "https://example.test/orders", "title": "Orders"},
+        )
+    )
+
+    assert decision.goal_status == "blocked"
+    assert decision.next_action is None
+    assert decision.done_reason == "Planner returned continue without next_action"
+
+
 def test_filter_action_for_business_safety_handles_single_step_actions():
     safe_action = DirectedAction(
         action="click",
