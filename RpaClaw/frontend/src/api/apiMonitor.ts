@@ -110,6 +110,8 @@ export interface TokenFlowProfile {
   confidence: 'high' | 'medium' | 'low'
   enabled_by_default: boolean
   reasons: string[]
+  sample_count?: number
+  source_call_ids?: string[]
 }
 
 export interface TokenFlowProfileResponse {
@@ -120,6 +122,33 @@ export interface TokenFlowProfileResponse {
 export interface TokenFlowSelection {
   id: string
   enabled: boolean
+}
+
+export interface ApiMonitorManualTokenFlow {
+  id: string
+  name: string
+  enabled?: boolean
+  producer: {
+    request: {
+      method: string
+      url: string
+      headers?: Record<string, string>
+      query?: Record<string, string>
+      body?: unknown
+      content_type?: string
+    }
+    extract: Array<{ name: string; from: string; path: string; secret?: boolean }>
+  }
+  consumers: Array<{
+    method: string
+    url: string
+    inject: {
+      headers?: Record<string, string>
+      query?: Record<string, string>
+      body?: Record<string, string>
+    }
+  }>
+  refresh_on_status?: number[]
 }
 
 export interface PublishMcpPayload {

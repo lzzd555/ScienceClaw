@@ -69,6 +69,8 @@ const publishForm = reactive({
 const authProfile = ref<ApiMonitorAuthProfile | null>(null);
 const tokenFlowProfile = ref<TokenFlowProfile[]>([]);
 const tokenFlowSelections = ref<Record<string, boolean>>({});
+const manualTokenFlowJson = ref('');
+const manualTokenFlowJsonError = ref('');
 const isLoadingAuthProfile = ref(false);
 const publishCredentials = ref<Credential[]>([]);
 const publishAuth = reactive<ApiMonitorAuthConfig>({
@@ -568,6 +570,18 @@ const openPublishDialog = async () => {
   }
 };
 
+const parseManualTokenFlows = (): Array<Record<string, unknown>> => {
+  manualTokenFlowJsonError.value = '';
+  if (!manualTokenFlowJson.value.trim()) return [];
+  try {
+    const parsed = JSON.parse(manualTokenFlowJson.value);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (error) {
+    manualTokenFlowJsonError.value = error instanceof Error ? error.message : 'Invalid JSON';
+    return [];
+  }
+};
+
 const submitPublish = async (confirmOverwrite = false) => {
   if (!sessionId.value || !adoptedToolCount.value || !publishForm.mcpName.trim()) return;
   isPublishing.value = true;
@@ -581,6 +595,16 @@ const submitPublish = async (confirmOverwrite = false) => {
       .map(([id, enabled]) => ({ id, enabled }));
     if (enabledFlows.length > 0) {
       authPayload.token_flows = enabledFlows;
+    }
+    // Include manual token flows
+    const manualFlows = parseManualTokenFlows();
+    if (manualTokenFlowJsonError.value) {
+      addLog('ERROR', `手动 Token Flow JSON 格式错误: ${manualTokenFlowJsonError.value}`);
+      isPublishing.value = false;
+      return;
+    }
+    if (manualFlows.length > 0) {
+      authPayload.manual_token_flows = manualFlows as any;
     }
     const result = await publishMcpToolBundle(sessionId.value, {
       mcp_name: publishForm.mcpName.trim(),
@@ -1013,10 +1037,28 @@ onBeforeUnmount(() => {
                   <div class="mt-1 text-xs text-[var(--text-tertiary)]">
                     <div>{{ t('Source') }}: {{ flow.producer_summary }}</div>
                     <div v-for="cs in flow.consumer_summaries" :key="cs">{{ t('Inject to') }}: {{ cs }}</div>
+                    <div v-if="flow.sample_count && flow.sample_count > 1" class="mt-1 text-[11px] opacity-70">
+                      {{ t('Samples: {count}', { count: flow.sample_count }) }}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
+
+            <!-- Manual Token Flows -->
+            <label class="mt-3 block">
+              <span class="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
+                {{ t('Manual token flows JSON') }}
+              </span>
+              <textarea
+                v-model="manualTokenFlowJson"
+                class="h-32 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-xs"
+                :placeholder="t('Paste manual token flow JSON')"
+              />
+              <span v-if="manualTokenFlowJsonError" class="mt-1 block text-xs text-red-500">
+                {{ manualTokenFlowJsonError }}
+              </span>
+            </label>
           </section>
         </div>
         <div class="flex justify-end gap-3 border-t border-slate-200 bg-white px-6 py-4 dark:border-white/10 dark:bg-white/[0.055]">

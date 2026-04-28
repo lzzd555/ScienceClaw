@@ -892,4 +892,8 @@ export default {
   'Source': 'Source',
   'Inject to': 'Inject to',
   'Dynamic Token Flows': 'Dynamic Token Flows',
+  'Samples: {count}': 'Samples: {count}',
+  'Manual token flows JSON': 'Manual token flows JSON',
+  'Paste manual token flow JSON': 'Paste manual token flow JSON',
+  'Invalid JSON': 'Invalid JSON',
 }

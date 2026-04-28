@@ -88,12 +88,22 @@
                       'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400': flow.confidence === 'high',
                       'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': flow.confidence === 'medium',
                       'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400': flow.confidence === 'low',
+                      'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400': flow.confidence === 'manual',
                     }"
                   >{{ flow.confidence }}</span>
+                  <span v-if="flow.source" class="rounded-md px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                    {{ flow.source }}
+                  </span>
                 </div>
                 <div v-if="flow.summary" class="mt-1 text-xs text-[var(--text-tertiary)]">
                   <div>{{ t('Source') }}: {{ flow.summary.producer }}</div>
                   <div v-for="cs in flow.summary.consumers" :key="cs">{{ t('Inject to') }}: {{ cs }}</div>
+                  <div v-if="flow.summary.sample_count && flow.summary.sample_count > 1" class="mt-1 text-[11px] opacity-70">
+                    {{ t('Samples: {count}', { count: flow.summary.sample_count }) }}
+                  </div>
+                </div>
+                <div v-else-if="flow.producer" class="mt-1 text-xs text-[var(--text-tertiary)]">
+                  <div>{{ flow.producer.request?.method }} {{ flow.producer.request?.url }}</div>
                 </div>
               </div>
             </div>

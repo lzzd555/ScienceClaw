@@ -934,4 +934,8 @@ export default {
   'Source': '来源',
   'Inject to': '注入到',
   'Dynamic Token Flows': '动态 Token 流程',
+  'Samples: {count}': '样本数：{count}',
+  'Manual token flows JSON': '手动 Token Flow JSON',
+  'Paste manual token flow JSON': '粘贴手动 Token Flow JSON',
+  'Invalid JSON': '无效的 JSON',
 }
