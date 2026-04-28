@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from backend.rpa.api_monitor.models import ApiMonitorSession
@@ -43,6 +43,12 @@ class ApiMonitorMcpRegistry:
         if existing_server_id:
             existing_server = await self._servers.find_one({"_id": server_id, "user_id": user_id})
         normalized_auth = normalize_api_monitor_auth_config(api_monitor_auth)
+        # Preserve token_flows if present (passed from route after resolution)
+        token_flows = None
+        if isinstance(api_monitor_auth, Mapping):
+            token_flows = api_monitor_auth.get("token_flows")
+        elif isinstance(api_monitor_auth, dict):
+            token_flows = api_monitor_auth.get("token_flows")
         endpoint_config = _api_monitor_endpoint_config_without_legacy_auth(
             (existing_server or {}).get("endpoint_config") or {}
         )
@@ -57,7 +63,7 @@ class ApiMonitorMcpRegistry:
             "source_type": "api_monitor",
             "endpoint_config": endpoint_config,
             "credential_binding": credential_binding,
-            "api_monitor_auth": normalized_auth,
+            "api_monitor_auth": {**normalized_auth, **({"token_flows": token_flows} if token_flows else {})},
             "tool_policy": (existing_server or {}).get("tool_policy") or {},
             "tool_count": len(selected_tools),
             "updated_at": now,

@@ -60,6 +60,45 @@
             </div>
           </section>
 
+          <!-- Token Flow Summary -->
+          <section
+            v-if="detail.server.api_monitor_auth?.token_flows?.length"
+            class="rounded-3xl border border-sky-200 bg-sky-50/30 p-5 shadow-sm dark:border-sky-800/40 dark:bg-sky-950/10"
+          >
+            <div class="mb-3 flex items-center gap-2">
+              <div class="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-[10px] font-bold text-white">
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              </div>
+              <h3 class="text-base font-black text-[var(--text-primary)]">{{ t('Dynamic Token Flows') }}</h3>
+              <span class="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                {{ detail.server.api_monitor_auth.token_flows.length }}
+              </span>
+            </div>
+            <div class="space-y-2">
+              <div
+                v-for="flow in detail.server.api_monitor_auth.token_flows"
+                :key="flow.id"
+                class="rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-bold text-[var(--text-primary)]">{{ flow.name }}</span>
+                  <span
+                    class="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                    :class="{
+                      'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400': flow.confidence === 'high',
+                      'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': flow.confidence === 'medium',
+                      'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400': flow.confidence === 'low',
+                    }"
+                  >{{ flow.confidence }}</span>
+                </div>
+                <div v-if="flow.summary" class="mt-1 text-xs text-[var(--text-tertiary)]">
+                  <div>{{ t('Source') }}: {{ flow.summary.producer }}</div>
+                  <div v-for="cs in flow.summary.consumers" :key="cs">{{ t('Inject to') }}: {{ cs }}</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
             <div class="mb-5 flex items-center justify-between gap-3">
               <div>

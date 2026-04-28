@@ -25,6 +25,7 @@ from backend.rpa.api_monitor.models import (
 )
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
+from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish
 from backend.rpa.screencast import SessionScreencastController
 from backend.credential.vault import get_vault
 
@@ -334,6 +335,28 @@ async def get_auth_profile(
     return {"status": "success", "profile": build_api_monitor_auth_profile(session)}
 
 
+@router.get("/session/{session_id}/token-flow-profile")
+async def get_token_flow_profile(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = api_monitor_manager.get_session(session_id)
+    _verify_session_owner(session, current_user)
+    calls = session.captured_calls
+    logger.info(
+        "[TokenFlow] session=%s captured_calls=%d",
+        session_id,
+        len(calls),
+    )
+    profile = build_api_monitor_token_flow_profile(calls)
+    logger.info(
+        "[TokenFlow] session=%s flow_count=%d",
+        session_id,
+        profile["flow_count"],
+    )
+    return {"status": "success", "profile": profile}
+
+
 @router.post("/session/{session_id}/publish-mcp")
 async def publish_mcp(
     session_id: str,
@@ -371,6 +394,18 @@ async def publish_mcp(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Resolve token flow selections from session profile
+    token_flow_selections = []
+    if request.api_monitor_auth and request.api_monitor_auth.token_flows:
+        token_flow_selections = [
+            sel.model_dump() for sel in request.api_monitor_auth.token_flows if sel.enabled
+        ]
+    token_flows = resolve_token_flows_for_publish(
+        session.captured_calls, token_flow_selections
+    )
+    if token_flows:
+        api_monitor_auth["token_flows"] = token_flows
 
     result = await registry.publish_session(
         session=session,

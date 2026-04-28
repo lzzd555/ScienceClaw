@@ -929,4 +929,9 @@ export default {
   'Auth profile hint for publish': '请求头画像仅用于本次判断，不会保存到 MCP。',
   'Detected {count} sensitive headers': '检测到 {count} 个疑似认证请求头，推荐使用占位凭证类型。',
   'Skip credential': '暂不配置凭证',
+  'Dynamic Token Flow Detected': '检测到动态 Token 流程',
+  'Token flow detection hint': '系统从捕获的流量中检测到动态 Token 流程（如 CSRF/XSRF Token）。启用的流程将在运行时自动提取并注入到请求中。',
+  'Source': '来源',
+  'Inject to': '注入到',
+  'Dynamic Token Flows': '动态 Token 流程',
 }

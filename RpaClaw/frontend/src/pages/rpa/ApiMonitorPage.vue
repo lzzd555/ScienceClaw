@@ -15,10 +15,13 @@ import {
   publishMcpToolBundle,
   updateToolSelection as apiUpdateToolSelection,
   getAuthProfile,
+  getTokenFlowProfile,
   type ApiMonitorSession,
   type ApiToolDefinition,
   type ApiMonitorAuthConfig,
   type ApiMonitorAuthProfile,
+  type TokenFlowProfile,
+  type TokenFlowSelection,
 } from '@/api/apiMonitor';
 import { listCredentials, type Credential } from '@/api/credential';
 import { API_MONITOR_CREDENTIAL_TYPE_OPTIONS, normalizeApiMonitorAuth } from '@/utils/apiMonitorAuth';
@@ -64,8 +67,10 @@ const publishForm = reactive({
   description: '',
 });
 const authProfile = ref<ApiMonitorAuthProfile | null>(null);
-const publishCredentials = ref<Credential[]>([]);
+const tokenFlowProfile = ref<TokenFlowProfile[]>([]);
+const tokenFlowSelections = ref<Record<string, boolean>>({});
 const isLoadingAuthProfile = ref(false);
+const publishCredentials = ref<Credential[]>([]);
 const publishAuth = reactive<ApiMonitorAuthConfig>({
   credential_type: 'placeholder',
   credential_id: '',
@@ -536,8 +541,26 @@ const openPublishDialog = async () => {
     authProfile.value = profile;
     publishCredentials.value = creds;
     publishAuth.credential_type = profile.recommended_credential_type || 'placeholder';
+    // Load token flow profile separately (non-critical)
+    try {
+      const tfProfile = await getTokenFlowProfile(sessionId.value);
+      tokenFlowProfile.value = tfProfile.flows || [];
+      tokenFlowSelections.value = {};
+      for (const flow of tfProfile.flows || []) {
+        tokenFlowSelections.value[flow.id] = flow.enabled_by_default;
+      }
+      if (tokenFlowProfile.value.length > 0) {
+        addLog('INFO', `检测到 ${tokenFlowProfile.value.length} 个动态 Token 流程`);
+      } else {
+        addLog('INFO', '未检测到动态 Token 流程（捕获的流量中未发现 token 传递模式）');
+      }
+    } catch (err: any) {
+      tokenFlowProfile.value = [];
+      addLog('ERROR', `加载 Token Flow 失败: ${err.message}`);
+    }
   } catch (err: any) {
     authProfile.value = null;
+    tokenFlowProfile.value = [];
     publishCredentials.value = [];
     addLog('ERROR', `加载认证配置失败: ${err.message}`);
   } finally {
@@ -551,11 +574,19 @@ const submitPublish = async (confirmOverwrite = false) => {
   try {
     addLog('INFO', '正在发布 MCP 工具...');
     await flushToolEdits();
+    const authPayload = normalizeApiMonitorAuth(publishAuth);
+    // Include enabled token flow selections
+    const enabledFlows: TokenFlowSelection[] = Object.entries(tokenFlowSelections.value)
+      .filter(([, enabled]) => enabled)
+      .map(([id, enabled]) => ({ id, enabled }));
+    if (enabledFlows.length > 0) {
+      authPayload.token_flows = enabledFlows;
+    }
     const result = await publishMcpToolBundle(sessionId.value, {
       mcp_name: publishForm.mcpName.trim(),
       description: publishForm.description.trim(),
       confirm_overwrite: confirmOverwrite,
-      api_monitor_auth: normalizeApiMonitorAuth(publishAuth),
+      api_monitor_auth: authPayload,
     });
     publishDialogOpen.value = false;
     overwriteDialogOpen.value = false;
@@ -945,6 +976,47 @@ onBeforeUnmount(() => {
               <span class="text-sm font-bold text-[var(--text-secondary)]">{{ t('Login URL') }}</span>
               <input v-model="publishAuth.login_url" class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-[var(--text-primary)] outline-none transition focus:border-sky-400 focus:ring-1 focus:ring-sky-400/30 dark:border-white/10 dark:bg-white/5 font-mono" :placeholder="t('Login URL placeholder')" />
             </label>
+          </section>
+
+          <!-- Token Flow Detection -->
+          <section v-if="tokenFlowProfile.length > 0" class="rounded-2xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
+            <div class="mb-3 flex items-center gap-2">
+              <div class="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-[10px] font-bold text-white">
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              </div>
+              <h3 class="text-sm font-black text-[var(--text-primary)]">{{ t('Dynamic Token Flow Detected') }}</h3>
+            </div>
+            <p class="mb-3 text-xs text-[var(--text-tertiary)]">{{ t('Token flow detection hint') }}</p>
+            <div class="space-y-2">
+              <div
+                v-for="flow in tokenFlowProfile"
+                :key="flow.id"
+                class="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]"
+              >
+                <input
+                  type="checkbox"
+                  v-model="tokenFlowSelections[flow.id]"
+                  class="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-500 focus:ring-sky-500"
+                />
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-bold text-[var(--text-primary)]">{{ flow.name }}</span>
+                    <span
+                      class="rounded-md px-1.5 py-0.5 text-[10px] font-bold"
+                      :class="{
+                        'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400': flow.confidence === 'high',
+                        'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400': flow.confidence === 'medium',
+                        'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400': flow.confidence === 'low',
+                      }"
+                    >{{ flow.confidence }}</span>
+                  </div>
+                  <div class="mt-1 text-xs text-[var(--text-tertiary)]">
+                    <div>{{ t('Source') }}: {{ flow.producer_summary }}</div>
+                    <div v-for="cs in flow.consumer_summaries" :key="cs">{{ t('Inject to') }}: {{ cs }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
         <div class="flex justify-end gap-3 border-t border-slate-200 bg-white px-6 py-4 dark:border-white/10 dark:bg-white/[0.055]">

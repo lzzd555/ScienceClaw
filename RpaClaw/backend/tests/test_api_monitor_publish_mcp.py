@@ -476,3 +476,164 @@ async def test_publish_with_api_monitor_auth_clears_legacy_auth_config():
     assert server["endpoint_config"] == {"base_url": "https://api.example.test", "timeout_ms": 15000}
     assert server["credential_binding"] == {}
     assert server["api_monitor_auth"] == {"credential_type": "placeholder", "credential_id": ""}
+
+
+def test_token_flow_profile_endpoint_returns_masked_profile(monkeypatch):
+    from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
+    from datetime import datetime, timedelta
+
+    session = _build_session()
+    ts = datetime(2026, 4, 27, 10, 0, 0)
+    session.captured_calls = [
+        CapturedApiCall(
+            request=CapturedRequest(
+                request_id="req-1", url="https://example.test/api/session", method="GET",
+                headers={}, timestamp=ts, resource_type="fetch",
+            ),
+            response=CapturedResponse(
+                status=200, status_text="OK",
+                headers={"content-type": "application/json"},
+                body='{"csrfToken":"8fa7c91e2d8a4c90b0f7"}',
+                content_type="application/json",
+                timestamp=ts + timedelta(milliseconds=100),
+            ),
+            url_pattern="/api/session",
+        ),
+        CapturedApiCall(
+            request=CapturedRequest(
+                request_id="req-2", url="https://example.test/api/orders", method="POST",
+                headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+                body='{"name":"order"}', content_type="application/json",
+                timestamp=ts + timedelta(seconds=1), resource_type="fetch",
+            ),
+            response=None,
+            url_pattern="/api/orders",
+        ),
+    ]
+
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: session)
+
+    app = _build_app()
+    client = TestClient(app)
+
+    response = client.get(f"/api/v1/api-monitor/session/{session.id}/token-flow-profile")
+
+    assert response.status_code == 200
+    profile = response.json()["profile"]
+    assert profile["flow_count"] == 1
+    assert "8fa7c91e2d8a4c90b0f7" not in str(profile)
+    flow = profile["flows"][0]
+    assert flow["confidence"] == "high"
+    assert flow["enabled_by_default"] is True
+
+
+def test_publish_with_token_flow_selection_persists_runtime_config(monkeypatch):
+    from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
+    from datetime import datetime, timedelta
+
+    session = _build_session()
+    ts = datetime(2026, 4, 27, 10, 0, 0)
+    session.captured_calls = [
+        CapturedApiCall(
+            request=CapturedRequest(
+                request_id="req-1", url="https://example.test/api/session", method="GET",
+                headers={}, timestamp=ts, resource_type="fetch",
+            ),
+            response=CapturedResponse(
+                status=200, status_text="OK",
+                headers={"content-type": "application/json"},
+                body='{"csrfToken":"8fa7c91e2d8a4c90b0f7"}',
+                content_type="application/json",
+                timestamp=ts + timedelta(milliseconds=100),
+            ),
+            url_pattern="/api/session",
+        ),
+        CapturedApiCall(
+            request=CapturedRequest(
+                request_id="req-2", url="https://example.test/api/orders", method="POST",
+                headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+                body='{"name":"order"}', content_type="application/json",
+                timestamp=ts + timedelta(seconds=1), resource_type="fetch",
+            ),
+            response=None,
+            url_pattern="/api/orders",
+        ),
+    ]
+
+    server_repo = _MemoryRepo()
+    tool_repo = _MemoryRepo()
+
+    monkeypatch.setattr(
+        "backend.rpa.api_monitor_mcp_registry.get_repository",
+        lambda collection_name: server_repo if collection_name == "user_mcp_servers" else tool_repo,
+    )
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: session)
+
+    # First get the profile to know the flow ID
+    app = _build_app()
+    client = TestClient(app)
+
+    profile_resp = client.get(f"/api/v1/api-monitor/session/{session.id}/token-flow-profile")
+    flow_id = profile_resp.json()["profile"]["flows"][0]["id"]
+
+    # Publish with token flow selection
+    response = client.post(
+        f"/api/v1/api-monitor/session/{session.id}/publish-mcp",
+        json={
+            "mcp_name": "CSRF API MCP",
+            "description": "With token flows",
+            "confirm_overwrite": False,
+            "api_monitor_auth": {
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [{"id": flow_id, "enabled": True}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    server = list(server_repo.docs.values())[0]
+    auth = server.get("api_monitor_auth", {})
+    token_flows = auth.get("token_flows", [])
+    assert len(token_flows) == 1
+    assert token_flows[0]["name"] == "csrf_token"
+    assert token_flows[0]["confidence"] == "high"
+    assert "setup" in token_flows[0]
+    assert "inject" in token_flows[0]
+    assert "applies_to" in token_flows[0]
+    # Ensure no token values leaked
+    assert "8fa7c91e2d8a4c90b0f7" not in str(token_flows)
+
+
+def test_publish_ignores_unknown_token_flow_ids(monkeypatch):
+    session = _build_session()
+    server_repo = _MemoryRepo()
+    tool_repo = _MemoryRepo()
+
+    monkeypatch.setattr(
+        "backend.rpa.api_monitor_mcp_registry.get_repository",
+        lambda collection_name: server_repo if collection_name == "user_mcp_servers" else tool_repo,
+    )
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: session)
+
+    app = _build_app()
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/v1/api-monitor/session/{session.id}/publish-mcp",
+        json={
+            "mcp_name": "No Flows MCP",
+            "description": "",
+            "confirm_overwrite": False,
+            "api_monitor_auth": {
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [{"id": "flow_nonexistent", "enabled": True}],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    server = list(server_repo.docs.values())[0]
+    auth = server.get("api_monitor_auth", {})
+    assert "token_flows" not in auth or len(auth.get("token_flows", [])) == 0

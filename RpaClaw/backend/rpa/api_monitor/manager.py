@@ -461,14 +461,26 @@ class ApiMonitorSessionManager:
         """Clear capture buffer and set session status to recording."""
         self._require_session(session_id)
 
+        session = self.sessions[session_id]
+
         capture = self._captures.get(session_id)
         if capture:
-            capture.clear()
+            # Drain calls captured before recording (e.g. page-load XHR responses
+            # containing CSRF tokens) into session history so token flow analysis
+            # can find them later.  drain_new_calls() already clears the internal
+            # buffer, so a separate capture.clear() is not needed.
+            pre_calls = capture.drain_new_calls()
+            if pre_calls:
+                session.captured_calls.extend(pre_calls)
+                logger.info(
+                    "[ApiMonitor] Drained %d pre-recording calls for session %s",
+                    len(pre_calls), session_id,
+                )
 
         self._mark_action(session_id)
 
-        session = self.sessions[session_id]
-        session.captured_calls.clear()
+        # Keep session.captured_calls intact — the full session history is needed
+        # for token flow analysis.  Only the capture engine buffer was cleared.
         session.status = "recording"
         session.updated_at = datetime.now()
         logger.info("[ApiMonitor] Recording started for session %s", session_id)
@@ -589,7 +601,12 @@ class ApiMonitorSessionManager:
 
                 capture = self._captures.get(session_id)
                 if capture:
-                    capture.clear()
+                    # Drain any calls accumulated since the last probe (including
+                    # initial page-load calls on the first iteration) into session
+                    # history so they are available for token flow analysis.
+                    pre_calls = capture.drain_new_calls()
+                    if pre_calls:
+                        session.captured_calls.extend(pre_calls)
 
                 probed_calls = await self._probe_element(page, elem)
 

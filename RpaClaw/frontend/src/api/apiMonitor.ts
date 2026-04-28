@@ -1,4 +1,5 @@
 import { apiClient, createSSEConnection } from '@/api/client'
+import type { ApiMonitorAuthConfigPublish } from '@/api/mcp'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,11 +102,31 @@ export interface ApiMonitorAuthProfile {
   recommended_credential_type: ApiMonitorCredentialType
 }
 
+export interface TokenFlowProfile {
+  id: string
+  name: string
+  producer_summary: string
+  consumer_summaries: string[]
+  confidence: 'high' | 'medium' | 'low'
+  enabled_by_default: boolean
+  reasons: string[]
+}
+
+export interface TokenFlowProfileResponse {
+  flow_count: number
+  flows: TokenFlowProfile[]
+}
+
+export interface TokenFlowSelection {
+  id: string
+  enabled: boolean
+}
+
 export interface PublishMcpPayload {
   mcp_name: string
   description: string
   confirm_overwrite: boolean
-  api_monitor_auth?: ApiMonitorAuthConfig
+  api_monitor_auth?: ApiMonitorAuthConfigPublish
 }
 
 export interface PublishMcpResult {
@@ -262,5 +283,13 @@ export async function publishMcpToolBundle(
  */
 export async function getAuthProfile(sessionId: string): Promise<ApiMonitorAuthProfile> {
   const response = await apiClient.get(`/api-monitor/session/${sessionId}/auth-profile`)
+  return response.data.profile
+}
+
+/**
+ * Get the token flow profile for a session's captured traffic.
+ */
+export async function getTokenFlowProfile(sessionId: string): Promise<TokenFlowProfileResponse> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/token-flow-profile`)
   return response.data.profile
 }

@@ -256,7 +256,8 @@ def _serialize_system_server(server: Any) -> Dict[str, Any]:
 def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
     transport = doc.get("transport", "streamable_http")
     endpoint_config = doc.get("endpoint_config") or {}
-    if _is_api_monitor_mcp(doc):
+    is_api_monitor = _is_api_monitor_mcp(doc)
+    if is_api_monitor:
         transport = "api_monitor"
         endpoint_config = {}
     return McpServerListItem(
@@ -272,6 +273,7 @@ def _serialize_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
         readonly=False,
         endpoint_config=endpoint_config,
         credential_binding=doc.get("credential_binding") or {},
+        api_monitor_auth=(doc.get("api_monitor_auth") or {}) if is_api_monitor else {},
         tool_policy=doc.get("tool_policy") or {},
     ).model_dump()
 
@@ -558,6 +560,7 @@ async def update_api_monitor_mcp_config(
     auth_field_set = "api_monitor_auth" in body.model_fields_set
     api_monitor_auth = server_doc.get("api_monitor_auth") or {}
     if auth_field_set:
+        existing_token_flows = api_monitor_auth.get("token_flows")
         try:
             api_monitor_auth = await validate_api_monitor_auth_config(
                 user_id,
@@ -566,6 +569,12 @@ async def update_api_monitor_mcp_config(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Preserve existing token_flows unless the payload explicitly provides new ones
+        input_token_flows = body.api_monitor_auth.get("token_flows") if body.api_monitor_auth else None
+        if input_token_flows:
+            api_monitor_auth["token_flows"] = input_token_flows
+        elif existing_token_flows:
+            api_monitor_auth["token_flows"] = existing_token_flows
 
     endpoint_config = _api_monitor_config_dict_value(body, server_doc, "endpoint_config")
     credential_binding = _api_monitor_config_dict_value(body, server_doc, "credential_binding")

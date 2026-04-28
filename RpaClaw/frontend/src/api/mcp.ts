@@ -24,10 +24,37 @@ export interface McpToolPolicy {
 
 export type ApiMonitorCredentialType = 'placeholder' | 'test';
 
+export interface TokenFlowRuntimeConfig {
+  id: string;
+  name: string;
+  setup: Array<{
+    method: string;
+    url: string;
+    extract: { from: string; path: string };
+  }>;
+  inject: Record<string, Record<string, string>>;
+  applies_to: Array<{ method: string; url: string }>;
+  refresh_on_status: number[];
+  confidence: string;
+  summary?: {
+    producer: string;
+    consumers: string[];
+    reasons: string[];
+  };
+}
+
 export interface ApiMonitorAuthConfig {
   credential_type: ApiMonitorCredentialType;
   credential_id: string;
   login_url?: string;
+  token_flows?: TokenFlowRuntimeConfig[];
+}
+
+export interface ApiMonitorAuthConfigPublish {
+  credential_type: ApiMonitorCredentialType;
+  credential_id: string;
+  login_url?: string;
+  token_flows?: Array<{ id: string; enabled: boolean }>;
 }
 
 export interface McpEndpointConfig {

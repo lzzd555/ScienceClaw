@@ -13,6 +13,9 @@ from mcp.client.streamable_http import streamable_http_client
 
 from backend.config import settings
 from backend.mcp.models import McpServerDefinition
+
+import logging
+logger = logging.getLogger(__name__)
 from backend.rpa.api_monitor_mcp_contract import (
     render_mapping,
     render_template_value,
@@ -248,8 +251,9 @@ class ApiMonitorMcpRuntime:
                 method, doc.get("input_schema") or {},
             )
 
+        request_base_url = _api_monitor_request_base_url(self._server, doc)
         url = _build_api_monitor_url(
-            _api_monitor_request_base_url(self._server, doc),
+            request_base_url,
             _api_monitor_tool_url(doc),
             rendered_arguments,
         )
@@ -279,21 +283,88 @@ class ApiMonitorMcpRuntime:
         request_body = auth_application.body
         json_body = request_body or None
 
-        request_kwargs: dict[str, Any] = {
-            "params": request_query,
-            "headers": request_headers,
-        }
-        if json_body is not None:
-            request_kwargs["json"] = json_body
+        # Token flow: setup/extract/inject with retry
+        token_flows_config = (self._server.api_monitor_auth or {}).get("token_flows", [])
+        matching_flows = _matching_token_flows(token_flows_config, method, url, doc)
 
         async with httpx.AsyncClient(timeout=_api_monitor_timeout_seconds(self._server)) as client:
+            token_previews: list[dict[str, Any]] = []
+
+            # Execute setup requests for matching flows
+            token_cache: dict[str, str] = {}
+            for flow in matching_flows:
+                token_name = flow.get("name", "")
+                flow_id = flow.get("id", "")
+                inject_config = flow.get("inject", {})
+                refresh_statuses = flow.get("refresh_on_status", [401, 403, 419])
+                applies_to = flow.get("applies_to", [])
+
+                # Setup + extract
+                extracted_value, setup_error = await _execute_token_flow_setup(
+                    client, flow, self._server,
+                    base_url=request_base_url,
+                    auth_headers=request_headers,
+                    auth_query=request_query,
+                )
+                if extracted_value is None:
+                    return {
+                        "success": False,
+                        "error": setup_error,
+                    }
+                token_cache[token_name] = extracted_value
+
+                # Inject into request
+                _inject_token_values(inject_config, token_cache, request_headers, request_query)
+
+                token_previews.append({
+                    "name": token_name,
+                    "id": flow_id,
+                    "applied": True,
+                    "source": _token_flow_source_summary(flow),
+                    "injected": list(inject_config.get("headers", {}).keys()),
+                })
+
+            # Build request kwargs
+            request_kwargs: dict[str, Any] = {
+                "params": request_query,
+                "headers": request_headers,
+            }
+            if json_body is not None:
+                request_kwargs["json"] = json_body
+
             response = await client.request(method, url, **request_kwargs)
+
+            # Retry once on auth failure statuses
+            if matching_flows and response.status_code in _all_refresh_statuses(matching_flows):
+                token_cache.clear()
+                for flow in matching_flows:
+                    token_name = flow.get("name", "")
+                    extracted_value, _ = await _execute_token_flow_setup(
+                        client, flow, self._server,
+                        base_url=request_base_url,
+                        auth_headers=request_headers,
+                        auth_query=request_query,
+                    )
+                    if extracted_value is not None:
+                        token_cache[token_name] = extracted_value
+                        _inject_token_values(
+                            flow.get("inject", {}), token_cache, request_headers, request_query
+                        )
+
+                request_kwargs["params"] = request_query
+                request_kwargs["headers"] = request_headers
+                response = await client.request(method, url, **request_kwargs)
 
         content_type = response.headers.get("content-type", "")
         try:
             body: Any = response.json() if "json" in content_type else response.text
         except ValueError:
             body = response.text
+
+        auth_preview = dict(auth_application.preview) if auth_application.preview else {}
+        if token_previews:
+            auth_preview["token_flows"] = token_previews
+
         return {
             "success": response.is_success,
             "status_code": response.status_code,
@@ -305,7 +376,7 @@ class ApiMonitorMcpRuntime:
                 "query": sanitize_preview_mapping(request_query),
                 "headers": sanitize_headers(request_headers),
                 "body": sanitize_preview_mapping(json_body) if json_body is not None else None,
-                "auth": auth_application.preview,
+                "auth": auth_preview,
             },
         }
 
@@ -442,3 +513,216 @@ def coerce_mcp_tool_definition(tool: McpToolDefinition | Mapping[str, Any]) -> M
         description=description,
         input_schema=input_schema,
     )
+
+
+# ── Token flow runtime helpers ──────────────────────────────────────────
+
+
+def _matching_token_flows(
+    token_flows: list[dict[str, Any]],
+    method: str,
+    url: str,
+    doc: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return token flows that apply to the given tool request."""
+    if not token_flows:
+        return []
+    tool_url = str(doc.get("url") or doc.get("url_pattern") or "")
+    results: list[dict[str, Any]] = []
+    for flow in token_flows:
+        applies_to = flow.get("applies_to", [])
+        if not applies_to:
+            results.append(flow)
+            continue
+        for target in applies_to:
+            target_method = str(target.get("method", "")).upper()
+            target_url = str(target.get("url", ""))
+            if target_method == method and (
+                target_url == tool_url or url.endswith(target_url) or tool_url.endswith(target_url)
+            ):
+                results.append(flow)
+                break
+    return results
+
+
+async def _execute_token_flow_setup(
+    client: httpx.AsyncClient,
+    flow: dict[str, Any],
+    server: McpServerDefinition,
+    *,
+    base_url: str = "",
+    auth_headers: dict[str, Any] | None = None,
+    auth_query: dict[str, Any] | None = None,
+) -> tuple[str | None, str]:
+    """Execute setup requests for a token flow and return (extracted_value, error).
+
+    On success returns (value, "").  On failure returns (None, error_message).
+    """
+    flow_name = flow.get("name", "unknown")
+    setup_steps = flow.get("setup", [])
+    if not setup_steps:
+        return None, f"Token flow '{flow_name}' has no setup steps"
+
+    base_url = base_url or _api_monitor_base_url(server)
+    last_value: str | None = None
+    setup_headers: dict[str, str] = dict(auth_headers) if auth_headers else {}
+    setup_params: dict[str, str] = dict(auth_query) if auth_query else {}
+
+    for step in setup_steps:
+        setup_method = str(step.get("method", "GET")).upper()
+        setup_url = str(step.get("url", ""))
+        extract_config = step.get("extract", {})
+
+        if not setup_url.startswith(("http://", "https://")):
+            if base_url:
+                setup_url = urljoin(base_url.rstrip("/") + "/", setup_url.lstrip("/"))
+            else:
+                return None, f"Token flow '{flow_name}' setup URL is relative but no base URL configured: {setup_url}"
+
+        logger.info(
+            "[TokenFlow] setup request: %s %s (headers=%s)",
+            setup_method, setup_url, list(setup_headers.keys()),
+        )
+        try:
+            setup_response = await client.request(
+                setup_method, setup_url,
+                headers=setup_headers,
+                params=setup_params,
+            )
+        except httpx.HTTPError as exc:
+            return None, f"Token flow '{flow_name}' setup HTTP error: {exc}"
+
+        logger.info(
+            "[TokenFlow] setup response: status=%d content-type=%s",
+            setup_response.status_code,
+            setup_response.headers.get("content-type", ""),
+        )
+        if not setup_response.is_success:
+            return None, (
+                f"Token flow '{flow_name}' setup got HTTP {setup_response.status_code} "
+                f"from {setup_method} {_token_safe_url(setup_url)}"
+            )
+
+        last_value = _extract_token_from_response(setup_response, extract_config)
+        if last_value is None:
+            return None, (
+                f"Token flow '{flow_name}' could not extract token from "
+                f"{extract_config.get('from', '?')} path={extract_config.get('path', '?')}"
+            )
+
+    return last_value, ""
+
+
+def _extract_token_from_response(
+    response: httpx.Response,
+    extract_config: dict[str, Any],
+) -> str | None:
+    """Extract a token value from a response using the extract configuration."""
+    source = extract_config.get("from", "")
+    path = extract_config.get("path", "")
+
+    if source == "response.body":
+        try:
+            data = response.json()
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or not path:
+            return None
+        return _resolve_json_path(data, path)
+
+    if source == "response.headers":
+        return response.headers.get(path)
+
+    if source in ("cookie", "set-cookie"):
+        set_cookie = response.headers.get("set-cookie", "")
+        for cookie_name, cookie_value in _parse_set_cookie_header(set_cookie):
+            if cookie_name == path:
+                return cookie_value
+        return None
+
+    return None
+
+
+def _resolve_json_path(data: dict[str, Any], path: str) -> str | None:
+    """Resolve a simple JSON path like $.csrfToken or $.data.nonce."""
+    if not path.startswith("$."):
+        return None
+    parts = path[2:].split(".")
+    current: Any = data
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+    return str(current) if current is not None else None
+
+
+def _inject_token_values(
+    inject_config: dict[str, Any],
+    token_cache: dict[str, str],
+    headers: dict[str, Any],
+    query: dict[str, Any],
+) -> None:
+    """Inject cached token values into request headers and query params."""
+    for target_name, template in inject_config.get("headers", {}).items():
+        value = _render_token_template(template, token_cache)
+        if value is not None:
+            headers[target_name] = value
+    for target_name, template in inject_config.get("query", {}).items():
+        value = _render_token_template(template, token_cache)
+        if value is not None:
+            query[target_name] = value
+
+
+def _render_token_template(template: str, token_cache: dict[str, str]) -> str | None:
+    """Render a template like '{{ csrf_token }}' using cached token values."""
+    import re as _re
+    match = _re.match(r"^\{\{\s*(\w+)\s*\}\}$", template.strip())
+    if match:
+        token_name = match.group(1)
+        return token_cache.get(token_name)
+    return None
+
+
+def _token_flow_source_summary(flow: dict[str, Any]) -> str:
+    """Build a masked summary of a token flow's source."""
+    summary = flow.get("summary", {})
+    if summary:
+        return summary.get("producer", "")
+    setup_steps = flow.get("setup", [])
+    if setup_steps:
+        step = setup_steps[0]
+        return f"{step.get('method', 'GET')} {step.get('url', '')} {step.get('extract', {}).get('from', '')}"
+    return ""
+
+
+def _all_refresh_statuses(flows: list[dict[str, Any]]) -> set[int]:
+    """Collect all refresh-on-status codes from matching flows."""
+    statuses: set[int] = set()
+    for flow in flows:
+        for code in flow.get("refresh_on_status", [401, 403, 419]):
+            statuses.add(code)
+    return statuses
+
+
+def _token_safe_url(url: str) -> str:
+    """Mask query parameters for safe logging."""
+    parsed = urlsplit(url)
+    if parsed.query:
+        return url[:url.index("?")] + "?..."
+    return url
+
+
+def _parse_set_cookie_header(header_value: str) -> list[tuple[str, str]]:
+    results: list[tuple[str, str]] = []
+    for part in header_value.split(","):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        name_value = part.split(";")[0].strip()
+        eq_idx = name_value.index("=")
+        name = name_value[:eq_idx].strip()
+        value = name_value[eq_idx + 1:].strip()
+        if name and value:
+            results.append((name, value))
+    return results

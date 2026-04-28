@@ -887,4 +887,9 @@ export default {
   'Auth profile hint for publish': 'Header profile is used for this recommendation only and will not be saved.',
   'Detected {count} sensitive headers': 'Detected {count} sensitive auth-related headers. Placeholder credential type recommended.',
   'Skip credential': 'Skip for now',
+  'Dynamic Token Flow Detected': 'Dynamic Token Flow Detected',
+  'Token flow detection hint': 'The system detected dynamic token flows (e.g. CSRF/XSRF tokens) from captured traffic. Enabled flows will be automatically extracted and injected at runtime.',
+  'Source': 'Source',
+  'Inject to': 'Inject to',
+  'Dynamic Token Flows': 'Dynamic Token Flows',
 }

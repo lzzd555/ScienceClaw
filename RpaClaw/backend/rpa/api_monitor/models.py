@@ -104,10 +104,16 @@ class UpdateToolRequest(BaseModel):
     yaml_definition: str
 
 
+class TokenFlowSelection(BaseModel):
+    id: str
+    enabled: bool = True
+
+
 class ApiMonitorAuthConfigRequest(BaseModel):
     credential_type: str = "placeholder"
     credential_id: str = ""
     login_url: str = ""
+    token_flows: List[TokenFlowSelection] = Field(default_factory=list)
 
 
 class PublishMcpRequest(BaseModel):

@@ -161,6 +161,9 @@ async function save() {
         credential_type: form.credentialType,
         credential_id: form.credentialId,
         ...(form.credentialType === 'test' && form.loginUrl ? { login_url: form.loginUrl } : {}),
+        ...(props.server.api_monitor_auth?.token_flows?.length
+          ? { token_flows: props.server.api_monitor_auth.token_flows }
+          : {}),
       },
     });
     emit('server-updated', result.server);
