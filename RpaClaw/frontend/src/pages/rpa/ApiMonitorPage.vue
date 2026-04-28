@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal, Loader2 } from 'lucide-vue-next';
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed, Teleport } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import {
@@ -26,6 +26,14 @@ import {
 import { listCredentials, type Credential } from '@/api/credential';
 import { API_MONITOR_CREDENTIAL_TYPE_OPTIONS, normalizeApiMonitorAuth } from '@/utils/apiMonitorAuth';
 import { getBackendWsUrl } from '@/utils/sandbox';
+import { showErrorToast, showSuccessToast } from '@/utils/toast';
+import {
+  ANALYSIS_MODES,
+  canStartAnalysis,
+  getAnalysisMode,
+  modeRequiresInstruction,
+  type AnalysisModeKey,
+} from '@/utils/apiMonitorAnalysisModes';
 import {
   getFrameSizeFromMetadata,
   getInputSizeFromMetadata,
@@ -55,6 +63,44 @@ const toolGroups = computed(() => [
 const terminalLines = ref<{ html: string }[]>([]);
 const isRecording = ref(false);
 const isAnalyzing = ref(false);
+const analysisModes = ANALYSIS_MODES;
+const analysisMode = ref<AnalysisModeKey>('free');
+const analysisInstruction = ref('');
+const analysisMenuOpen = ref(false);
+const analysisMenuAnchor = ref<HTMLElement | null>(null);
+const selectedAnalysisMode = computed(() => getAnalysisMode(analysisMode.value));
+const showAnalysisInstruction = computed(() => modeRequiresInstruction(analysisMode.value));
+const canRunAnalysis = computed(() => canStartAnalysis({
+  hasSession: Boolean(sessionId.value),
+  isAnalyzing: isAnalyzing.value,
+  mode: analysisMode.value,
+  instruction: analysisInstruction.value,
+}));
+
+const analysisMenuStyle = computed(() => {
+  const anchor = analysisMenuAnchor.value;
+  if (!anchor) return {};
+  const rect = anchor.getBoundingClientRect();
+  return {
+    position: 'fixed' as const,
+    top: `${rect.bottom + 8}px`,
+    left: `${rect.left}px`,
+    zIndex: 9999,
+  };
+});
+
+const selectAnalysisMode = (mode: AnalysisModeKey) => {
+  analysisMode.value = mode;
+  analysisMenuOpen.value = false;
+};
+
+const handleClickOutsideMenu = (e: MouseEvent) => {
+  if (!analysisMenuOpen.value) return;
+  const anchor = analysisMenuAnchor.value;
+  if (anchor && !anchor.contains(e.target as Node)) {
+    analysisMenuOpen.value = false;
+  }
+};
 const expandedToolId = ref<string | null>(null);
 const toolEdits = reactive<Record<string, string>>({});
 const loading = ref(false);
@@ -365,16 +411,18 @@ const handleStartSession = async () => {
 // ---------------------------------------------------------------------------
 
 const startAnalysis = async () => {
-  if (!sessionId.value) return;
+  if (!canRunAnalysis.value) return;
   isAnalyzing.value = true;
-  addLog('INFO', '开始分析...');
+  const mode = selectedAnalysisMode.value;
+  const instruction = showAnalysisInstruction.value ? analysisInstruction.value.trim() : '';
+  addLog('INFO', `开始${mode.label}...`);
 
   const cleanup = analyzeSession(sessionId.value, (evt) => {
     let data: any;
     try { data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data; } catch { data = evt.data; }
     switch (evt.event) {
       case 'analysis_started':
-        addLog('INFO', `正在分析: ${data.url}`);
+        addLog('INFO', `正在分析: ${data.url || ''}${data.mode ? ` [${data.mode}]` : ''}`);
         break;
       case 'progress':
         if (data.step === 'scanning') {
@@ -383,6 +431,12 @@ const startAnalysis = async () => {
           addLog('ANALYZE', data.message);
         } else if (data.step === 'probing') {
           addLog('ANALYZE', `${data.message} (${data.current}/${data.total})`);
+        } else if (data.step === 'snapshot') {
+          addLog('ANALYZE', data.message);
+        } else if (data.step === 'planning') {
+          addLog('ANALYZE', data.message);
+        } else if (data.step === 'executing') {
+          addLog('ANALYZE', data.message);
         } else if (data.step === 'generating') {
           addLog('BUILD', data.message);
         } else {
@@ -395,13 +449,24 @@ const startAnalysis = async () => {
       case 'elements_classified':
         addLog('ANALYZE', `已分类: ${data.safe} 个安全, ${data.skipped} 个跳过`);
         break;
+      case 'directed_plan_ready':
+        addLog('ANALYZE', `操作计划已生成: ${data.action_count || 0} 个动作`);
+        break;
+      case 'directed_action_detail':
+        addLog('BUILD', `${data.description}  →  ${data.code}`);
+        break;
+      case 'directed_action_executed':
+        addLog('ANALYZE', `✓ 已执行: ${data.code}`);
+        break;
+      case 'directed_action_skipped':
+        addLog('ANALYZE', `已跳过动作: ${data.description || ''}${data.reason ? `（${data.reason}）` : ''}`);
+        break;
       case 'calls_captured':
         addLog('RECV', `从元素 ${data.element_index} 捕获了 ${data.calls} 个 API 调用`);
         break;
       case 'analysis_complete':
         addLog('INFO', `分析完成: ${data.tools_generated} 个工具, ${data.total_calls} 个调用`);
         isAnalyzing.value = false;
-        // Refresh tools from session
         listTools(sessionId.value).then((t) => { tools.value = t; }).catch(() => {});
         cleanup();
         break;
@@ -411,6 +476,9 @@ const startAnalysis = async () => {
         cleanup();
         break;
     }
+  }, {
+    mode: analysisMode.value,
+    instruction,
   });
 };
 
@@ -614,14 +682,14 @@ const submitPublish = async (confirmOverwrite = false) => {
     });
     publishDialogOpen.value = false;
     overwriteDialogOpen.value = false;
-    addLog('INFO', `已保存 MCP "${publishForm.mcpName}"，包含 ${result.tool_count} 个工具`);
+    showSuccessToast(`已保存 MCP "${publishForm.mcpName}"，包含 ${result.tool_count} 个工具`);
   } catch (err: any) {
     if (err?.response?.status === 409 && err?.response?.data?.needs_confirmation) {
       overwriteDialogOpen.value = true;
       addLog('INFO', '发现已存在的 MCP。等待覆盖确认。');
       return;
     }
-    addLog('ERROR', `保存 MCP 失败: ${err.message}`);
+    showErrorToast(`保存 MCP 失败: ${err.message}`);
   } finally {
     isPublishing.value = false;
   }
@@ -666,9 +734,11 @@ const getConfidenceClass = (confidence: string) => confidenceClasses[confidence]
 
 onMounted(() => {
   addLog('INFO', 'API 监控已准备就绪。输入 URL 并点击 Go 开始。');
+  document.addEventListener('click', handleClickOutsideMenu, true);
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener('click', handleClickOutsideMenu, true);
   shouldReconnectScreencast = false;
   disconnectScreencast();
   if (sessionId.value) {
@@ -725,23 +795,6 @@ onBeforeUnmount(() => {
 
             <div class="flex items-center gap-2">
               <button
-                @click="startAnalysis"
-                :disabled="!sessionId || isAnalyzing"
-                class="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-inner backdrop-blur transition hover:bg-white/20 disabled:opacity-50"
-              >
-                <BarChart2 :size="16" />
-                分析
-              </button>
-              <button
-                @click="toggleRecording"
-                :disabled="!sessionId"
-                class="inline-flex items-center gap-2 rounded-full border border-white/15 px-4 py-2 text-sm font-semibold text-white shadow-inner backdrop-blur transition disabled:opacity-50"
-                :class="isRecording ? 'bg-red-500/80 hover:bg-red-500' : 'bg-white/10 hover:bg-white/20'"
-              >
-                <component :is="isRecording ? Square : Disc" :size="16" />
-                {{ isRecording ? '停止' : '录制' }}
-              </button>
-              <button
                 @click="openPublishDialog"
                 :disabled="!sessionId || !adoptedToolCount || isPublishing"
                 class="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-lg transition hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:hover:translate-y-0"
@@ -759,6 +812,75 @@ onBeforeUnmount(() => {
     <div class="flex-1 flex overflow-hidden p-5 sm:px-7 pb-6 gap-5">
       <!-- Left: Browser viewport -->
       <section class="flex-1 flex flex-col relative rounded-3xl border border-slate-200/80 bg-white shadow-sm overflow-hidden dark:border-white/10 dark:bg-[#17181d]">
+        
+        <!-- Action Toolbar -->
+        <div v-if="sessionId" class="flex flex-col border-b border-slate-100 dark:border-white/10 bg-white dark:bg-[#1a1a1a] shrink-0 p-4 gap-4 z-10 relative">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <!-- Analysis Menu -->
+              <div ref="analysisMenuAnchor" class="inline-flex overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/5">
+                <button
+                  @click="startAnalysis"
+                  :disabled="!canRunAnalysis"
+                  class="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-50"
+                >
+                  <BarChart2 :size="16" class="text-indigo-500" />
+                  分析
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 border-l border-slate-200 dark:border-white/10 px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-50"
+                  :disabled="!sessionId || isAnalyzing"
+                  @click="analysisMenuOpen = !analysisMenuOpen"
+                >
+                  {{ selectedAnalysisMode.label }}
+                  <ChevronDown :size="14" />
+                </button>
+              </div>
+              <Teleport to="body">
+                <div
+                  v-if="analysisMenuOpen"
+                  :style="analysisMenuStyle"
+                  class="w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-left shadow-xl dark:border-white/10 dark:bg-[#17181d]"
+                >
+                  <button
+                    v-for="mode in analysisModes"
+                    :key="mode.key"
+                    type="button"
+                    class="block w-full px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-white/[0.06]"
+                    @click="selectAnalysisMode(mode.key)"
+                  >
+                    <span class="block text-sm font-bold text-slate-900 dark:text-white">{{ mode.label }}</span>
+                    <span class="mt-1 block text-xs leading-5 text-slate-500 dark:text-slate-400">{{ mode.description }}</span>
+                  </button>
+                </div>
+              </Teleport>
+
+              <!-- Recording Toggle -->
+              <button
+                @click="toggleRecording"
+                :disabled="!sessionId"
+                class="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-50"
+                :class="isRecording ? 'bg-red-500 text-white shadow-md hover:bg-red-600' : 'border border-slate-200 bg-slate-50 text-[var(--text-primary)] hover:bg-slate-100 dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10'"
+              >
+                <component :is="isRecording ? Square : Disc" :size="16" />
+                {{ isRecording ? '停止' : '录制' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Large Instruction Input -->
+          <div v-if="showAnalysisInstruction" class="relative">
+            <input
+              v-model="analysisInstruction"
+              type="text"
+              placeholder="请输入操作说明（例如：点击登录按钮，输入账号密码等）..."
+              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-[var(--text-primary)] shadow-inner outline-none transition focus:border-sky-400 focus:bg-white focus:ring-4 focus:ring-sky-400/10 dark:border-white/10 dark:bg-black/20 dark:focus:bg-[#1a1a1a]"
+              @keyup.enter="startAnalysis"
+            />
+          </div>
+        </div>
+
         <div class="flex-1 relative overflow-hidden flex items-center justify-center bg-slate-50 dark:bg-black/20">
           <canvas
             v-if="sessionId"

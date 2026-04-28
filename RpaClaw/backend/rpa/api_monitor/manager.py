@@ -20,6 +20,13 @@ from backend.rpa.cdp_connector import get_cdp_connector
 from backend.rpa.playwright_security import get_context_kwargs
 from backend.rpa.screencast import SessionScreencastController
 
+from backend.rpa.assistant_runtime import build_page_snapshot
+from backend.rpa.frame_selectors import build_frame_path
+from backend.rpa.snapshot_compression import compact_recording_snapshot
+
+from .analysis_modes import AnalysisBusinessSafety
+from .directed_analyzer import build_directed_plan, execute_directed_plan, describe_action, describe_locator_code
+
 from .confidence import dedup_key_for_tool, score_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
 from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall
@@ -650,6 +657,194 @@ class ApiMonitorSessionManager:
             yield {
                 "event": "analysis_error",
                 "data": json.dumps({"error": str(exc)}),
+            }
+
+    # ── Directed page analysis ───────────────────────────────────────
+
+    async def analyze_directed_page(
+        self,
+        session_id: str,
+        *,
+        instruction: str,
+        mode: str,
+        business_safety: AnalysisBusinessSafety,
+        model_config: Optional[Dict] = None,
+    ) -> AsyncGenerator[Dict, None]:
+        """Directed analysis: plan browser actions from compact DOM, execute them, then generate tools."""
+        session = self._require_session(session_id)
+        page = self._require_page(session_id)
+        session.status = "analyzing"
+        session.updated_at = datetime.now()
+
+        yield {
+            "event": "analysis_started",
+            "data": json.dumps(
+                {
+                    "session_id": session_id,
+                    "url": session.target_url or getattr(page, "url", ""),
+                    "mode": mode,
+                    "has_instruction": bool(instruction.strip()),
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+        try:
+            capture = self._captures.get(session_id)
+            if capture:
+                pre_calls = capture.drain_new_calls()
+                if pre_calls:
+                    session.captured_calls.extend(pre_calls)
+
+            yield {
+                "event": "progress",
+                "data": json.dumps(
+                    {"step": "snapshot", "message": "正在构建并精简当前页面 DOM..."},
+                    ensure_ascii=False,
+                ),
+            }
+
+            raw_snapshot = await build_page_snapshot(page, build_frame_path)
+            compact_snapshot = compact_recording_snapshot(raw_snapshot, instruction)
+
+            yield {
+                "event": "progress",
+                "data": json.dumps(
+                    {"step": "planning", "message": "正在根据指令生成操作计划..."},
+                    ensure_ascii=False,
+                ),
+            }
+
+            plan = await build_directed_plan(
+                instruction=instruction,
+                compact_snapshot=compact_snapshot,
+                model_config=model_config,
+            )
+
+            yield {
+                "event": "directed_plan_ready",
+                "data": json.dumps(
+                    {
+                        "mode": mode,
+                        "business_safety": business_safety,
+                        "summary": plan.summary,
+                        "action_count": len(plan.actions),
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+
+            yield {
+                "event": "progress",
+                "data": json.dumps(
+                    {"step": "executing", "message": "正在执行定向分析操作..."},
+                    ensure_ascii=False,
+                ),
+            }
+
+            for i, act in enumerate(plan.actions, 1):
+                risk_tag = "⚠" if act.risk == "unsafe" else "✓"
+                yield {
+                    "event": "directed_action_detail",
+                    "data": json.dumps(
+                        {
+                            "index": i,
+                            "description": f"{risk_tag} {describe_action(act)}",
+                            "code": describe_locator_code(act),
+                            "risk": act.risk,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+
+            pending_events: List[Dict] = []
+
+            def on_action_executed(action):
+                self._mark_action(session_id)
+                pending_events.append({
+                    "event": "directed_action_executed",
+                    "data": json.dumps(
+                        {"code": describe_locator_code(action), "description": action.description},
+                        ensure_ascii=False,
+                    ),
+                })
+
+            execution = await execute_directed_plan(
+                page,
+                plan,
+                business_safety=business_safety,
+                on_action=on_action_executed,
+            )
+
+            for evt in pending_events:
+                yield evt
+
+            for skipped in execution.skipped:
+                yield {
+                    "event": "directed_action_skipped",
+                    "data": json.dumps(
+                        {
+                            "description": skipped.description,
+                            "reason": skipped.reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+
+            new_calls: List[CapturedApiCall] = []
+            if capture:
+                new_calls = capture.drain_new_calls()
+
+            if new_calls:
+                session.captured_calls.extend(new_calls)
+                yield {
+                    "event": "calls_captured",
+                    "data": json.dumps(
+                        {
+                            "mode": mode,
+                            "calls": len(new_calls),
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+
+            yield {
+                "event": "progress",
+                "data": json.dumps(
+                    {"step": "generating", "message": "Generating tool definitions via LLM..."},
+                    ensure_ascii=False,
+                ),
+            }
+
+            tools = await self._generate_tools_from_calls(
+                session_id,
+                new_calls,
+                source="auto",
+                model_config=model_config,
+            )
+
+            session.status = "idle"
+            session.updated_at = datetime.now()
+
+            yield {
+                "event": "analysis_complete",
+                "data": json.dumps(
+                    {
+                        "mode": mode,
+                        "tools_generated": len(tools),
+                        "total_calls": len(new_calls),
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+
+        except Exception as exc:
+            session.status = "idle"
+            session.updated_at = datetime.now()
+            logger.error("[ApiMonitor] Directed analysis failed for session %s: %s", session_id, exc, exc_info=True)
+            yield {
+                "event": "analysis_error",
+                "data": json.dumps({"error": str(exc)}, ensure_ascii=False),
             }
 
     # ── Tool generation ──────────────────────────────────────────────

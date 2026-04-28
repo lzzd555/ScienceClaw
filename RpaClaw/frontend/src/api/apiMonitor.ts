@@ -78,6 +78,13 @@ export interface AnalyzeEvent {
   data: unknown
 }
 
+export type AnalysisModeKey = 'free' | 'safe_directed' | 'directed'
+
+export interface AnalyzeSessionPayload {
+  mode?: AnalysisModeKey | string
+  instruction?: string
+}
+
 export type ApiMonitorCredentialType = 'placeholder' | 'test'
 
 export interface ApiMonitorAuthConfig {
@@ -214,14 +221,19 @@ export async function listTabs(sessionId: string): Promise<TabInfo[]> {
 export function analyzeSession(
   sessionId: string,
   onMessage: (evt: AnalyzeEvent) => void,
+  payload: AnalyzeSessionPayload = {},
 ): () => void {
   // createSSEConnection is async but returns the cleanup fn via promise;
   // we store it so the caller can still get a synchronous cleanup handle.
   let cleanup: (() => void) | null = null
+  const body = {
+    mode: payload.mode || 'free',
+    instruction: payload.instruction || '',
+  }
 
   createSSEConnection<unknown>(
     `/api-monitor/session/${sessionId}/analyze`,
-    { method: 'POST' },
+    { method: 'POST', body },
     {
       onMessage({ event, data }) {
         onMessage({ event, data })

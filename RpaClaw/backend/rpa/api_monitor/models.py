@@ -135,3 +135,8 @@ class PublishMcpRequest(BaseModel):
 
 class UpdateToolSelectionRequest(BaseModel):
     selected: bool
+
+
+class AnalyzeSessionRequest(BaseModel):
+    mode: str = "free"
+    instruction: str = ""

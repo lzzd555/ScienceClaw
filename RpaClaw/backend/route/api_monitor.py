@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -16,6 +16,7 @@ from backend.user.dependencies import User, get_current_user
 from backend.storage import get_repository
 from backend.rpa.api_monitor import api_monitor_manager
 from backend.rpa.api_monitor.models import (
+    AnalyzeSessionRequest,
     ApiMonitorSession,
     StartSessionRequest,
     NavigateRequest,
@@ -23,6 +24,7 @@ from backend.rpa.api_monitor.models import (
     UpdateToolRequest,
     UpdateToolSelectionRequest,
 )
+from backend.rpa.api_monitor.analysis_modes import get_analysis_mode_config
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
 from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow
@@ -211,15 +213,43 @@ async def _resolve_user_model_config(user_id: str) -> Optional[dict]:
 @router.post("/session/{session_id}/analyze")
 async def analyze_session(
     session_id: str,
+    request: AnalyzeSessionRequest | None = Body(default=None),
     current_user: User = Depends(get_current_user),
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
 
+    payload = request or AnalyzeSessionRequest()
+    try:
+        mode_config = get_analysis_mode_config(payload.mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    instruction = payload.instruction.strip()
+    if mode_config.requires_instruction and not instruction:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Instruction is required for {mode_config.key} analysis",
+        )
+
     model_config = await _resolve_user_model_config(str(current_user.id))
 
     async def event_generator():
-        async for event in api_monitor_manager.analyze_page(session_id, model_config=model_config):
+        if mode_config.handler == "free":
+            async for event in api_monitor_manager.analyze_page(
+                session_id,
+                model_config=model_config,
+            ):
+                yield event
+            return
+
+        async for event in api_monitor_manager.analyze_directed_page(
+            session_id,
+            instruction=instruction,
+            mode=mode_config.key,
+            business_safety=mode_config.business_safety,
+            model_config=model_config,
+        ):
             yield event
 
     return EventSourceResponse(event_generator())
