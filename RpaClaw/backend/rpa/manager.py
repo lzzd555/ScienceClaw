@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import uuid
 import asyncio
@@ -1121,6 +1121,14 @@ class RPASessionManager:
         self._mark_pending_event_started(session_id)
         try:
             await self._handle_event(session_id, evt)
+        except Exception:
+            logger.exception(
+                "[RPA] failed to handle recorded event: session_id=%s action=%s url=%s locator=%s",
+                session_id,
+                evt.get("action"),
+                evt.get("url"),
+                evt.get("locator"),
+            )
         finally:
             self._mark_pending_event_finished(session_id)
 

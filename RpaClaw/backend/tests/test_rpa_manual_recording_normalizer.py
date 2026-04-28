@@ -42,6 +42,24 @@ def test_build_outcome_accepts_canonicalized_interactive_action():
     }
 
 
+def test_build_outcome_accepts_testid_interactive_action():
+    outcome = build_manual_recording_outcome(
+        action="fill",
+        description='input "approver" into testid("login-username")',
+        target='{"method":"testid","value":"login-username"}',
+        locator_candidates=[],
+        validation={"status": "ok"},
+        value="approver",
+    )
+
+    assert outcome.accepted_action is not None
+    assert outcome.diagnostic is None
+    assert outcome.accepted_action.target == {
+        "method": "testid",
+        "value": "login-username",
+    }
+
+
 def test_build_outcome_routes_missing_canonical_target_to_diagnostic():
     outcome = build_manual_recording_outcome(
         action="fill",

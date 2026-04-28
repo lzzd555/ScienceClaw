@@ -293,6 +293,20 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
             "canonical_target_missing",
         )
 
+    async def test_run_tracked_event_logs_and_finishes_when_handler_fails(self):
+        async def failing_handle_event(_session_id, _evt):
+            raise RuntimeError("boom")
+
+        self.manager._handle_event = failing_handle_event
+
+        await self.manager._run_tracked_event(
+            self.session.id,
+            {"action": "click", "url": "https://example.test", "locator": {"method": "testid", "value": "x"}},
+        )
+
+        self.assertEqual(self.manager._pending_event_counts.get(self.session.id), 0)
+        self.assertTrue(self.manager._ensure_pending_event_idle(self.session.id).is_set())
+
     async def test_select_step_locator_candidate_rebuilds_manual_recording_outcomes(self):
         await self.manager.add_step(
             self.session.id,
@@ -596,6 +610,37 @@ class RPASessionManagerTabTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.steps[-1].locator_candidates[0]["kind"], "role")
         self.assertTrue(self.session.steps[-1].locator_candidates[0]["selected"])
         self.assertEqual(self.session.steps[-1].validation["status"], "ok")
+
+    async def test_handle_event_accepts_testid_locator_candidate(self):
+        page = _FakePage("https://example.com", "Example")
+        tab_id = await self.manager.register_page(self.session.id, page, make_active=True)
+
+        await self.manager._handle_event(
+            self.session.id,
+            {
+                "action": "fill",
+                "tab_id": tab_id,
+                "tag": "INPUT",
+                "timestamp": 1234567890,
+                "value": "approver",
+                "locator_candidates": [
+                    {
+                        "kind": "testid",
+                        "playwright_locator": 'page.get_by_test_id("login-username")',
+                        "strict_match_count": 1,
+                        "selected": True,
+                        "score": 1,
+                    }
+                ],
+                "validation": {"status": "ok"},
+            },
+        )
+
+        self.assertEqual(len(self.session.recorded_actions), 1)
+        self.assertEqual(
+            self.session.recorded_actions[0].target,
+            {"method": "testid", "value": "login-username"},
+        )
 
     async def test_handle_event_prefers_best_scored_strict_candidate_over_earlier_nth(self):
         page = _FakePage("https://example.com", "Example")

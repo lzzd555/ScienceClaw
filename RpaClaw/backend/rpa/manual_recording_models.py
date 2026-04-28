@@ -33,6 +33,7 @@ INTERACTIVE_ACTIONS = {
 
 CANONICAL_TARGET_METHODS = {
     "role",
+    "testid",
     "placeholder",
     "label",
     "text",
@@ -80,7 +81,7 @@ def _is_canonical_target(target: Dict[str, Any]) -> bool:
 
     if method == "role":
         return _is_non_empty_string(target.get("role"))
-    if method in {"placeholder", "label", "text", "title", "alt", "css"}:
+    if method in {"testid", "placeholder", "label", "text", "title", "alt", "css"}:
         return _is_non_empty_string(target.get("value"))
     if method == "nested":
         parent = target.get("parent")
