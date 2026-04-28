@@ -452,8 +452,17 @@ const startAnalysis = async () => {
       case 'directed_plan_ready':
         addLog('ANALYZE', `操作计划已生成: ${data.action_count || 0} 个动作`);
         break;
+      case 'directed_step_snapshot':
+        addLog('ANALYZE', `第 ${data.step || '-'} 轮页面观察: ${data.title || data.url || ''}`);
+        break;
+      case 'directed_step_planned':
+        addLog('ANALYZE', `第 ${data.step || '-'} 轮决策: ${data.summary || data.goal_status || ''}`);
+        break;
       case 'directed_action_detail':
         addLog('BUILD', `${data.description}  →  ${data.code}`);
+        break;
+      case 'directed_step_executed':
+        addLog('ANALYZE', `✓ 第 ${data.step || '-'} 轮已执行: ${data.code || data.description || ''}`);
         break;
       case 'directed_action_executed':
         addLog('ANALYZE', `✓ 已执行: ${data.code}`);
@@ -461,8 +470,19 @@ const startAnalysis = async () => {
       case 'directed_action_skipped':
         addLog('ANALYZE', `已跳过动作: ${data.description || ''}${data.reason ? `（${data.reason}）` : ''}`);
         break;
+      case 'directed_step_observed':
+        addLog('ANALYZE', `第 ${data.step || '-'} 轮观察完成: 新增 ${data.new_calls || 0} 个 API 调用`);
+        break;
+      case 'directed_replan':
+        addLog('ANALYZE', `动作失败，准备重规划: ${data.error || data.description || ''}`);
+        break;
+      case 'directed_done':
+        addLog('ANALYZE', `定向分析停止: ${data.reason || data.goal_status || ''}`);
+        break;
       case 'calls_captured':
-        addLog('RECV', `从元素 ${data.element_index} 捕获了 ${data.calls} 个 API 调用`);
+        addLog('RECV', data.step
+          ? `第 ${data.step} 轮捕获了 ${data.calls} 个 API 调用`
+          : `从元素 ${data.element_index} 捕获了 ${data.calls} 个 API 调用`);
         break;
       case 'analysis_complete':
         addLog('INFO', `分析完成: ${data.tools_generated} 个工具, ${data.total_calls} 个调用`);

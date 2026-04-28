@@ -5,6 +5,7 @@ orchestrates the automatic page analysis workflow.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -25,7 +26,13 @@ from backend.rpa.frame_selectors import build_frame_path
 from backend.rpa.snapshot_compression import compact_recording_snapshot
 
 from .analysis_modes import AnalysisBusinessSafety
-from .directed_analyzer import build_directed_plan, execute_directed_plan, describe_action, describe_locator_code
+from .directed_analyzer import (
+    build_directed_step_decision,
+    execute_directed_action,
+    filter_action_for_business_safety,
+    describe_action,
+    describe_locator_code,
+)
 
 from .confidence import dedup_key_for_tool, score_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
@@ -438,6 +445,76 @@ class ApiMonitorSessionManager:
         session.updated_at = datetime.now()
         return session.target_url
 
+    async def _observe_directed_page(self, page: Page, instruction: str) -> Dict:
+        raw_snapshot = await build_page_snapshot(page, build_frame_path)
+        compact_snapshot = compact_recording_snapshot(raw_snapshot, instruction)
+        title = ""
+        try:
+            title = await page.title()
+        except Exception:
+            title = str(raw_snapshot.get("title") or "")
+        url = getattr(page, "url", "") or str(raw_snapshot.get("url") or "")
+        return {
+            "url": url,
+            "title": title,
+            "raw_snapshot": raw_snapshot,
+            "compact_snapshot": compact_snapshot,
+            "dom_digest": self._build_directed_dom_digest(compact_snapshot),
+        }
+
+    def _build_directed_dom_digest(self, compact_snapshot: Dict) -> str:
+        action_nodes = compact_snapshot.get("actionable_nodes") or compact_snapshot.get("actions") or []
+        digest_payload = {
+            "url": compact_snapshot.get("url") or "",
+            "title": compact_snapshot.get("title") or "",
+            "actionable": [
+                {
+                    "role": node.get("role") or "",
+                    "name": node.get("name") or node.get("label") or "",
+                    "text": node.get("text") or "",
+                    "ref": node.get("ref") or node.get("internal_ref") or "",
+                }
+                for node in action_nodes[:80]
+                if isinstance(node, dict)
+            ],
+        }
+        encoded = json.dumps(digest_payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    async def _wait_for_directed_settle(
+        self,
+        page: Page,
+        *,
+        previous_digest: str,
+        instruction: str,
+        timeout_ms: int = 1500,
+    ) -> None:
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=500)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_load_state("networkidle", timeout=500)
+        except Exception:
+            pass
+        deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+        last_digest = previous_digest
+        stable_count = 0
+        while time.monotonic() < deadline:
+            try:
+                observation = await self._observe_directed_page(page, instruction)
+                current_digest = observation["dom_digest"]
+            except Exception:
+                return
+            if current_digest == last_digest:
+                stable_count += 1
+                if stable_count >= 2:
+                    return
+            else:
+                stable_count = 0
+                last_digest = current_digest
+            await page.wait_for_timeout(150)
+
     # ── Getters ──────────────────────────────────────────────────────
 
     def get_session(self, session_id: str) -> Optional[ApiMonitorSession]:
@@ -670,7 +747,7 @@ class ApiMonitorSessionManager:
         business_safety: AnalysisBusinessSafety,
         model_config: Optional[Dict] = None,
     ) -> AsyncGenerator[Dict, None]:
-        """Directed analysis: plan browser actions from compact DOM, execute them, then generate tools."""
+        """Directed analysis: dynamically plan one action from the current DOM each step."""
         session = self._require_session(session_id)
         page = self._require_page(session_id)
         session.status = "analyzing"
@@ -696,117 +773,234 @@ class ApiMonitorSessionManager:
                 if pre_calls:
                     session.captured_calls.extend(pre_calls)
 
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {"step": "snapshot", "message": "正在构建并精简当前页面 DOM..."},
-                    ensure_ascii=False,
-                ),
-            }
+            max_steps = 8
+            max_failures = 3
+            failed_steps = 0
+            run_history: List[Dict] = []
+            directed_calls: List[CapturedApiCall] = []
+            stop_reason = ""
 
-            raw_snapshot = await build_page_snapshot(page, build_frame_path)
-            compact_snapshot = compact_recording_snapshot(raw_snapshot, instruction)
+            for step_index in range(1, max_steps + 1):
+                yield {
+                    "event": "progress",
+                    "data": json.dumps(
+                        {
+                            "step": "snapshot",
+                            "message": f"正在构建第 {step_index} 轮页面 DOM...",
+                            "current": step_index,
+                            "total": max_steps,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+                observation = await self._observe_directed_page(page, instruction)
+                observation_for_prompt = {
+                    "url": observation["url"],
+                    "title": observation["title"],
+                    "dom_digest": observation["dom_digest"],
+                    "new_call_count": len(directed_calls),
+                    "last_result": run_history[-1] if run_history else None,
+                }
+                yield {
+                    "event": "directed_step_snapshot",
+                    "data": json.dumps(
+                        {
+                            "step": step_index,
+                            "url": observation["url"],
+                            "title": observation["title"],
+                            "dom_digest": observation["dom_digest"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
 
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {"step": "planning", "message": "正在根据指令生成操作计划..."},
-                    ensure_ascii=False,
-                ),
-            }
+                decision = await build_directed_step_decision(
+                    instruction=instruction,
+                    compact_snapshot=observation["compact_snapshot"],
+                    run_history=run_history,
+                    observation=observation_for_prompt,
+                    model_config=model_config,
+                )
+                yield {
+                    "event": "directed_step_planned",
+                    "data": json.dumps(
+                        {
+                            "step": step_index,
+                            "goal_status": decision.goal_status,
+                            "summary": decision.summary,
+                            "expected_change": decision.expected_change,
+                            "done_reason": decision.done_reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
 
-            plan = await build_directed_plan(
-                instruction=instruction,
-                compact_snapshot=compact_snapshot,
-                model_config=model_config,
-            )
+                if decision.goal_status in ("done", "blocked"):
+                    stop_reason = decision.done_reason or decision.summary or decision.goal_status
+                    yield {
+                        "event": "directed_done",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "goal_status": decision.goal_status,
+                                "reason": stop_reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    break
 
-            yield {
-                "event": "directed_plan_ready",
-                "data": json.dumps(
-                    {
-                        "mode": mode,
-                        "business_safety": business_safety,
-                        "summary": plan.summary,
-                        "action_count": len(plan.actions),
-                    },
-                    ensure_ascii=False,
-                ),
-            }
+                action = decision.next_action
+                if action is None:
+                    stop_reason = "Planner did not return a next action"
+                    break
 
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {"step": "executing", "message": "正在执行定向分析操作..."},
-                    ensure_ascii=False,
-                ),
-            }
+                filtered = filter_action_for_business_safety(action, business_safety)
+                if filtered.skipped:
+                    skipped = filtered.skipped
+                    run_history.append(
+                        {
+                            "step": step_index,
+                            "result": "skipped",
+                            "description": skipped.description,
+                            "reason": skipped.reason,
+                            "risk": skipped.risk,
+                        }
+                    )
+                    yield {
+                        "event": "directed_action_skipped",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "description": skipped.description,
+                                "reason": skipped.reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    continue
 
-            for i, act in enumerate(plan.actions, 1):
-                risk_tag = "⚠" if act.risk == "unsafe" else "✓"
+                allowed_action = filtered.allowed
+                if allowed_action is None:
+                    stop_reason = "No allowed directed action returned"
+                    break
+
                 yield {
                     "event": "directed_action_detail",
                     "data": json.dumps(
                         {
-                            "index": i,
-                            "description": f"{risk_tag} {describe_action(act)}",
-                            "code": describe_locator_code(act),
-                            "risk": act.risk,
+                            "index": step_index,
+                            "description": describe_action(allowed_action),
+                            "code": describe_locator_code(allowed_action),
+                            "risk": allowed_action.risk,
                         },
                         ensure_ascii=False,
                     ),
                 }
-
-            pending_events: List[Dict] = []
-
-            def on_action_executed(action):
                 self._mark_action(session_id)
-                pending_events.append({
+                try:
+                    await execute_directed_action(page, allowed_action)
+                except Exception as action_exc:
+                    error_text = str(action_exc)
+                    run_history.append(
+                        {
+                            "step": step_index,
+                            "result": "failed",
+                            "description": allowed_action.description,
+                            "code": describe_locator_code(allowed_action),
+                            "error": error_text,
+                            "expected_change": decision.expected_change,
+                        }
+                    )
+                    if capture:
+                        failed_step_calls = capture.drain_new_calls()
+                        if failed_step_calls:
+                            directed_calls.extend(failed_step_calls)
+                            session.captured_calls.extend(failed_step_calls)
+                    failed_steps += 1
+                    yield {
+                        "event": "directed_replan",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "description": allowed_action.description,
+                                "error": error_text,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    if failed_steps >= max_failures:
+                        stop_reason = f"Reached max directed action failures: {max_failures}"
+                        break
+                    continue
+
+                run_history.append(
+                    {
+                        "step": step_index,
+                        "result": "executed",
+                        "description": allowed_action.description,
+                        "code": describe_locator_code(allowed_action),
+                        "expected_change": decision.expected_change,
+                    }
+                )
+                yield {
+                    "event": "directed_step_executed",
+                    "data": json.dumps(
+                        {
+                            "step": step_index,
+                            "description": allowed_action.description,
+                            "code": describe_locator_code(allowed_action),
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+                yield {
                     "event": "directed_action_executed",
                     "data": json.dumps(
-                        {"code": describe_locator_code(action), "description": action.description},
-                        ensure_ascii=False,
-                    ),
-                })
-
-            execution = await execute_directed_plan(
-                page,
-                plan,
-                business_safety=business_safety,
-                on_action=on_action_executed,
-            )
-
-            for evt in pending_events:
-                yield evt
-
-            for skipped in execution.skipped:
-                yield {
-                    "event": "directed_action_skipped",
-                    "data": json.dumps(
                         {
-                            "description": skipped.description,
-                            "reason": skipped.reason,
+                            "code": describe_locator_code(allowed_action),
+                            "description": allowed_action.description,
                         },
                         ensure_ascii=False,
                     ),
                 }
 
-            new_calls: List[CapturedApiCall] = []
-            if capture:
-                new_calls = capture.drain_new_calls()
+                await self._wait_for_directed_settle(
+                    page,
+                    previous_digest=observation["dom_digest"],
+                    instruction=instruction,
+                )
 
-            if new_calls:
-                session.captured_calls.extend(new_calls)
+                step_calls: List[CapturedApiCall] = []
+                if capture:
+                    step_calls = capture.drain_new_calls()
+                if step_calls:
+                    directed_calls.extend(step_calls)
+                    session.captured_calls.extend(step_calls)
+                    yield {
+                        "event": "calls_captured",
+                        "data": json.dumps(
+                            {
+                                "mode": mode,
+                                "step": step_index,
+                                "calls": len(step_calls),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
                 yield {
-                    "event": "calls_captured",
+                    "event": "directed_step_observed",
                     "data": json.dumps(
                         {
-                            "mode": mode,
-                            "calls": len(new_calls),
+                            "step": step_index,
+                            "new_calls": len(step_calls),
+                            "total_directed_calls": len(directed_calls),
                         },
                         ensure_ascii=False,
                     ),
                 }
+            else:
+                stop_reason = f"Reached max directed steps: {max_steps}"
 
             yield {
                 "event": "progress",
@@ -818,7 +1012,7 @@ class ApiMonitorSessionManager:
 
             tools = await self._generate_tools_from_calls(
                 session_id,
-                new_calls,
+                directed_calls,
                 source="auto",
                 model_config=model_config,
             )
@@ -832,7 +1026,9 @@ class ApiMonitorSessionManager:
                     {
                         "mode": mode,
                         "tools_generated": len(tools),
-                        "total_calls": len(new_calls),
+                        "total_calls": len(directed_calls),
+                        "steps": len(run_history),
+                        "stop_reason": stop_reason,
                     },
                     ensure_ascii=False,
                 ),
