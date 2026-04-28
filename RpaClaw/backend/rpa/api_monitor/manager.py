@@ -814,13 +814,42 @@ class ApiMonitorSessionManager:
                     ),
                 }
 
-                decision = await build_directed_step_decision(
-                    instruction=instruction,
-                    compact_snapshot=observation["compact_snapshot"],
-                    run_history=run_history,
-                    observation=observation_for_prompt,
-                    model_config=model_config,
-                )
+                try:
+                    decision = await build_directed_step_decision(
+                        instruction=instruction,
+                        compact_snapshot=observation["compact_snapshot"],
+                        run_history=run_history,
+                        observation=observation_for_prompt,
+                        model_config=model_config,
+                    )
+                except Exception as planner_exc:
+                    error_text = str(planner_exc)
+                    run_history.append(
+                        {
+                            "step": step_index,
+                            "result": "planner_failed",
+                            "error": error_text,
+                            "url": observation["url"],
+                            "title": observation["title"],
+                            "dom_digest": observation["dom_digest"],
+                        }
+                    )
+                    failed_steps += 1
+                    yield {
+                        "event": "directed_replan",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "description": "planner_failed",
+                                "error": error_text,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    if failed_steps >= max_failures:
+                        stop_reason = f"Reached max directed planner failures: {max_failures}"
+                        break
+                    continue
                 yield {
                     "event": "directed_step_planned",
                     "data": json.dumps(

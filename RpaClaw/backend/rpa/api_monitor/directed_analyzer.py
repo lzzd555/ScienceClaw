@@ -217,14 +217,23 @@ async def build_directed_step_decision(
         ),
     ]
     response = await model.ainvoke(messages)
-    if isinstance(response, AIMessage):
-        raw = response.content or ""
-    elif hasattr(response, "content"):
-        raw = str(response.content)
-    else:
-        raw = str(response)
+    raw = _message_text(response, AIMessage)
 
-    parsed = json.loads(strip_json_fence(raw))
+    try:
+        parsed = json.loads(strip_json_fence(raw))
+    except (json.JSONDecodeError, ValueError):
+        repair_messages = [
+            *messages,
+            HumanMessage(
+                content=(
+                    "上一次返回不是合法 JSON。请只把下面内容修复为符合 schema 的 JSON 对象，"
+                    "不要解释，不要 markdown，不要添加 JSON 以外的文字。\n\n"
+                    f"原始返回：\n{raw}"
+                )
+            ),
+        ]
+        repaired = await model.ainvoke(repair_messages)
+        parsed = json.loads(strip_json_fence(_message_text(repaired, AIMessage)))
     decision = DirectedStepDecision.model_validate(parsed)
     if decision.goal_status == "continue" and decision.next_action is None:
         return DirectedStepDecision(
@@ -235,6 +244,14 @@ async def build_directed_step_decision(
     if decision.goal_status != "continue":
         decision.next_action = None
     return decision
+
+
+def _message_text(response: Any, ai_message_type: Any) -> str:
+    if isinstance(response, ai_message_type):
+        return str(response.content or "")
+    if hasattr(response, "content"):
+        return str(response.content)
+    return str(response)
 
 
 def filter_actions_for_business_safety(

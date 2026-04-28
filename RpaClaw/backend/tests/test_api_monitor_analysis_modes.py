@@ -328,6 +328,44 @@ def test_directed_step_prompt_includes_history_and_current_snapshot(monkeypatch)
     assert "每次只返回一个下一步动作" in prompt
 
 
+def test_directed_step_decision_repairs_invalid_json_response(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from backend.rpa.api_monitor import directed_analyzer
+
+    captured_messages = []
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages):
+            self.calls += 1
+            captured_messages.extend(messages)
+            if self.calls == 1:
+                return AIMessage(content='{"goal_status":"continue"\n "summary":"少了逗号"}')
+            return AIMessage(
+                content='{"goal_status":"continue","summary":"修复后点击搜索","next_action":{"action":"click","locator":{"method":"role","role":"button","name":"搜索"},"description":"点击搜索","risk":"safe"},"expected_change":"出现结果"}'
+            )
+
+    fake_model = _FakeModel()
+    monkeypatch.setattr(directed_analyzer, "get_llm_model", lambda config=None, streaming=False: fake_model)
+
+    decision = asyncio.run(
+        directed_analyzer.build_directed_step_decision(
+            instruction="搜索订单 123",
+            compact_snapshot={"url": "https://example.test/orders"},
+            run_history=[],
+            observation={"url": "https://example.test/orders", "title": "Orders"},
+        )
+    )
+
+    assert fake_model.calls == 2
+    assert decision.goal_status == "continue"
+    assert decision.next_action is not None
+    assert decision.next_action.description == "点击搜索"
+    assert "上一次返回不是合法 JSON" in captured_messages[-1].content
+
+
 def test_filter_action_for_business_safety_handles_single_step_actions():
     safe_action = DirectedAction(
         action="click",
@@ -843,6 +881,55 @@ def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
     assert decision_contexts[1][0]["result"] == "failed"
     assert "Locator not found" in decision_contexts[1][0]["error"]
     assert any(event["event"] == "directed_replan" for event in events)
+    assert any(event["event"] == "analysis_complete" for event in events)
+
+
+def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], []])
+
+    decision_contexts = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "same-page",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+        decision_contexts.append(list(run_history))
+        if not run_history:
+            raise ValueError("LLM returned invalid JSON")
+        return DirectedStepDecision(goal_status="blocked", summary="无法继续", done_reason="planner 已失败一次")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert decision_contexts[1][0]["result"] == "planner_failed"
+    assert "LLM returned invalid JSON" in decision_contexts[1][0]["error"]
+    assert any(event["event"] == "directed_replan" for event in events)
+    assert not any(event["event"] == "analysis_error" for event in events)
     assert any(event["event"] == "analysis_complete" for event in events)
 
 
