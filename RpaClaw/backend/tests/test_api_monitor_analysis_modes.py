@@ -823,6 +823,81 @@ def test_directed_analysis_replans_after_dom_changes(monkeypatch):
     assert any(event["event"] == "analysis_complete" for event in events)
 
 
+def test_directed_analysis_asks_ai_to_stop_after_capturing_calls(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], [_captured_call()]])
+
+    observations = []
+
+    async def fake_observe(page, instruction):
+        observations.append("observed")
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": f"page-{len(observations)}",
+        }
+
+    decisions = []
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+        decisions.append({"run_history": list(run_history), "observation": dict(observation)})
+        if run_history and run_history[-1].get("new_calls"):
+            return DirectedStepDecision(
+                goal_status="done",
+                summary="搜索接口已捕获",
+                done_reason="AI 判断任务已经完成",
+            )
+        return DirectedStepDecision(
+            goal_status="continue",
+            summary="点击搜索",
+            next_action=DirectedAction(
+                action="click",
+                locator={"method": "role", "role": "button", "name": "搜索"},
+                description="点击搜索",
+                risk="safe",
+            ),
+        )
+
+    async def fake_execute_action(page, action):
+        return None
+
+    async def fake_wait_for_directed_settle(page, *, previous_digest, instruction, timeout_ms=1500):
+        return None
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        assert len(calls_arg) == 1
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr(manager, "_wait_for_directed_settle", fake_wait_for_directed_settle)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    complete = [event for event in events if event["event"] == "analysis_complete"]
+    assert len(observations) == 1
+    assert len(decisions) == 2
+    assert decisions[1]["run_history"][-1]["new_calls"][0]["url"] == "https://example.test/api/orders?keyword=123"
+    assert decisions[1]["observation"]["completion_check"] is True
+    assert "AI 判断任务已经完成" in complete[-1]["data"]
+
+
 def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()
@@ -931,6 +1006,51 @@ def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     assert any(event["event"] == "directed_replan" for event in events)
     assert not any(event["event"] == "analysis_error" for event in events)
     assert any(event["event"] == "analysis_complete" for event in events)
+
+
+def test_directed_analysis_allows_ten_failures_before_stopping(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[]])
+
+    attempts = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "same-page",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+        attempts.append(len(run_history))
+        raise ValueError("LLM returned invalid JSON")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    complete = [event for event in events if event["event"] == "analysis_complete"]
+    assert attempts == list(range(10))
+    assert "Reached max directed planner failures: 10" in complete[-1]["data"]
 
 
 def test_directed_analysis_filters_unsafe_action_each_step(monkeypatch):

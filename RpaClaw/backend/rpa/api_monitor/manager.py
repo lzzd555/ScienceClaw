@@ -773,8 +773,8 @@ class ApiMonitorSessionManager:
                 if pre_calls:
                     session.captured_calls.extend(pre_calls)
 
-            max_steps = 8
-            max_failures = 3
+            max_failures = 10
+            max_steps = max(8, max_failures)
             failed_steps = 0
             run_history: List[Dict] = []
             directed_calls: List[CapturedApiCall] = []
@@ -1006,6 +1006,8 @@ class ApiMonitorSessionManager:
                 if step_calls:
                     directed_calls.extend(step_calls)
                     session.captured_calls.extend(step_calls)
+                    if run_history:
+                        run_history[-1]["new_calls"] = self._summarize_directed_calls(step_calls)
                     yield {
                         "event": "calls_captured",
                         "data": json.dumps(
@@ -1028,6 +1030,68 @@ class ApiMonitorSessionManager:
                         ensure_ascii=False,
                     ),
                 }
+                if step_calls:
+                    completion_observation = {
+                        "url": observation["url"],
+                        "title": observation["title"],
+                        "dom_digest": observation["dom_digest"],
+                        "new_call_count": len(directed_calls),
+                        "last_result": run_history[-1] if run_history else None,
+                        "completion_check": True,
+                    }
+                    try:
+                        completion_decision = await build_directed_step_decision(
+                            instruction=instruction,
+                            compact_snapshot=observation["compact_snapshot"],
+                            run_history=run_history,
+                            observation=completion_observation,
+                            model_config=model_config,
+                        )
+                    except Exception as planner_exc:
+                        yield {
+                            "event": "directed_replan",
+                            "data": json.dumps(
+                                {
+                                    "step": step_index,
+                                    "description": "completion_check_failed",
+                                    "error": str(planner_exc),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                        continue
+                    yield {
+                        "event": "directed_step_planned",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "goal_status": completion_decision.goal_status,
+                                "summary": completion_decision.summary,
+                                "expected_change": completion_decision.expected_change,
+                                "done_reason": completion_decision.done_reason,
+                                "completion_check": True,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    if completion_decision.goal_status in ("done", "blocked"):
+                        stop_reason = (
+                            completion_decision.done_reason
+                            or completion_decision.summary
+                            or completion_decision.goal_status
+                        )
+                        yield {
+                            "event": "directed_done",
+                            "data": json.dumps(
+                                {
+                                    "step": step_index,
+                                    "goal_status": completion_decision.goal_status,
+                                    "reason": stop_reason,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                        break
             else:
                 stop_reason = f"Reached max directed steps: {max_steps}"
 
@@ -1073,6 +1137,21 @@ class ApiMonitorSessionManager:
             }
 
     # ── Tool generation ──────────────────────────────────────────────
+
+    def _summarize_directed_calls(self, calls: List[CapturedApiCall]) -> List[Dict]:
+        summaries: List[Dict] = []
+        for call in calls[:10]:
+            response = call.response
+            summaries.append(
+                {
+                    "method": call.request.method,
+                    "url": call.request.url,
+                    "url_pattern": call.url_pattern or "",
+                    "status": response.status if response else None,
+                    "content_type": response.content_type if response else None,
+                }
+            )
+        return summaries
 
     async def _generate_tools_from_calls(
         self,

@@ -127,6 +127,7 @@ DIRECTED_STEP_SYSTEM = """\
 - 当前页面精简 DOM 是事实源，历史动作只说明已经发生过什么。
 - 如果 DOM 或 URL 已变化，必须基于新页面推理下一步。
 - 目标 API 已捕获或用户目标已满足时返回 done，且 next_action 为空。
+- 当 observation.completion_check 为 true 时，重点判断上一轮动作和 captured API 是否已经满足用户目标；满足则返回 done，不满足再返回 continue。
 - 没有安全或有意义的浏览器动作时返回 blocked，且 next_action 为空。
 
 安全判定：
