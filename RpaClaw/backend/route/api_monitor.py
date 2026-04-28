@@ -25,7 +25,7 @@ from backend.rpa.api_monitor.models import (
 )
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
-from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish
+from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow
 from backend.rpa.screencast import SessionScreencastController
 from backend.credential.vault import get_vault
 
@@ -404,8 +404,21 @@ async def publish_mcp(
     token_flows = resolve_token_flows_for_publish(
         session.captured_calls, token_flow_selections
     )
-    if token_flows:
-        api_monitor_auth["token_flows"] = token_flows
+
+    # Resolve manual token flows
+    manual_flows = []
+    if request.api_monitor_auth and request.api_monitor_auth.manual_token_flows:
+        try:
+            manual_flows = [
+                validate_manual_token_flow(flow.model_dump())
+                for flow in request.api_monitor_auth.manual_token_flows
+            ]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    combined_flows = [*token_flows, *manual_flows]
+    if combined_flows:
+        api_monitor_auth["token_flows"] = combined_flows
 
     result = await registry.publish_session(
         session=session,

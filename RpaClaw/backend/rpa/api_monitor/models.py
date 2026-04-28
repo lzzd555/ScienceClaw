@@ -109,11 +109,21 @@ class TokenFlowSelection(BaseModel):
     enabled: bool = True
 
 
+class ManualTokenFlowRequest(BaseModel):
+    id: str
+    name: str
+    enabled: bool = True
+    producer: Dict
+    consumers: List[Dict]
+    refresh_on_status: List[int] = Field(default_factory=lambda: [401, 403, 419])
+
+
 class ApiMonitorAuthConfigRequest(BaseModel):
     credential_type: str = "placeholder"
     credential_id: str = ""
     login_url: str = ""
     token_flows: List[TokenFlowSelection] = Field(default_factory=list)
+    manual_token_flows: List[ManualTokenFlowRequest] = Field(default_factory=list)
 
 
 class PublishMcpRequest(BaseModel):

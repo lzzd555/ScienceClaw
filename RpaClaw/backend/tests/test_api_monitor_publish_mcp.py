@@ -598,9 +598,10 @@ def test_publish_with_token_flow_selection_persists_runtime_config(monkeypatch):
     assert len(token_flows) == 1
     assert token_flows[0]["name"] == "csrf_token"
     assert token_flows[0]["confidence"] == "high"
-    assert "setup" in token_flows[0]
-    assert "inject" in token_flows[0]
-    assert "applies_to" in token_flows[0]
+    assert "producer" in token_flows[0]
+    assert "consumers" in token_flows[0]
+    assert token_flows[0]["producer"]["request"]["method"] == "GET"
+    assert token_flows[0]["consumers"][0]["method"] == "POST"
     # Ensure no token values leaked
     assert "8fa7c91e2d8a4c90b0f7" not in str(token_flows)
 
@@ -637,3 +638,52 @@ def test_publish_ignores_unknown_token_flow_ids(monkeypatch):
     server = list(server_repo.docs.values())[0]
     auth = server.get("api_monitor_auth", {})
     assert "token_flows" not in auth or len(auth.get("token_flows", [])) == 0
+
+
+def test_publish_persists_manual_token_flow(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo()
+    tool_repo = _MemoryRepo()
+
+    monkeypatch.setattr(
+        "backend.rpa.api_monitor_mcp_registry.get_repository",
+        lambda collection_name: server_repo if collection_name == "user_mcp_servers" else tool_repo,
+    )
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: _build_session())
+
+    response = client.post(
+        "/api/v1/api-monitor/session/session_1/publish-mcp",
+        json={
+            "mcp_name": "Manual Flow MCP",
+            "description": "Captured APIs",
+            "confirm_overwrite": False,
+            "api_monitor_auth": {
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "manual_token_flows": [
+                    {
+                        "id": "manual_csrf",
+                        "name": "csrf_token",
+                        "producer": {
+                            "request": {"method": "GET", "url": "/api/session"},
+                            "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                        },
+                        "consumers": [
+                            {
+                                "method": "GET",
+                                "url": "/api/orders",
+                                "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    saved_server = next(iter(server_repo.docs.values()))
+    flows = saved_server["api_monitor_auth"]["token_flows"]
+    assert flows[0]["id"] == "manual_csrf"
+    assert flows[0]["source"] == "manual"

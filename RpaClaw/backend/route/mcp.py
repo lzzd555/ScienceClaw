@@ -17,6 +17,7 @@ from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_sc
 from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
 from backend.rpa.api_monitor_mcp_contract import parse_api_monitor_tool_yaml
 from backend.rpa.api_monitor_auth import validate_api_monitor_auth_config
+from backend.rpa.api_monitor_token_flow import normalize_token_flow_config
 from backend.credential.vault import get_vault
 from backend.storage import get_repository
 from backend.user.dependencies import User, require_user
@@ -572,9 +573,21 @@ async def update_api_monitor_mcp_config(
         # Preserve existing token_flows unless the payload explicitly provides new ones
         input_token_flows = body.api_monitor_auth.get("token_flows") if body.api_monitor_auth else None
         if input_token_flows:
-            api_monitor_auth["token_flows"] = input_token_flows
+            normalized_flows = []
+            for flow in input_token_flows:
+                try:
+                    normalized_flows.append(normalize_token_flow_config(flow))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid token flow: {flow.get('id', 'unknown')}")
+            api_monitor_auth["token_flows"] = normalized_flows
         elif existing_token_flows:
-            api_monitor_auth["token_flows"] = existing_token_flows
+            normalized_flows = []
+            for flow in existing_token_flows:
+                try:
+                    normalized_flows.append(normalize_token_flow_config(flow))
+                except ValueError:
+                    pass
+            api_monitor_auth["token_flows"] = normalized_flows
 
     endpoint_config = _api_monitor_config_dict_value(body, server_doc, "endpoint_config")
     credential_binding = _api_monitor_config_dict_value(body, server_doc, "credential_binding")
