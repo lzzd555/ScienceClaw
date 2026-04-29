@@ -773,8 +773,8 @@ class ApiMonitorSessionManager:
                 if pre_calls:
                     session.captured_calls.extend(pre_calls)
 
-            max_failures = 10
-            max_steps = max(8, max_failures)
+            max_failures = 20
+            max_steps = 40
             failed_steps = 0
             run_history: List[Dict] = []
             directed_calls: List[CapturedApiCall] = []

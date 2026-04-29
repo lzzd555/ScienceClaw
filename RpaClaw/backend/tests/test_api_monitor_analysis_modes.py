@@ -1078,7 +1078,7 @@ def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     assert any(event["event"] == "analysis_complete" for event in events)
 
 
-def test_directed_analysis_allows_ten_failures_before_stopping(monkeypatch):
+def test_directed_analysis_allows_twenty_failures_before_stopping(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()
     manager.sessions[session.id] = session
@@ -1119,8 +1119,8 @@ def test_directed_analysis_allows_ten_failures_before_stopping(monkeypatch):
     )
 
     complete = [event for event in events if event["event"] == "analysis_complete"]
-    assert attempts == list(range(10))
-    assert "Reached max directed planner failures: 10" in complete[-1]["data"]
+    assert attempts == list(range(20))
+    assert "Reached max directed planner failures: 20" in complete[-1]["data"]
 
 
 def test_directed_analysis_filters_unsafe_action_each_step(monkeypatch):
