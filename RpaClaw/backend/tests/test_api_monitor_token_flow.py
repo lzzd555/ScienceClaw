@@ -511,6 +511,41 @@ def test_token_flow_consumers_use_path_without_query_for_endpoint_identity():
     ]
 
 
+def test_token_flow_runtime_merges_multiple_injections_for_same_endpoint():
+    calls = [
+        _call(
+            "producer",
+            method="GET",
+            url="https://example.test/api/session",
+            response_body='{"csrfToken":"8fa7c91e2d8a4c90b0f7"}',
+            seconds=0,
+        ),
+        _call(
+            "orders",
+            method="POST",
+            url="https://example.test/api/orders?page=1&csrf_token=8fa7c91e2d8a4c90b0f7",
+            request_headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+            request_body='{"_csrf":"8fa7c91e2d8a4c90b0f7","name":"order"}',
+            seconds=1,
+        ),
+    ]
+
+    profile = build_api_monitor_token_flow_profile(calls)
+    flow = profile["flows"][0]
+    runtime_flows = resolve_token_flows_for_publish(calls, [{"id": flow["id"], "enabled": True}])
+
+    assert len(runtime_flows[0]["consumers"]) == 1
+    assert runtime_flows[0]["consumers"][0] == {
+        "method": "POST",
+        "url": "/api/orders",
+        "inject": {
+            "headers": {"X-CSRF-Token": "{{ csrf_token }}"},
+            "query": {"csrf_token": "{{ csrf_token }}"},
+            "body": {"request.body.$._csrf": "{{ csrf_token }}"},
+        },
+    }
+
+
 # ── Manual token flow validation ──────────────────────────────────────────
 
 

@@ -518,25 +518,28 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
     extract_path = _runtime_extract_path(producer.source_kind, producer.source_path)
 
     deduped_consumers, _ = _dedupe_consumers(flow.consumers)
-    consumers_v2: list[dict[str, Any]] = []
     consumer_summaries: list[str] = []
+    grouped_consumers: dict[tuple[str, str], dict[str, Any]] = {}
 
     for consumer in deduped_consumers:
-        consumer_summaries.append(
-            f"{consumer.method} {_endpoint_path(consumer.url_pattern)} {consumer.location}.{consumer.path}"
+        endpoint = _endpoint_path(consumer.url_pattern)
+        consumer_summaries.append(f"{consumer.method} {endpoint} {consumer.location}.{consumer.path}")
+        group_key = (consumer.method.upper(), endpoint)
+        consumer_doc = grouped_consumers.setdefault(
+            group_key,
+            {
+                "method": consumer.method,
+                "url": endpoint,
+                "inject": {"headers": {}, "query": {}, "body": {}},
+            },
         )
-        inject_doc: dict[str, dict[str, str]] = {"headers": {}, "query": {}, "body": {}}
+        inject_doc = consumer_doc["inject"]
         if consumer.location == "request.headers":
             inject_doc["headers"][consumer.path] = "{{ " + flow.name + " }}"
         elif consumer.location == "request.query":
             inject_doc["query"][consumer.path] = "{{ " + flow.name + " }}"
         elif consumer.location == "request.body":
             inject_doc["body"][consumer.path] = "{{ " + flow.name + " }}"
-        consumers_v2.append({
-            "method": consumer.method,
-            "url": _endpoint_path(consumer.url_pattern),
-            "inject": inject_doc,
-        })
 
     producer_summary = (
         f"{producer.method} {producer.url_pattern} "
@@ -561,7 +564,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
                 {"name": flow.name, "from": extract_from, "path": extract_path, "secret": True}
             ],
         },
-        "consumers": consumers_v2,
+        "consumers": list(grouped_consumers.values()),
         "refresh_on_status": [401, 403, 419],
         "confidence": flow.confidence,
         "summary": {
