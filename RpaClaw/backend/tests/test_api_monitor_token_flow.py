@@ -105,6 +105,9 @@ def test_profile_links_json_csrf_token_to_later_header_consumer():
     assert flow["enabled_by_default"] is True
     assert flow["producer_summary"] == "GET /api/session response.body.$.csrfToken"
     assert flow["consumer_summaries"] == ["POST /api/orders request.headers.X-CSRF-Token"]
+    assert flow["runtime_config"]["producer"]["request"]["url"] == "/api/session"
+    assert flow["runtime_config"]["consumers"][0]["url"] == "/api/orders"
+    assert "8fa7c91e2d8a4c90b0f7" not in str(flow["runtime_config"])
     assert "8fa7c91e2d8a4c90b0f7" not in str(profile)
 
 
@@ -619,4 +622,24 @@ def test_normalize_token_flow_config_passes_through_v2_flow():
             }
         ],
     }
-    assert normalize_token_flow_config(v2_flow) == v2_flow
+    normalized = normalize_token_flow_config(v2_flow)
+    assert normalized["id"] == "flow_v2"
+    assert normalized["name"] == "csrf_token"
+    assert normalized["producer"]["request"] == {
+        "method": "GET",
+        "url": "/api/session",
+        "headers": {},
+        "query": {},
+        "body": None,
+        "content_type": "",
+    }
+    assert normalized["producer"]["extract"] == [
+        {"name": "csrf_token", "from": "response.body", "path": "$.csrfToken", "secret": True}
+    ]
+    assert normalized["consumers"] == [
+        {
+            "method": "GET",
+            "url": "/api/orders",
+            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}, "query": {}, "body": {}},
+        }
+    ]

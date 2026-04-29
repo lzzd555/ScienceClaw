@@ -924,5 +924,10 @@ export default {
   'Samples: {count}': 'Samples: {count}',
   'Manual token flows JSON': 'Manual token flows JSON',
   'Paste manual token flow JSON': 'Paste manual token flow JSON',
+  'Edit Token Flow': 'Edit Token Flow',
+  'Reset': 'Reset',
+  'Token flows JSON': 'Token flows JSON',
+  'Edit saved token flows JSON hint': 'Edit saved token flows. Use [] to clear all token flows.',
+  'Token flows JSON must be an array': 'Token flows JSON must be an array',
   'Invalid JSON': 'Invalid JSON',
 }

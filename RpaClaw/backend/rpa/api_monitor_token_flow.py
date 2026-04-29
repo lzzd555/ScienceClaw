@@ -507,6 +507,7 @@ def _flow_profile_doc(flow: _TokenFlow) -> dict[str, Any]:
         "reasons": flow.reasons,
         "sample_count": len(flow.consumers),
         "source_call_ids": source_call_ids,
+        "runtime_config": _flow_runtime_doc(flow),
     }
 
 
@@ -774,12 +775,24 @@ def validate_manual_token_flow(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_token_flow_config(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate an editable V2 token flow while preserving non-sensitive metadata."""
+    normalized = validate_manual_token_flow(value)
+    normalized["source"] = str(value.get("source") or normalized.get("source") or "manual")
+    normalized["confidence"] = str(value.get("confidence") or normalized.get("confidence") or "manual")
+    if "summary" in value:
+        normalized["summary"] = value.get("summary") or normalized.get("summary") or {}
+    return normalized
+
+
 # ── V1 to V2 migration ──────────────────────────────────────────────────
 
 
 def normalize_token_flow_config(flow: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(flow, dict):
+        raise ValueError("token flow config must be an object")
     if "producer" in flow and "consumers" in flow:
-        return flow
+        return validate_token_flow_config(flow)
     if "setup" in flow and "extract" in flow and "inject" in flow:
         return legacy_v1_to_v2(flow)
     raise ValueError("token flow config is neither V2 nor migratable V1")

@@ -71,6 +71,13 @@
             <span>{{ t('Timeout (ms)') }}</span>
             <input v-model.number="form.timeoutMs" type="number" min="1" class="tools-input font-mono" />
           </label>
+
+          <label class="field mt-4">
+            <span>{{ t('Token flows JSON') }}</span>
+            <textarea v-model="tokenFlowsJson" class="tools-input min-h-56 font-mono text-xs" />
+            <small>{{ t('Edit saved token flows JSON hint') }}</small>
+            <small v-if="tokenFlowsJsonError" class="text-red-500">{{ tokenFlowsJsonError }}</small>
+          </label>
         </section>
       </div>
 
@@ -122,6 +129,8 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const saving = ref(false);
 const credentials = ref<Credential[]>([]);
+const tokenFlowsJson = ref('[]');
+const tokenFlowsJsonError = ref('');
 
 const form = reactive({
   name: '',
@@ -141,6 +150,8 @@ function populateFromServer(server: McpServerItem) {
   form.credentialId = auth.credential_id;
   form.loginUrl = auth.login_url || '';
   form.timeoutMs = (endpointConfig.timeout_ms as number) || 20000;
+  tokenFlowsJson.value = JSON.stringify(server.api_monitor_auth?.token_flows || [], null, 2);
+  tokenFlowsJsonError.value = '';
 }
 
 function handleOpenChange(value: boolean) {
@@ -151,6 +162,18 @@ async function save() {
   if (!props.server?.server_key) return;
   saving.value = true;
   try {
+    tokenFlowsJsonError.value = '';
+    let tokenFlows: unknown = [];
+    try {
+      tokenFlows = tokenFlowsJson.value.trim() ? JSON.parse(tokenFlowsJson.value) : [];
+    } catch (error) {
+      tokenFlowsJsonError.value = error instanceof Error ? error.message : t('Invalid JSON');
+      return;
+    }
+    if (!Array.isArray(tokenFlows)) {
+      tokenFlowsJsonError.value = t('Token flows JSON must be an array');
+      return;
+    }
     const result = await updateApiMonitorMcpConfig(props.server.server_key, {
       name: form.name,
       description: form.description,
@@ -161,9 +184,7 @@ async function save() {
         credential_type: form.credentialType,
         credential_id: form.credentialId,
         ...(form.credentialType === 'test' && form.loginUrl ? { login_url: form.loginUrl } : {}),
-        ...(props.server.api_monitor_auth?.token_flows?.length
-          ? { token_flows: props.server.api_monitor_auth.token_flows }
-          : {}),
+        token_flows: tokenFlows as any,
       },
     });
     emit('server-updated', result.server);

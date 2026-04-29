@@ -1349,6 +1349,141 @@ def test_update_api_monitor_mcp_config_saves_api_monitor_auth_and_clears_legacy_
     assert updated["credential_binding"] == {}
 
 
+def test_update_api_monitor_mcp_config_replaces_existing_token_flows(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([
+        _api_monitor_server_doc(
+            api_monitor_auth={
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [
+                    {
+                        "id": "old_flow",
+                        "name": "old_token",
+                        "producer": {
+                            "request": {"method": "GET", "url": "/api/old"},
+                            "extract": [{"name": "old_token", "from": "response.body", "path": "$.token"}],
+                        },
+                        "consumers": [
+                            {
+                                "method": "GET",
+                                "url": "/api/old-orders",
+                                "inject": {"headers": {"X-Old": "{{ old_token }}"}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    ])
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
+        json={
+            "api_monitor_auth": {
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [
+                    {
+                        "id": "new_flow",
+                        "name": "csrf_token",
+                        "source": "manual",
+                        "enabled": True,
+                        "producer": {
+                            "request": {"method": "GET", "url": "/api/session"},
+                            "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                        },
+                        "consumers": [
+                            {
+                                "method": "POST",
+                                "url": "/api/orders",
+                                "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    flows = server_repo.docs["mcp_api_monitor"]["api_monitor_auth"]["token_flows"]
+    assert [flow["id"] for flow in flows] == ["new_flow"]
+    assert flows[0]["consumers"][0]["url"] == "/api/orders"
+
+
+def test_update_api_monitor_mcp_config_allows_clearing_token_flows(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([
+        _api_monitor_server_doc(
+            api_monitor_auth={
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [
+                    {
+                        "id": "old_flow",
+                        "name": "old_token",
+                        "producer": {
+                            "request": {"method": "GET", "url": "/api/old"},
+                            "extract": [{"name": "old_token", "from": "response.body", "path": "$.token"}],
+                        },
+                        "consumers": [
+                            {
+                                "method": "GET",
+                                "url": "/api/orders",
+                                "inject": {"headers": {"X-Old": "{{ old_token }}"}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    ])
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
+        json={"api_monitor_auth": {"credential_type": "placeholder", "credential_id": "", "token_flows": []}},
+    )
+
+    assert response.status_code == 200
+    assert server_repo.docs["mcp_api_monitor"]["api_monitor_auth"]["token_flows"] == []
+
+
+def test_update_api_monitor_mcp_config_rejects_invalid_token_flow(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    server_repo = _MemoryRepo([_api_monitor_server_doc()])
+    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
+
+    response = client.put(
+        "/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-config",
+        json={
+            "api_monitor_auth": {
+                "credential_type": "placeholder",
+                "credential_id": "",
+                "token_flows": [
+                    {
+                        "id": "bad_flow",
+                        "name": "csrf_token",
+                        "producer": {
+                            "request": {"method": "GET", "url": "/api/session"},
+                            "extract": [{"name": "csrf_token", "from": "response.body", "path": "$.csrfToken"}],
+                        },
+                        "consumers": [{"method": "POST", "url": "/api/orders", "inject": {"headers": {}}}],
+                    }
+                ],
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid token flow: bad_flow" in response.json()["detail"]
+
+
 def test_update_api_monitor_mcp_config_rejects_unknown_credential_type(monkeypatch):
     app = _build_app()
     client = TestClient(app)

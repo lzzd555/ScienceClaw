@@ -119,6 +119,7 @@ export interface TokenFlowProfile {
   reasons: string[]
   sample_count?: number
   source_call_ids?: string[]
+  runtime_config?: ApiMonitorManualTokenFlow
 }
 
 export interface TokenFlowProfileResponse {

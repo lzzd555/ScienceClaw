@@ -20,6 +20,7 @@ import {
   type ApiToolDefinition,
   type ApiMonitorAuthConfig,
   type ApiMonitorAuthProfile,
+  type ApiMonitorManualTokenFlow,
   type TokenFlowProfile,
   type TokenFlowSelection,
 } from '@/api/apiMonitor';
@@ -115,6 +116,8 @@ const publishForm = reactive({
 const authProfile = ref<ApiMonitorAuthProfile | null>(null);
 const tokenFlowProfile = ref<TokenFlowProfile[]>([]);
 const tokenFlowSelections = ref<Record<string, boolean>>({});
+const tokenFlowDrafts = reactive<Record<string, string>>({});
+const tokenFlowDraftErrors = reactive<Record<string, string>>({});
 const manualTokenFlowJson = ref('');
 const manualTokenFlowJsonError = ref('');
 const isLoadingAuthProfile = ref(false);
@@ -636,6 +639,8 @@ const openPublishDialog = async () => {
       const tfProfile = await getTokenFlowProfile(sessionId.value);
       tokenFlowProfile.value = tfProfile.flows || [];
       tokenFlowSelections.value = {};
+      Object.keys(tokenFlowDrafts).forEach((key) => delete tokenFlowDrafts[key]);
+      Object.keys(tokenFlowDraftErrors).forEach((key) => delete tokenFlowDraftErrors[key]);
       for (const flow of tfProfile.flows || []) {
         tokenFlowSelections.value[flow.id] = flow.enabled_by_default;
       }
@@ -670,6 +675,32 @@ const parseManualTokenFlows = (): Array<Record<string, unknown>> => {
   }
 };
 
+const beginEditTokenFlow = (flow: TokenFlowProfile) => {
+  tokenFlowDraftErrors[flow.id] = '';
+  tokenFlowDrafts[flow.id] = JSON.stringify(flow.runtime_config || {}, null, 2);
+};
+
+const resetTokenFlowDraft = (flowId: string) => {
+  delete tokenFlowDrafts[flowId];
+  delete tokenFlowDraftErrors[flowId];
+};
+
+const parseEditedTokenFlows = (): ApiMonitorManualTokenFlow[] | null => {
+  const flows: ApiMonitorManualTokenFlow[] = [];
+  for (const [flowId, draft] of Object.entries(tokenFlowDrafts)) {
+    tokenFlowDraftErrors[flowId] = '';
+    if (!tokenFlowSelections.value[flowId]) continue;
+    try {
+      const parsed = JSON.parse(draft);
+      flows.push(parsed as ApiMonitorManualTokenFlow);
+    } catch (error) {
+      tokenFlowDraftErrors[flowId] = error instanceof Error ? error.message : 'Invalid JSON';
+      return null;
+    }
+  }
+  return flows;
+};
+
 const submitPublish = async (confirmOverwrite = false) => {
   if (!sessionId.value || !adoptedToolCount.value || !publishForm.mcpName.trim()) return;
   isPublishing.value = true;
@@ -677,9 +708,15 @@ const submitPublish = async (confirmOverwrite = false) => {
     addLog('INFO', '正在发布 MCP 工具...');
     await flushToolEdits();
     const authPayload = normalizeApiMonitorAuth(publishAuth);
+    const editedFlows = parseEditedTokenFlows();
+    if (editedFlows === null) {
+      addLog('ERROR', 'Token Flow JSON 格式错误');
+      isPublishing.value = false;
+      return;
+    }
     // Include enabled token flow selections
     const enabledFlows: TokenFlowSelection[] = Object.entries(tokenFlowSelections.value)
-      .filter(([, enabled]) => enabled)
+      .filter(([id, enabled]) => enabled && !(id in tokenFlowDrafts))
       .map(([id, enabled]) => ({ id, enabled }));
     if (enabledFlows.length > 0) {
       authPayload.token_flows = enabledFlows;
@@ -693,6 +730,12 @@ const submitPublish = async (confirmOverwrite = false) => {
     }
     if (manualFlows.length > 0) {
       authPayload.manual_token_flows = manualFlows as any;
+    }
+    if (editedFlows.length > 0) {
+      authPayload.manual_token_flows = [
+        ...((authPayload.manual_token_flows || []) as any[]),
+        ...(editedFlows as any[]),
+      ];
     }
     const result = await publishMcpToolBundle(sessionId.value, {
       mcp_name: publishForm.mcpName.trim(),
@@ -1183,6 +1226,32 @@ onBeforeUnmount(() => {
                       {{ t('Samples: {count}', { count: flow.sample_count }) }}
                     </div>
                   </div>
+                  <div class="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      class="rounded-lg border border-slate-200 px-2 py-1 text-xs font-bold text-[var(--text-secondary)] transition hover:bg-slate-50 dark:border-white/10 dark:hover:bg-white/10"
+                      @click="beginEditTokenFlow(flow)"
+                    >
+                      {{ t('Edit Token Flow') }}
+                    </button>
+                    <button
+                      v-if="flow.id in tokenFlowDrafts"
+                      type="button"
+                      class="rounded-lg border border-slate-200 px-2 py-1 text-xs font-bold text-[var(--text-tertiary)] transition hover:bg-slate-50 dark:border-white/10 dark:hover:bg-white/10"
+                      @click="resetTokenFlowDraft(flow.id)"
+                    >
+                      {{ t('Reset') }}
+                    </button>
+                  </div>
+                  <label v-if="flow.id in tokenFlowDrafts" class="mt-2 block">
+                    <textarea
+                      v-model="tokenFlowDrafts[flow.id]"
+                      class="h-40 w-full rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-mono text-xs"
+                    />
+                    <span v-if="tokenFlowDraftErrors[flow.id]" class="mt-1 block text-xs text-red-500">
+                      {{ tokenFlowDraftErrors[flow.id] }}
+                    </span>
+                  </label>
                 </div>
               </div>
             </div>

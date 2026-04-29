@@ -571,14 +571,16 @@ async def update_api_monitor_mcp_config(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         # Preserve existing token_flows unless the payload explicitly provides new ones
-        input_token_flows = body.api_monitor_auth.get("token_flows") if body.api_monitor_auth else None
-        if input_token_flows:
+        input_has_token_flows = bool(body.api_monitor_auth) and "token_flows" in body.api_monitor_auth
+        input_token_flows = body.api_monitor_auth.get("token_flows") if input_has_token_flows else None
+        if input_has_token_flows:
             normalized_flows = []
-            for flow in input_token_flows:
+            for flow in input_token_flows or []:
                 try:
                     normalized_flows.append(normalize_token_flow_config(flow))
                 except ValueError:
-                    raise HTTPException(status_code=400, detail=f"Invalid token flow: {flow.get('id', 'unknown')}")
+                    flow_id = flow.get("id", "unknown") if isinstance(flow, dict) else "unknown"
+                    raise HTTPException(status_code=400, detail=f"Invalid token flow: {flow_id}")
             api_monitor_auth["token_flows"] = normalized_flows
         elif existing_token_flows:
             normalized_flows = []

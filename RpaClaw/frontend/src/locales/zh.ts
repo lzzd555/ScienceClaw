@@ -966,5 +966,10 @@ export default {
   'Samples: {count}': '样本数：{count}',
   'Manual token flows JSON': '手动 Token Flow JSON',
   'Paste manual token flow JSON': '粘贴手动 Token Flow JSON',
+  'Edit Token Flow': '编辑 Token Flow',
+  'Reset': '重置',
+  'Token flows JSON': 'Token Flow JSON',
+  'Edit saved token flows JSON hint': '编辑已保存的 Token Flow。填入 [] 可清空所有 Token Flow。',
+  'Token flows JSON must be an array': 'Token Flow JSON 必须是数组',
   'Invalid JSON': '无效的 JSON',
 }
