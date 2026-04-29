@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal, Loader2 } from 'lucide-vue-next';
-import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed, Teleport } from 'vue';
+import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import {
@@ -42,6 +42,14 @@ import {
   type ScreencastFrameMetadata,
   type ScreencastSize,
 } from '@/utils/screencastGeometry';
+import {
+  buildScreencastReconnectMessage,
+  getScreencastReconnectDelayMs,
+  getScreencastReconnectNoticeDelayMs,
+  isTerminalScreencastClose,
+  shouldShowScreencastReconnectNotice,
+} from '@/utils/screencastReconnect';
+import { shouldForwardScreencastKeyboardEvent } from '@/utils/screencastInput';
 
 const router = useRouter();
 const { t } = useI18n();
@@ -134,7 +142,10 @@ const canvasRef = ref<HTMLCanvasElement | null>(null);
 const screencastFrameSize = ref<ScreencastSize>({ width: 1280, height: 720 });
 const screencastInputSize = ref<ScreencastSize>({ width: 1280, height: 720 });
 let shouldReconnectScreencast = true;
-let currentScreencastSessionId: string | null = null;
+let screencastReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let screencastReconnectNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+let screencastReconnectAttempts = 0;
+let screencastReconnectStartedAt = 0;
 let lastMoveTime = 0;
 const MOVE_THROTTLE = 50;
 
@@ -285,10 +296,8 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   } else if (e instanceof KeyboardEvent) {
-    const isPasteShortcut = e.type === 'keydown' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v';
-    if (!isPasteShortcut) {
-      e.preventDefault();
-    }
+    if (!shouldForwardScreencastKeyboardEvent(e)) return;
+    e.preventDefault();
     const action = e.type === 'keydown' ? 'keyDown' : 'keyUp';
     screencastWs.send(JSON.stringify({
       type: 'keyboard',
@@ -308,7 +317,28 @@ const handlePaste = (e: ClipboardEvent) => {
   screencastWs.send(JSON.stringify({ type: 'paste', text }));
 };
 
+const clearScreencastReconnectTimer = () => {
+  if (screencastReconnectTimer !== null) {
+    clearTimeout(screencastReconnectTimer);
+    screencastReconnectTimer = null;
+  }
+};
+
+const clearScreencastReconnectNoticeTimer = () => {
+  if (screencastReconnectNoticeTimer !== null) {
+    clearTimeout(screencastReconnectNoticeTimer);
+    screencastReconnectNoticeTimer = null;
+  }
+};
+
+const hasPendingScreencastReconnect = () => (
+  screencastReconnectTimer !== null ||
+  (screencastWs !== null && screencastWs.readyState !== WebSocket.OPEN)
+);
+
 const disconnectScreencast = () => {
+  clearScreencastReconnectTimer();
+  clearScreencastReconnectNoticeTimer();
   if (!screencastWs) return;
   const ws = screencastWs;
   screencastWs = null;
@@ -321,8 +351,42 @@ const disconnectScreencast = () => {
   }
 };
 
+const scheduleScreencastReconnect = (sid: string) => {
+  if (!shouldReconnectScreencast || screencastReconnectTimer !== null) return;
+
+  screencastReconnectAttempts += 1;
+  if (screencastReconnectStartedAt <= 0) {
+    screencastReconnectStartedAt = Date.now();
+  }
+
+  const delay = getScreencastReconnectDelayMs(screencastReconnectAttempts);
+  const message = buildScreencastReconnectMessage('录制', delay);
+  const noticeDelay = getScreencastReconnectNoticeDelayMs({
+    outageStartedAtMs: screencastReconnectStartedAt,
+    nowMs: Date.now(),
+  });
+
+  clearScreencastReconnectNoticeTimer();
+  screencastReconnectNoticeTimer = setTimeout(() => {
+    screencastReconnectNoticeTimer = null;
+    if (shouldShowScreencastReconnectNotice({
+      shouldReconnect: shouldReconnectScreencast,
+      hasPendingReconnect: hasPendingScreencastReconnect(),
+    })) {
+      error.value = message;
+      addLog('INFO', message);
+    }
+  }, noticeDelay);
+
+  screencastReconnectTimer = setTimeout(() => {
+    screencastReconnectTimer = null;
+    if (!shouldReconnectScreencast) return;
+    connectScreencast(sid);
+  }, delay);
+};
+
 const connectScreencast = (sid: string) => {
-  currentScreencastSessionId = sid;
+  clearScreencastReconnectTimer();
   if (screencastWs) {
     disconnectScreencast();
   }
@@ -334,6 +398,12 @@ const connectScreencast = (sid: string) => {
   ws.onopen = () => {
     if (screencastWs !== ws) return;
     console.log('[ApiMonitorPage] Screencast connected');
+    screencastReconnectAttempts = 0;
+    screencastReconnectStartedAt = 0;
+    clearScreencastReconnectNoticeTimer();
+    if (error.value?.includes('画面流暂时中断')) {
+      error.value = null;
+    }
     addLog('INFO', '屏幕录制已连接');
   };
 
@@ -347,7 +417,9 @@ const connectScreencast = (sid: string) => {
         const level = msg.level === 'ERROR' ? 'ERROR' : 'RECV';
         addLog(level, msg.message);
       } else if (msg.type === 'preview_error') {
-        error.value = msg.message || 'Screencast error';
+        if (!hasPendingScreencastReconnect()) {
+          error.value = msg.message || 'Screencast error';
+        }
       }
     } catch (parseError) {
       console.error('[ApiMonitorPage] Screencast parse error:', parseError);
@@ -359,12 +431,11 @@ const connectScreencast = (sid: string) => {
     console.warn('[ApiMonitorPage] Screencast closed:', ev.code, ev.reason);
     screencastWs = null;
     if (!shouldReconnectScreencast) return;
-    // Simple reconnect after 2s
-    setTimeout(() => {
-      if (shouldReconnectScreencast && currentScreencastSessionId) {
-        connectScreencast(currentScreencastSessionId);
-      }
-    }, 2000);
+    if (isTerminalScreencastClose(ev.code)) {
+      error.value = ev.reason || '录制画面流连接失败';
+      return;
+    }
+    scheduleScreencastReconnect(sid);
   };
 
   ws.onerror = (ev) => {

@@ -553,6 +553,69 @@ class _FakeDirectedPage:
         return None
 
 
+class _FakeMonitorPage:
+    def __init__(self, url="https://example.test/app"):
+        self.url = url
+        self.main_frame = object()
+        self.context = None
+        self.default_timeout = None
+        self.default_navigation_timeout = None
+        self.listeners = {}
+
+    def set_default_timeout(self, timeout):
+        self.default_timeout = timeout
+
+    def set_default_navigation_timeout(self, timeout):
+        self.default_navigation_timeout = timeout
+
+    def on(self, event, callback):
+        self.listeners.setdefault(event, []).append(callback)
+
+
+class _FakeMonitorContext:
+    async def new_cdp_session(self, _page):
+        raise RuntimeError("CDP unavailable in unit test")
+
+
+def test_adopt_page_switches_active_page_and_installs_network_listeners():
+    manager = ApiMonitorSessionManager()
+    session = ApiMonitorSession(
+        id="session-popup",
+        user_id="user-1",
+        sandbox_session_id="sandbox-1",
+        target_url="https://example.test/app",
+    )
+    manager.sessions[session.id] = session
+    manager._request_evidence[session.id] = {}
+    manager._captures[session.id] = _FakeCapture()
+
+    original = _FakeMonitorPage("https://example.test/app")
+    popup = _FakeMonitorPage("https://example.test/popup")
+    original.context = _FakeMonitorContext()
+    popup.context = original.context
+
+    manager._adopt_page(session.id, original, make_active=True)
+    manager._adopt_page(session.id, popup, make_active=True)
+
+    assert manager.get_page(session.id) is popup
+    assert "request" in popup.listeners
+    assert "response" in popup.listeners
+    assert manager.list_tabs(session.id) == [
+        {
+            "tab_id": f"{session.id}:0",
+            "title": "",
+            "url": "https://example.test/app",
+            "active": False,
+        },
+        {
+            "tab_id": f"{session.id}:1",
+            "title": "",
+            "url": "https://example.test/popup",
+            "active": True,
+        },
+    ]
+
+
 def test_build_directed_dom_digest_changes_when_visible_actions_change():
     manager = ApiMonitorSessionManager()
     first = {

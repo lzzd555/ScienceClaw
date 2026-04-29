@@ -15,6 +15,7 @@ import {
   type ScreencastFrameMetadata,
   type ScreencastSize,
 } from '@/utils/screencastGeometry';
+import { shouldForwardScreencastKeyboardEvent } from '@/utils/screencastInput';
 import {
   buildScreencastReconnectMessage,
   getScreencastReconnectDelayMs,
@@ -697,10 +698,8 @@ const sendInputEvent = (e: Event) => {
       modifiers: getModifiers(e),
     }));
   } else if (e instanceof KeyboardEvent) {
-    const isPasteShortcut = e.type === 'keydown' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v';
-    if (!isPasteShortcut) {
-      e.preventDefault();
-    }
+    if (!shouldForwardScreencastKeyboardEvent(e)) return;
+    e.preventDefault();
     const action = e.type === 'keydown' ? 'keyDown' : 'keyUp';
     screencastWs.send(JSON.stringify({
       type: 'keyboard',

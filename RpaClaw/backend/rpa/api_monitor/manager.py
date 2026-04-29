@@ -13,7 +13,7 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Set
 
 from playwright.async_api import BrowserContext, Page
 
@@ -314,6 +314,8 @@ class ApiMonitorSessionManager:
         self.sessions: Dict[str, ApiMonitorSession] = {}
         self._contexts: Dict[str, BrowserContext] = {}
         self._pages: Dict[str, Page] = {}
+        self._session_pages: Dict[str, List[Page]] = {}
+        self._listener_pages: Set[tuple[str, int]] = set()
         self._captures: Dict[str, NetworkCaptureEngine] = {}
         self._screencasts: Dict[str, SessionScreencastController] = {}
         self._request_evidence: Dict[str, Dict[str, Dict]] = {}
@@ -377,12 +379,12 @@ class ApiMonitorSessionManager:
 
         self._request_evidence[session_id] = {}
         self._contexts[session_id] = context
-        self._pages[session_id] = page
 
         # Install network capture. During initial navigation page.url can still be
         # about:blank, so fall back to the intended target URL for origin filtering.
         def _capture_page_url() -> str:
-            current_url = page.url
+            current_page = self._pages.get(session_id) or page
+            current_url = current_page.url
             if current_url and current_url != "about:blank":
                 return current_url
             return session.target_url or target_url
@@ -393,9 +395,12 @@ class ApiMonitorSessionManager:
             async_evidence_provider=lambda request: self._async_evidence_for_request(session_id, request),
         )
         self._captures[session_id] = capture
-        self._install_listeners(session_id, page, capture)
+        self._adopt_page(session_id, page, make_active=True)
 
-        await self._install_source_evidence_capture(session_id, context, page)
+        def _on_context_page(new_page: Page) -> None:
+            self._adopt_page(session_id, new_page, make_active=True)
+
+        context.on("page", _on_context_page)
 
         # Navigate in background — don't block the HTTP response
         if target_url:
@@ -421,6 +426,11 @@ class ApiMonitorSessionManager:
         self._captures.pop(session_id, None)
         self._request_evidence.pop(session_id, None)
         self._last_action_at.pop(session_id, None)
+        self._session_pages.pop(session_id, None)
+        self._listener_pages = {
+            key for key in self._listener_pages
+            if key[0] != session_id
+        }
         self._pages.pop(session_id, None)
         self._screencasts.pop(session_id, None)
 
@@ -525,18 +535,21 @@ class ApiMonitorSessionManager:
 
     def list_tabs(self, session_id: str) -> List[Dict]:
         """Return tab info for the session (used by screencast controller)."""
-        page = self._pages.get(session_id)
         session = self.sessions.get(session_id)
-        if not page or not session:
+        if not session:
             return []
 
+        active_page = self._pages.get(session_id)
+        pages = self._session_pages.get(session_id) or ([active_page] if active_page else [])
         return [
             {
-                "tab_id": session.id,
+                "tab_id": f"{session.id}:{idx}",
                 "title": "",
-                "url": session.target_url or "",
-                "active": True,
+                "url": getattr(page, "url", "") or session.target_url or "",
+                "active": page is active_page,
             }
+            for idx, page in enumerate(pages)
+            if page is not None
         ]
 
     # ── Recording ────────────────────────────────────────────────────
@@ -1370,6 +1383,10 @@ class ApiMonitorSessionManager:
         capture: NetworkCaptureEngine,
     ) -> None:
         """Install page.on('request') and page.on('response') listeners."""
+        listener_key = (session_id, id(page))
+        if listener_key in self._listener_pages:
+            return
+        self._listener_pages.add(listener_key)
 
         def on_request(request) -> None:
             logger.debug(
@@ -1392,6 +1409,57 @@ class ApiMonitorSessionManager:
         page.on("response", on_response)
 
         logger.info("[ApiMonitor] Network listeners installed for session %s", session_id)
+
+    def _adopt_page(self, session_id: str, page: Page, *, make_active: bool) -> None:
+        """Track a page in the session and install API capture hooks on it."""
+        session = self._require_session(session_id)
+        pages = self._session_pages.setdefault(session_id, [])
+        if page not in pages:
+            pages.append(page)
+
+        if make_active:
+            self._pages[session_id] = page
+            session.active_tab_id = f"{session.id}:{pages.index(page)}"
+            if getattr(page, "url", ""):
+                session.target_url = page.url
+            session.updated_at = datetime.now()
+
+        page.set_default_timeout(PAGE_TIMEOUT_MS)
+        page.set_default_navigation_timeout(PAGE_TIMEOUT_MS)
+
+        capture = self._captures.get(session_id)
+        if capture:
+            self._install_listeners(session_id, page, capture)
+
+        async def _install_page_evidence() -> None:
+            context = self._contexts.get(session_id) or getattr(page, "context", None)
+            if context is not None:
+                await self._install_source_evidence_capture(session_id, context, page)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            loop.create_task(_install_page_evidence())
+
+        def _on_close() -> None:
+            current_pages = self._session_pages.get(session_id, [])
+            if page in current_pages:
+                current_pages.remove(page)
+            self._listener_pages.discard((session_id, id(page)))
+            if self._pages.get(session_id) is page:
+                fallback = current_pages[-1] if current_pages else None
+                if fallback is not None:
+                    self._pages[session_id] = fallback
+                    session.active_tab_id = f"{session.id}:{current_pages.index(fallback)}"
+                    if getattr(fallback, "url", ""):
+                        session.target_url = fallback.url
+                else:
+                    self._pages.pop(session_id, None)
+                    session.active_tab_id = None
+
+        page.on("close", _on_close)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

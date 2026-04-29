@@ -185,7 +185,7 @@ class NetworkCaptureEngine:
 
     def on_request(self, request) -> None:
         """Called by page.on('request')."""
-        page_url = self._current_page_url()
+        page_url = self._current_page_url(request)
         if not should_capture(request.url, request.resource_type, page_url=page_url):
             logger.debug(
                 "[ApiMonitor] Skipped request: resource_type=%s page_url=%s url=%s",
@@ -236,7 +236,15 @@ class NetworkCaptureEngine:
             "source_evidence": source_evidence,
         }
 
-    def _current_page_url(self) -> Optional[str]:
+    def _current_page_url(self, request=None) -> Optional[str]:
+        if request is not None:
+            try:
+                frame_url = getattr(getattr(request, "frame", None), "url", "")
+                if frame_url and frame_url != "about:blank":
+                    return frame_url
+            except Exception as exc:
+                logger.debug("[ApiMonitor] Failed to read request frame URL: %s", exc)
+
         if not self._page_url_provider:
             return None
         try:
