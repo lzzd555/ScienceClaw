@@ -494,7 +494,7 @@ def _flow_profile_doc(flow: _TokenFlow) -> dict[str, Any]:
     )
     deduped_consumers, source_call_ids = _dedupe_consumers(flow.consumers)
     consumer_summaries = [
-        f"{c.method} {c.url_pattern} {c.location}.{_display_path(c.path)}"
+        f"{c.method} {_endpoint_path(c.url_pattern)} {c.location}.{_display_path(c.path)}"
         for c in deduped_consumers
     ]
     return {
@@ -522,7 +522,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
 
     for consumer in deduped_consumers:
         consumer_summaries.append(
-            f"{consumer.method} {consumer.url_pattern} {consumer.location}.{consumer.path}"
+            f"{consumer.method} {_endpoint_path(consumer.url_pattern)} {consumer.location}.{consumer.path}"
         )
         inject_doc: dict[str, dict[str, str]] = {"headers": {}, "query": {}, "body": {}}
         if consumer.location == "request.headers":
@@ -533,7 +533,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
             inject_doc["body"][consumer.path] = "{{ " + flow.name + " }}"
         consumers_v2.append({
             "method": consumer.method,
-            "url": consumer.url_pattern,
+            "url": _endpoint_path(consumer.url_pattern),
             "inject": inject_doc,
         })
 
@@ -613,6 +613,12 @@ def _display_path(path: str) -> str:
     return path
 
 
+def _endpoint_path(url_pattern: str) -> str:
+    parsed = urlsplit(str(url_pattern or ""))
+    path = parsed.path or str(url_pattern or "")
+    return "/" + path.strip("/")
+
+
 def _producer_signals(field_name: str, value: str) -> list[str]:
     signals: list[str] = []
     lowered = field_name.lower()
@@ -650,7 +656,7 @@ def _dedupe_consumers(consumers: list[_TokenConsumer]) -> tuple[list[_TokenConsu
     seen: dict[tuple[str, str, str, str], _TokenConsumer] = {}
     source_call_ids: list[str] = []
     for consumer in consumers:
-        key = (consumer.method.upper(), consumer.url_pattern, consumer.location, consumer.path)
+        key = (consumer.method.upper(), _endpoint_path(consumer.url_pattern), consumer.location, consumer.path)
         if key not in seen:
             seen[key] = consumer
         if consumer.call_id not in source_call_ids:

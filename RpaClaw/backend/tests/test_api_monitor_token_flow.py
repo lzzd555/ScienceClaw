@@ -9,6 +9,7 @@ from backend.rpa.api_monitor_token_flow import (
     build_api_monitor_token_flow_profile,
     entropy_per_char,
     is_dynamic_value_candidate,
+    resolve_token_flows_for_publish,
     validate_manual_token_flow,
     normalize_token_flow_config,
 )
@@ -465,6 +466,46 @@ def test_profile_deduplicates_repeated_same_endpoint_consumers():
     assert flow["consumer_summaries"] == ["GET /api/orders request.headers.X-CSRF-Token"]
     assert flow["sample_count"] == 2
     assert flow["source_call_ids"] == ["orders_1", "orders_2"]
+
+
+def test_token_flow_consumers_use_path_without_query_for_endpoint_identity():
+    calls = [
+        _call(
+            "producer",
+            method="GET",
+            url="https://example.test/api/session",
+            response_body='{"csrfToken":"8fa7c91e2d8a4c90b0f7"}',
+            seconds=0,
+        ),
+        _call(
+            "orders_page_1",
+            method="GET",
+            url="https://example.test/api/orders?page=1",
+            request_headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+            seconds=1,
+        ),
+        _call(
+            "orders_page_2",
+            method="GET",
+            url="https://example.test/api/orders?page=2",
+            request_headers={"X-CSRF-Token": "8fa7c91e2d8a4c90b0f7"},
+            seconds=2,
+        ),
+    ]
+
+    profile = build_api_monitor_token_flow_profile(calls)
+    flow = profile["flows"][0]
+    runtime_flows = resolve_token_flows_for_publish(calls, [{"id": flow["id"], "enabled": True}])
+
+    assert flow["consumer_summaries"] == ["GET /api/orders request.headers.X-CSRF-Token"]
+    assert flow["source_call_ids"] == ["orders_page_1", "orders_page_2"]
+    assert runtime_flows[0]["consumers"] == [
+        {
+            "method": "GET",
+            "url": "/api/orders",
+            "inject": {"headers": {"X-CSRF-Token": "{{ csrf_token }}"}, "query": {}, "body": {}},
+        }
+    ]
 
 
 # ── Manual token flow validation ──────────────────────────────────────────
