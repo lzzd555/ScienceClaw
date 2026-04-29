@@ -102,3 +102,4 @@ sync-to-huawei-swr-docker.sh
 # Local project data
 RpaClaw/data/
 RpaClaw/Skills/
+.rpaclaw/
