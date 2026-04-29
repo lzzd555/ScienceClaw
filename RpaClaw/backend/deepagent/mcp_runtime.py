@@ -23,7 +23,11 @@ from backend.rpa.api_monitor_mcp_contract import (
     sanitize_preview_mapping,
     sanitize_preview_url,
 )
-from backend.rpa.api_monitor_auth import apply_api_monitor_auth_to_request, apply_api_monitor_auth_to_profile
+from backend.rpa.api_monitor_auth import (
+    ApiMonitorAuthApplication,
+    apply_api_monitor_auth_to_profile,
+    apply_api_monitor_auth_to_request,
+)
 from backend.rpa.api_monitor_runtime_profile import ApiMonitorRuntimeProfile, ApiMonitorRuntimeProfileError
 from backend.credential.vault import get_vault
 from backend.storage import get_repository
@@ -213,9 +217,19 @@ class McpSdkRuntime:
 
 
 class ApiMonitorMcpRuntime:
-    def __init__(self, server: McpServerDefinition) -> None:
+    def __init__(
+        self,
+        server: McpServerDefinition,
+        *,
+        caller_only: bool = False,
+        caller_profile: ApiMonitorRuntimeProfile | None = None,
+        caller_auth_preview: Mapping[str, Any] | None = None,
+    ) -> None:
         self._server = server
         self._tools = get_repository("api_monitor_mcp_tools")
+        self._caller_only = caller_only
+        self._caller_profile = caller_profile
+        self._caller_auth_preview = dict(caller_auth_preview or {})
 
     async def list_tools(self) -> Sequence[McpToolDefinition | Mapping[str, Any]]:
         docs = await self._tools.find_many({"mcp_server_id": self._server.id, "validation_status": "valid"})
@@ -239,6 +253,7 @@ class ApiMonitorMcpRuntime:
 
         method = str(doc.get("method") or "GET").upper()
         rendered_arguments = dict(arguments)
+        rendered_arguments.pop("_auth", None)
 
         # Resolve mappings: use stored mappings if present, otherwise auto-derive from input_schema.
         query_mapping = doc.get("query_mapping") or {}
@@ -275,26 +290,39 @@ class ApiMonitorMcpRuntime:
             )
 
         # V1 legacy path
-        request_query = _api_monitor_base_query(self._server) if not has_api_monitor_auth else {}
-        request_query.update(render_mapping(query_mapping, rendered_arguments))
-        request_headers: dict[str, Any] = dict(self._server.headers) if not has_api_monitor_auth else {}
-        request_headers.update(render_mapping(header_mapping, rendered_arguments))
-        request_body = render_mapping(body_mapping, rendered_arguments)
+        if self._caller_only:
+            request_query = render_mapping(query_mapping, rendered_arguments)
+            profile = self._caller_profile or ApiMonitorRuntimeProfile(base_url=request_base_url)
+            request_headers: dict[str, Any] = dict(profile.headers)
+            request_headers.update(render_mapping(header_mapping, rendered_arguments))
+            request_body = render_mapping(body_mapping, rendered_arguments)
+            auth_application = ApiMonitorAuthApplication(
+                headers=request_headers,
+                query=request_query,
+                body=request_body,
+                preview=dict(self._caller_auth_preview),
+            )
+        else:
+            request_query = _api_monitor_base_query(self._server) if not has_api_monitor_auth else {}
+            request_query.update(render_mapping(query_mapping, rendered_arguments))
+            request_headers = dict(self._server.headers) if not has_api_monitor_auth else {}
+            request_headers.update(render_mapping(header_mapping, rendered_arguments))
+            request_body = render_mapping(body_mapping, rendered_arguments)
 
-        auth_application = await apply_api_monitor_auth_to_request(
-            user_id=self._server.user_id,
-            auth_config=self._server.api_monitor_auth,
-            headers=request_headers,
-            query=request_query,
-            body=request_body,
-            vault=get_vault(),
-        )
-        if auth_application.error:
-            return {"success": False, "error": auth_application.error}
+            auth_application = await apply_api_monitor_auth_to_request(
+                user_id=self._server.user_id,
+                auth_config=self._server.api_monitor_auth,
+                headers=request_headers,
+                query=request_query,
+                body=request_body,
+                vault=get_vault(),
+            )
+            if auth_application.error:
+                return {"success": False, "error": auth_application.error}
 
-        request_headers = auth_application.headers
-        request_query = auth_application.query
-        request_body = auth_application.body
+            request_headers = auth_application.headers
+            request_query = auth_application.query
+            request_body = auth_application.body
         json_body = request_body or None
 
         # V1 Token flow: setup/extract/inject with retry
@@ -386,7 +414,9 @@ class ApiMonitorMcpRuntime:
         body_mapping: dict[str, Any],
         header_mapping: dict[str, Any],
     ) -> dict[str, Any]:
-        profile = ApiMonitorRuntimeProfile(base_url=request_base_url)
+        profile = self._caller_profile or ApiMonitorRuntimeProfile(base_url=request_base_url)
+        if not profile.base_url:
+            profile.base_url = request_base_url
 
         def _build_target_request_parts() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
             target_headers = {**profile.headers, **render_mapping(header_mapping, rendered_arguments)}
@@ -396,15 +426,21 @@ class ApiMonitorMcpRuntime:
 
         async with httpx.AsyncClient(timeout=_api_monitor_timeout_seconds(self._server)) as client:
             # Step 1: Auth -> profile
-            auth_application = await apply_api_monitor_auth_to_profile(
-                user_id=self._server.user_id,
-                auth_config=self._server.api_monitor_auth,
-                profile=profile,
-                client=client,
-                vault=get_vault(),
-            )
-            if auth_application.error:
-                return {"success": False, "error": auth_application.error}
+            if self._caller_only:
+                auth_application = ApiMonitorAuthApplication(
+                    headers=dict(profile.headers),
+                    preview=dict(self._caller_auth_preview),
+                )
+            else:
+                auth_application = await apply_api_monitor_auth_to_profile(
+                    user_id=self._server.user_id,
+                    auth_config=self._server.api_monitor_auth,
+                    profile=profile,
+                    client=client,
+                    vault=get_vault(),
+                )
+                if auth_application.error:
+                    return {"success": False, "error": auth_application.error}
 
             # Step 2: Match V2 token flows
             token_flows_config = (self._server.api_monitor_auth or {}).get("token_flows", [])

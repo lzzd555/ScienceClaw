@@ -73,6 +73,22 @@ export interface ApiMonitorAuthConfig {
   token_flows?: TokenFlowRuntimeConfig[];
 }
 
+export interface CallerAuthRequirements {
+  required: boolean;
+  credential_type: ApiMonitorCredentialType;
+  accepted_fields: string[];
+  notes?: string[];
+}
+
+export interface ApiMonitorExternalAccessState {
+  enabled: boolean;
+  url: string;
+  created_at: string;
+  last_used_at: string;
+  require_caller_credentials: boolean;
+  caller_auth_requirements: CallerAuthRequirements;
+}
+
 export interface ApiMonitorAuthConfigPublish {
   credential_type: ApiMonitorCredentialType;
   credential_id: string;
@@ -113,6 +129,7 @@ export interface McpServerItem {
   credential_binding: McpCredentialBinding;
   api_monitor_auth?: ApiMonitorAuthConfig;
   tool_policy: McpToolPolicy;
+  external_access?: ApiMonitorExternalAccessState;
 }
 
 export interface SessionMcpServerItem extends McpServerItem {
@@ -142,6 +159,7 @@ export interface ApiMonitorMcpToolDetail {
   validation_status: string;
   validation_errors: string[];
   order: number;
+  caller_auth_requirements?: CallerAuthRequirements;
 }
 
 export interface ApiMonitorMcpDetail {
@@ -218,6 +236,27 @@ export async function testMcpServer(serverKey: string): Promise<{ server_key: st
 export async function getApiMonitorMcpDetail(serverKey: string): Promise<ApiMonitorMcpDetail> {
   const response = await apiClient.get<ApiResponse<ApiMonitorMcpDetail>>(
     `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-detail`,
+  );
+  return response.data.data;
+}
+
+export async function getApiMonitorExternalAccess(serverKey: string): Promise<ApiMonitorExternalAccessState> {
+  const response = await apiClient.get<ApiResponse<ApiMonitorExternalAccessState>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-external-access`,
+  );
+  return response.data.data;
+}
+
+export async function enableApiMonitorExternalAccess(serverKey: string): Promise<ApiMonitorExternalAccessState> {
+  const response = await apiClient.post<ApiResponse<ApiMonitorExternalAccessState>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-external-access/enable`,
+  );
+  return response.data.data;
+}
+
+export async function disableApiMonitorExternalAccess(serverKey: string): Promise<ApiMonitorExternalAccessState> {
+  const response = await apiClient.post<ApiResponse<ApiMonitorExternalAccessState>>(
+    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-external-access/disable`,
   );
   return response.data.data;
 }

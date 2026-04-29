@@ -60,6 +60,63 @@
             </div>
           </section>
 
+          <section class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.04]">
+            <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="flex items-center gap-2">
+                  <ShieldCheck :size="18" class="text-teal-600 dark:text-teal-300" />
+                  <h3 class="text-base font-black text-[var(--text-primary)]">{{ t('External MCP Access') }}</h3>
+                  <span
+                    class="rounded-full px-2.5 py-1 text-[11px] font-bold"
+                    :class="externalAccess?.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'"
+                  >
+                    {{ externalAccess?.enabled ? t('Enabled') : t('Disabled') }}
+                  </span>
+                </div>
+                <p class="mt-1 text-sm text-[var(--text-tertiary)]">
+                  {{ formatCallerAuthRequirement(externalAccess?.caller_auth_requirements) }}
+                </p>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-if="!externalAccess?.enabled"
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60"
+                  :disabled="externalAccessBusy === 'enable'"
+                  @click="enableExternalAccess"
+                >
+                  <Loader2 v-if="externalAccessBusy === 'enable'" class="animate-spin" :size="14" />
+                  <Power v-else :size="14" />
+                  {{ t('Enable external access') }}
+                </button>
+                <button
+                  v-else
+                  class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-[var(--text-secondary)] shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.08]"
+                  :disabled="externalAccessBusy === 'disable'"
+                  @click="disableExternalAccess"
+                >
+                  <Loader2 v-if="externalAccessBusy === 'disable'" class="animate-spin" :size="14" />
+                  <Power v-else :size="14" />
+                  {{ t('Disable external access') }}
+                </button>
+                <button
+                  class="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-[var(--text-secondary)] shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.08]"
+                  :disabled="!externalAccess?.url"
+                  @click="copyExternalText(externalAccess?.url || '', 'External MCP URL copied')"
+                >
+                  <Copy :size="14" />
+                  {{ t('Copy URL') }}
+                </button>
+              </div>
+            </div>
+
+            <div class="grid gap-3">
+              <div class="detail-chip">
+                <span class="detail-chip-label">{{ t('MCP URL') }}</span>
+                <span class="break-all font-mono text-xs text-[var(--text-primary)]">{{ externalAccess?.url || '-' }}</span>
+              </div>
+            </div>
+          </section>
+
           <!-- Token Flow Summary -->
           <section
             v-if="detail.server.api_monitor_auth?.token_flows?.length"
@@ -269,12 +326,15 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronDown, Loader2, Server , Save, Play, Wrench, Terminal} from 'lucide-vue-next';
+import { ChevronDown, Copy, Loader2, Play, Power, Save, Server, ShieldCheck, Terminal, Wrench } from 'lucide-vue-next';
 import { parse as parseYaml } from 'yaml';
 import {
+  disableApiMonitorExternalAccess,
+  enableApiMonitorExternalAccess,
   getApiMonitorMcpDetail,
   testApiMonitorMcpTool,
   updateApiMonitorMcpTool,
+  type ApiMonitorExternalAccessState,
   type ApiMonitorMcpDetail,
   type ApiMonitorMcpToolDetail,
   type McpServerItem,
@@ -286,6 +346,9 @@ import {
   syncYamlTopLevelField,
 } from '@/utils/apiMonitorMcp';
 import { formatApiMonitorAuthStatus } from '@/utils/apiMonitorAuth';
+import {
+  formatCallerAuthRequirement,
+} from '@/utils/apiMonitorExternalAccess';
 import { showErrorToast, showSuccessToast } from '@/utils/toast';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -321,6 +384,8 @@ const detail = ref<ApiMonitorMcpDetail | null>(null);
 const expandedToolIds = ref<Set<string>>(new Set());
 const toolStates = reactive<Record<string, ToolState>>({});
 const activeLoadToken = ref(0);
+const externalAccess = ref<ApiMonitorExternalAccessState | null>(null);
+const externalAccessBusy = ref<'enable' | 'disable' | ''>('');
 
 function handleOpenChange(value: boolean) {
   emit('update:open', value);
@@ -334,6 +399,7 @@ function resetToolStates() {
 
 function clearDetailState() {
   detail.value = null;
+  externalAccess.value = null;
   expandedToolIds.value = new Set();
   resetToolStates();
 }
@@ -409,9 +475,45 @@ function applyToolState(tool: ApiMonitorMcpToolDetail) {
 
 function applyDetail(nextDetail: ApiMonitorMcpDetail) {
   detail.value = nextDetail;
+  externalAccess.value = nextDetail.server.external_access ?? null;
   resetToolStates();
   nextDetail.tools.forEach((tool) => applyToolState(tool));
   expandedToolIds.value = new Set(nextDetail.tools.length > 0 ? [nextDetail.tools[0].id] : []);
+}
+
+async function enableExternalAccess() {
+  if (!detail.value?.server.server_key) return;
+  externalAccessBusy.value = 'enable';
+  try {
+    const state = await enableApiMonitorExternalAccess(detail.value.server.server_key);
+    externalAccess.value = state;
+    showSuccessToast(t('API Monitor external access enabled'));
+  } catch (error: any) {
+    console.error(error);
+    showErrorToast(error?.message || t('Failed to update API Monitor external access'));
+  } finally {
+    externalAccessBusy.value = '';
+  }
+}
+
+async function disableExternalAccess() {
+  if (!detail.value?.server.server_key) return;
+  externalAccessBusy.value = 'disable';
+  try {
+    externalAccess.value = await disableApiMonitorExternalAccess(detail.value.server.server_key);
+    showSuccessToast(t('API Monitor external access disabled'));
+  } catch (error: any) {
+    console.error(error);
+    showErrorToast(error?.message || t('Failed to update API Monitor external access'));
+  } finally {
+    externalAccessBusy.value = '';
+  }
+}
+
+async function copyExternalText(value: string, messageKey: string) {
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
+  showSuccessToast(t(messageKey));
 }
 
 async function loadDetail() {

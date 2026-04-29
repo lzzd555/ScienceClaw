@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.config import settings
@@ -17,6 +17,11 @@ from backend.deepagent.sessions import ScienceSessionNotFoundError, async_get_sc
 from backend.mcp.models import McpServerDefinition, SessionMcpBindingUpdate, UserMcpServerCreate, UserMcpServerUpdate
 from backend.rpa.api_monitor_mcp_contract import parse_api_monitor_tool_yaml
 from backend.rpa.api_monitor_auth import validate_api_monitor_auth_config
+from backend.rpa.api_monitor_external_access import (
+    build_caller_auth_requirements,
+    build_external_mcp_url,
+    serialize_external_access_state,
+)
 from backend.rpa.api_monitor_token_flow import normalize_token_flow_config
 from backend.credential.vault import get_vault
 from backend.storage import get_repository
@@ -48,6 +53,7 @@ class McpServerListItem(BaseModel):
     credential_binding: Dict[str, Any] = Field(default_factory=dict)
     api_monitor_auth: Dict[str, Any] = Field(default_factory=dict)
     tool_policy: Dict[str, Any] = Field(default_factory=dict)
+    external_access: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ApiMonitorMcpConfigUpdate(BaseModel):
@@ -295,10 +301,35 @@ def _serialize_api_monitor_user_server(doc: Dict[str, Any]) -> Dict[str, Any]:
         credential_binding=doc.get("credential_binding") or {},
         api_monitor_auth=doc.get("api_monitor_auth") or {},
         tool_policy=doc.get("tool_policy") or {},
+        external_access=serialize_external_access_state(doc, external_url=""),
     ).model_dump()
 
 
-def _serialize_api_monitor_tool_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
+def _api_v1_base_url(request: Request) -> str:
+    return str(request.base_url).rstrip("/") + "/api/v1"
+
+
+def _api_monitor_external_url(request: Request, server_id: str) -> str:
+    return build_external_mcp_url(_api_v1_base_url(request), server_id)
+
+
+def _serialize_api_monitor_external_access_for_request(
+    request: Request,
+    server_doc: Dict[str, Any],
+) -> Dict[str, Any]:
+    return serialize_external_access_state(
+        server_doc,
+        external_url=_api_monitor_external_url(request, str(server_doc["_id"])),
+    )
+
+
+def _serialize_api_monitor_tool_detail(
+    doc: Dict[str, Any],
+    server_doc: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    caller_auth_requirements = build_caller_auth_requirements(
+        (server_doc or {}).get("api_monitor_auth") or {}
+    )
     return {
         "id": str(doc["_id"]),
         "name": doc.get("name", ""),
@@ -315,6 +346,7 @@ def _serialize_api_monitor_tool_detail(doc: Dict[str, Any]) -> Dict[str, Any]:
         "validation_status": doc.get("validation_status", "valid"),
         "validation_errors": doc.get("validation_errors") or [],
         "order": doc.get("order", 0),
+        "caller_auth_requirements": caller_auth_requirements,
     }
 
 
@@ -535,17 +567,80 @@ async def get_mcp_server(
 @router.get("/mcp/servers/{server_key}/api-monitor-detail", response_model=ApiResponse)
 async def get_api_monitor_mcp_detail(
     server_key: str,
+    request: Request,
     current_user: User = Depends(require_user),
 ) -> ApiResponse:
     user_id = str(current_user.id)
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
     tool_docs = await _load_api_monitor_tool_documents(str(server_doc["_id"]), user_id)
+    server_payload = _serialize_api_monitor_user_server(server_doc)
+    server_payload["external_access"] = _serialize_api_monitor_external_access_for_request(request, server_doc)
     return ApiResponse(
         data={
-            "server": _serialize_api_monitor_user_server(server_doc),
-            "tools": [_serialize_api_monitor_tool_detail(doc) for doc in tool_docs],
+            "server": server_payload,
+            "tools": [_serialize_api_monitor_tool_detail(doc, server_doc) for doc in tool_docs],
         }
     )
+
+
+def _external_access_update_payload(server_doc: Dict[str, Any], *, enabled: bool, now: datetime) -> Dict[str, Any]:
+    requirements = build_caller_auth_requirements(server_doc.get("api_monitor_auth") or {})
+    return {
+        "enabled": enabled,
+        "created_at": (server_doc.get("external_access") or {}).get("created_at") or now,
+        "last_used_at": (server_doc.get("external_access") or {}).get("last_used_at") or "",
+        "require_caller_credentials": bool(requirements.get("required")),
+        "allowed_credential_channels": ["arguments", "headers"],
+        "allowed_target_auth_headers": ["authorization"],
+    }
+
+
+@router.get("/mcp/servers/{server_key}/api-monitor-external-access", response_model=ApiResponse)
+async def get_api_monitor_external_access(
+    server_key: str,
+    request: Request,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, str(current_user.id))
+    return ApiResponse(data=_serialize_api_monitor_external_access_for_request(request, server_doc))
+
+
+@router.post("/mcp/servers/{server_key}/api-monitor-external-access/enable", response_model=ApiResponse)
+async def enable_api_monitor_external_access(
+    server_key: str,
+    request: Request,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    now = datetime.now()
+    external_access = _external_access_update_payload(server_doc, enabled=True, now=now)
+    repo = get_repository("user_mcp_servers")
+    await repo.update_one(
+        {"_id": str(server_doc["_id"]), "user_id": user_id},
+        {"$set": {"external_access": external_access, "updated_at": now}},
+    )
+    updated_doc = {**server_doc, "external_access": external_access}
+    return ApiResponse(data=_serialize_api_monitor_external_access_for_request(request, updated_doc))
+
+
+@router.post("/mcp/servers/{server_key}/api-monitor-external-access/disable", response_model=ApiResponse)
+async def disable_api_monitor_external_access(
+    server_key: str,
+    request: Request,
+    current_user: User = Depends(require_user),
+) -> ApiResponse:
+    user_id = str(current_user.id)
+    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
+    now = datetime.now()
+    external_access = _external_access_update_payload(server_doc, enabled=False, now=now)
+    repo = get_repository("user_mcp_servers")
+    await repo.update_one(
+        {"_id": str(server_doc["_id"]), "user_id": user_id},
+        {"$set": {"external_access": external_access, "updated_at": now}},
+    )
+    updated_doc = {**server_doc, "external_access": external_access}
+    return ApiResponse(data=_serialize_api_monitor_external_access_for_request(request, updated_doc))
 
 
 @router.put("/mcp/servers/{server_key}/api-monitor-config", response_model=ApiResponse)
@@ -630,7 +725,7 @@ async def update_api_monitor_tool(
         {"_id": tool_id, "mcp_server_id": str(server_doc["_id"]), "user_id": user_id},
         {"$set": update_doc},
     )
-    return ApiResponse(data=_serialize_api_monitor_tool_detail({**tool_doc, **update_doc}))
+    return ApiResponse(data=_serialize_api_monitor_tool_detail({**tool_doc, **update_doc}, server_doc))
 
 
 @router.post("/mcp/servers/{server_key}/api-monitor-tools/{tool_id}/test", response_model=ApiResponse)
