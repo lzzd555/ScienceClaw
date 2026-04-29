@@ -797,6 +797,120 @@ def test_api_monitor_runtime_returns_structured_non_2xx(monkeypatch):
     assert result["request_preview"]["headers"] == {"Authorization": "***"}
 
 
+def test_api_monitor_caller_only_runtime_uses_caller_authorization_without_vault(monkeypatch):
+    api_client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: api_client)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_repository",
+        lambda collection_name: _MemoryRepo(
+            [
+                {
+                    "mcp_server_id": "mcp_api_monitor",
+                    "name": "search_orders",
+                    "description": "Search orders",
+                    "method": "GET",
+                    "url": "/api/orders",
+                    "input_schema": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+                    "query_mapping": {"keyword": "{{ keyword }}"},
+                    "validation_status": "valid",
+                }
+            ]
+        ),
+    )
+
+    def fail_get_vault():
+        raise AssertionError("caller-only runtime must not read vault")
+
+    monkeypatch.setattr(mcp_runtime, "get_vault", fail_get_vault)
+
+    profile = mcp_runtime.ApiMonitorRuntimeProfile(base_url="https://api.example.test")
+    profile.set_header("Authorization", "Bearer caller-token", secret=True)
+    profile.set_variable("auth_token", "Bearer caller-token", secret=True, source="test")
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="u1",
+        name="Example MCP",
+        transport="api_monitor",
+        scope="user",
+        url="https://api.example.test",
+        headers={"Authorization": "Bearer internal-token"},
+        api_monitor_auth={
+            "credential_type": "test",
+            "credential_id": "cred_1",
+            "login_url": "https://login.example.test",
+        },
+    )
+
+    result = asyncio.run(
+        mcp_runtime.ApiMonitorMcpRuntime(
+            server,
+            caller_only=True,
+            caller_profile=profile,
+            caller_auth_preview={"credential_type": "test", "headers": ["Authorization"], "injected": True},
+        ).call_tool("search_orders", {"keyword": "abc", "_auth": {"headers": {"Authorization": "Bearer ignored"}}})
+    )
+
+    assert result["success"] is True
+    assert api_client.calls == [
+        (
+            "GET",
+            "https://api.example.test/api/orders",
+            {
+                "params": {"keyword": "abc"},
+                "headers": {"Authorization": "Bearer caller-token"},
+            },
+        )
+    ]
+    assert result["request_preview"]["headers"] == {"Authorization": "***"}
+    assert result["request_preview"]["auth"]["credential_type"] == "test"
+    assert result["request_preview"]["auth"]["injected"] is True
+
+
+def test_api_monitor_caller_only_runtime_placeholder_does_not_use_server_headers(monkeypatch):
+    api_client = _ApiMonitorAsyncClient()
+    monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: api_client)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_repository",
+        lambda collection_name: _MemoryRepo(
+            [
+                {
+                    "mcp_server_id": "mcp_api_monitor",
+                    "name": "search_orders",
+                    "method": "GET",
+                    "url": "/api/orders",
+                    "validation_status": "valid",
+                }
+            ]
+        ),
+    )
+
+    server = McpServerDefinition(
+        id="mcp_api_monitor",
+        user_id="u1",
+        name="Example MCP",
+        transport="api_monitor",
+        scope="user",
+        url="https://api.example.test?internal=1",
+        headers={"Authorization": "Bearer internal-token"},
+        api_monitor_auth={"credential_type": "placeholder", "credential_id": "cred_1"},
+    )
+
+    result = asyncio.run(
+        mcp_runtime.ApiMonitorMcpRuntime(
+            server,
+            caller_only=True,
+            caller_profile=mcp_runtime.ApiMonitorRuntimeProfile(base_url="https://api.example.test"),
+            caller_auth_preview={"credential_type": "placeholder", "headers": [], "injected": False},
+        ).call_tool("search_orders", {})
+    )
+
+    assert result["success"] is True
+    assert api_client.calls[0][2]["headers"] == {}
+    assert api_client.calls[0][2]["params"] == {}
+
+
 def test_api_monitor_placeholder_auth_does_not_inject_credentials(monkeypatch):
     api_client = _ApiMonitorAsyncClient()
     monkeypatch.setattr(mcp_runtime.httpx, "AsyncClient", lambda **kwargs: api_client)
