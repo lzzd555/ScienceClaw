@@ -1,6 +1,8 @@
 import { apiClient, createSSEConnection } from '@/api/client'
 import type { ApiMonitorAuthConfigPublish } from '@/api/mcp'
 
+export const API_MONITOR_STOP_RECORDING_TIMEOUT_MS = 15 * 60 * 1000
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -260,7 +262,11 @@ export async function startRecording(sessionId: string): Promise<void> {
  * Stop recording and return the generated tool definitions.
  */
 export async function stopRecording(sessionId: string): Promise<ApiToolDefinition[]> {
-  const response = await apiClient.post(`/api-monitor/session/${sessionId}/record/stop`)
+  const response = await apiClient.post(
+    `/api-monitor/session/${sessionId}/record/stop`,
+    undefined,
+    { timeout: API_MONITOR_STOP_RECORDING_TIMEOUT_MS },
+  )
   return response.data.tools
 }
 

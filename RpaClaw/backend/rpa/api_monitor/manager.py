@@ -42,6 +42,7 @@ from .network_capture import NetworkCaptureEngine, dedup_key
 logger = logging.getLogger(__name__)
 
 PAGE_TIMEOUT_MS = 60_000
+DOM_CONTEXT_SCAN_TIMEOUT_S = 2.0
 
 # ── Interactive element scanner ──────────────────────────────────────
 
@@ -320,6 +321,9 @@ class ApiMonitorSessionManager:
         self._screencasts: Dict[str, SessionScreencastController] = {}
         self._request_evidence: Dict[str, Dict[str, Dict]] = {}
         self._last_action_at: Dict[str, float] = {}
+        self._stop_recording_tasks: Dict[str, asyncio.Task[List[ApiToolDefinition]]] = {}
+        self._last_recording_tools: Dict[str, List[ApiToolDefinition]] = {}
+        self._last_recording_calls: Dict[str, List[CapturedApiCall]] = {}
 
     def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
         """Register an active screencast controller so capture logs can be forwarded."""
@@ -426,6 +430,9 @@ class ApiMonitorSessionManager:
         self._captures.pop(session_id, None)
         self._request_evidence.pop(session_id, None)
         self._last_action_at.pop(session_id, None)
+        self._stop_recording_tasks.pop(session_id, None)
+        self._last_recording_tools.pop(session_id, None)
+        self._last_recording_calls.pop(session_id, None)
         self._session_pages.pop(session_id, None)
         self._listener_pages = {
             key for key in self._listener_pages
@@ -575,6 +582,11 @@ class ApiMonitorSessionManager:
                 )
 
         self._mark_action(session_id)
+        task = self._stop_recording_tasks.get(session_id)
+        if task and task.done():
+            self._stop_recording_tasks.pop(session_id, None)
+        self._last_recording_tools.pop(session_id, None)
+        self._last_recording_calls.pop(session_id, None)
 
         # Keep session.captured_calls intact — the full session history is needed
         # for token flow analysis.  Only the capture engine buffer was cleared.
@@ -587,7 +599,53 @@ class ApiMonitorSessionManager:
         session_id: str,
         model_config: Optional[Dict] = None,
     ) -> List[ApiToolDefinition]:
-        """Stop recording, drain captured calls, generate tool definitions."""
+        """Stop recording, drain captured calls, generate tool definitions.
+
+        Stop is idempotent because callers may retry after a transient HTTP
+        disconnect while the first stop is still generating tools.
+        """
+        session = self._require_session(session_id)
+
+        existing_task = self._stop_recording_tasks.get(session_id)
+        if existing_task:
+            try:
+                return await asyncio.shield(existing_task)
+            finally:
+                if existing_task.done():
+                    self._stop_recording_tasks.pop(session_id, None)
+
+        if session.status != "recording":
+            cached_tools = self._last_recording_tools.get(session_id)
+            if cached_tools is not None:
+                return list(cached_tools)
+            cached_calls = self._last_recording_calls.get(session_id)
+            if cached_calls:
+                tools = await self._generate_tools_from_calls(
+                    session_id,
+                    list(cached_calls),
+                    source="manual",
+                    model_config=model_config,
+                )
+                self._last_recording_tools[session_id] = list(tools)
+                return tools
+            return []
+
+        task = asyncio.create_task(
+            self._stop_recording_once(session_id, model_config=model_config)
+        )
+        self._stop_recording_tasks[session_id] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                self._stop_recording_tasks.pop(session_id, None)
+
+    async def _stop_recording_once(
+        self,
+        session_id: str,
+        model_config: Optional[Dict] = None,
+    ) -> List[ApiToolDefinition]:
+        """Perform the single authoritative stop for a recording window."""
         session = self._require_session(session_id)
 
         capture = self._captures.get(session_id)
@@ -596,6 +654,7 @@ class ApiMonitorSessionManager:
             new_calls = capture.drain_new_calls()
 
         session.captured_calls.extend(new_calls)
+        self._last_recording_calls[session_id] = list(new_calls)
         session.status = "idle"
         session.updated_at = datetime.now()
 
@@ -603,9 +662,11 @@ class ApiMonitorSessionManager:
             tools = await self._generate_tools_from_calls(
                 session_id, new_calls, source="manual", model_config=model_config,
             )
+            self._last_recording_tools[session_id] = list(tools)
             return tools
 
         logger.info("[ApiMonitor] Recording stopped for session %s, %d calls captured", session_id, len(new_calls))
+        self._last_recording_tools[session_id] = []
         return []
 
     # ── Page analysis (async generator) ──────────────────────────────
@@ -1186,12 +1247,20 @@ class ApiMonitorSessionManager:
         page = self._pages.get(session_id)
         if page:
             try:
-                dom_data = await page.evaluate(_SCAN_DOM_CONTEXT_JS)
+                dom_data = await asyncio.wait_for(
+                    page.evaluate(_SCAN_DOM_CONTEXT_JS),
+                    timeout=DOM_CONTEXT_SCAN_TIMEOUT_S,
+                )
                 dom_context = json.dumps(dom_data, ensure_ascii=False, indent=2)
                 logger.debug("[ApiMonitor] DOM context scanned: %d forms, %d inputs, %d buttons",
                              len(dom_data.get("forms", [])),
                              len(dom_data.get("inputs", [])),
                              len(dom_data.get("buttons", [])))
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[ApiMonitor] DOM context scan timed out after %.1fs; generating API tools without DOM context",
+                    DOM_CONTEXT_SCAN_TIMEOUT_S,
+                )
             except Exception as exc:
                 logger.warning("[ApiMonitor] DOM context scan failed: %s", exc)
 

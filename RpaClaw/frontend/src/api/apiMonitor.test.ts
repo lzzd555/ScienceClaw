@@ -47,4 +47,19 @@ describe('apiMonitor analyzeSession', () => {
       expect.any(Object),
     )
   })
+
+  it('uses a long timeout when stopping recording because tool generation can be slow', async () => {
+    const { apiClient } = await import('@/api/client')
+    const { API_MONITOR_STOP_RECORDING_TIMEOUT_MS, stopRecording } = await import('./apiMonitor')
+    vi.mocked(apiClient.post).mockResolvedValue({ data: { tools: [] } })
+
+    await stopRecording('session-1')
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api-monitor/session/session-1/record/stop',
+      undefined,
+      { timeout: API_MONITOR_STOP_RECORDING_TIMEOUT_MS },
+    )
+    expect(API_MONITOR_STOP_RECORDING_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60 * 1000)
+  })
 })
