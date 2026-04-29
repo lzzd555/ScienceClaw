@@ -1,0 +1,1 @@
+{"_id": "system-default", "name": "DeepSeek V3.2", "provider": "deepseek", "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_key": "cce44bf09feb4c308ab6120b6a34eaca.xkE7TmvUkS7N8oNp", "model_name": "GLM-5", "context_window": 131072, "is_system": true, "is_active": true, "updated_at": 1777434846, "created_at": 1776873681}

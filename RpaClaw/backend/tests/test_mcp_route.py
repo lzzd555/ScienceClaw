@@ -260,7 +260,7 @@ def test_api_monitor_detail_includes_external_access_and_caller_auth_requirement
                     "credential_id": "cred_1",
                     "login_url": "https://login.test",
                 },
-                external_access={"enabled": False, "token_hint": ""},
+                external_access={"enabled": False},
             )
         ]
     )
@@ -292,28 +292,24 @@ def test_enable_api_monitor_external_access_updates_existing_server_only(monkeyp
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["enabled"] is True
-    assert data["access_token"].startswith("rpamcp_")
     assert data["url"].endswith("/api/v1/api-monitor-mcp/mcp_api_monitor/mcp")
     stored = server_repo.docs["mcp_api_monitor"]["external_access"]
     assert stored["enabled"] is True
-    assert stored["access_token_hash"].startswith("sha256:")
-    assert stored["token_hint"] == data["token_hint"]
     assert "access_token" not in stored
+    assert "access_token_hash" not in stored
+    assert "token_hint" not in stored
     assert set(server_repo.docs) == {"mcp_api_monitor"}
 
 
-def test_get_api_monitor_external_access_does_not_return_plain_token(monkeypatch):
+def test_get_api_monitor_external_access_does_not_return_token_fields(monkeypatch):
     app = _build_app()
     client = TestClient(app)
-    token_hash = mcp_route.hash_external_access_token("rpamcp_secret")
     server_repo = _MemoryRepo(
         [
             _api_monitor_server_doc(
                 api_monitor_auth={"credential_type": "test", "login_url": "https://login.test"},
                 external_access={
                     "enabled": True,
-                    "access_token_hash": token_hash,
-                    "token_hint": "rpamcp_...cret",
                 },
             )
         ]
@@ -325,47 +321,21 @@ def test_get_api_monitor_external_access_does_not_return_plain_token(monkeypatch
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["enabled"] is True
-    assert data["token_hint"] == "rpamcp_...cret"
     assert "access_token" not in data
     assert "access_token_hash" not in data
+    assert "token_hint" not in data
 
 
-def test_rotate_api_monitor_external_access_replaces_hash(monkeypatch):
+def test_disable_api_monitor_external_access_marks_disabled(monkeypatch):
     app = _build_app()
     client = TestClient(app)
-    original_hash = mcp_route.hash_external_access_token("rpamcp_old")
     server_repo = _MemoryRepo(
         [
             _api_monitor_server_doc(
                 external_access={
                     "enabled": True,
-                    "access_token_hash": original_hash,
-                    "token_hint": "rpamcp_...old",
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr(mcp_route, "get_repository", lambda collection_name: server_repo)
-
-    response = client.post("/api/v1/mcp/servers/user:mcp_api_monitor/api-monitor-external-access/rotate-token")
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["access_token"].startswith("rpamcp_")
-    assert server_repo.docs["mcp_api_monitor"]["external_access"]["access_token_hash"] != original_hash
-
-
-def test_disable_api_monitor_external_access_keeps_token_hash_for_future_rotation(monkeypatch):
-    app = _build_app()
-    client = TestClient(app)
-    token_hash = mcp_route.hash_external_access_token("rpamcp_secret")
-    server_repo = _MemoryRepo(
-        [
-            _api_monitor_server_doc(
-                external_access={
-                    "enabled": True,
-                    "access_token_hash": token_hash,
-                    "token_hint": "rpamcp_...cret",
+                    "access_token_hash": "legacy-hash",
+                    "token_hint": "legacy",
                 }
             )
         ]
@@ -378,7 +348,8 @@ def test_disable_api_monitor_external_access_keeps_token_hash_for_future_rotatio
     data = response.json()["data"]
     assert data["enabled"] is False
     assert server_repo.docs["mcp_api_monitor"]["external_access"]["enabled"] is False
-    assert server_repo.docs["mcp_api_monitor"]["external_access"]["access_token_hash"] == token_hash
+    assert "access_token_hash" not in server_repo.docs["mcp_api_monitor"]["external_access"]
+    assert "token_hint" not in server_repo.docs["mcp_api_monitor"]["external_access"]
 
 
 def test_load_api_monitor_tools_filters_invalid_and_prefers_parsed_schema(monkeypatch):

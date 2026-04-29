@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildApiMonitorExternalClientConfig,
   formatCallerAuthRequirement,
-  formatExternalAccessTokenHint,
 } from './apiMonitorExternalAccess';
 
 describe('apiMonitorExternalAccess', () => {
@@ -18,24 +17,16 @@ describe('apiMonitorExternalAccess', () => {
     );
   });
 
-  it('formats empty token hint', () => {
-    expect(formatExternalAccessTokenHint('')).toBe('not generated');
-  });
-
-  it('builds external MCP client config', () => {
+  it('builds external MCP client config without endpoint token headers', () => {
     expect(
       buildApiMonitorExternalClientConfig({
         name: 'Orders API Monitor MCP',
         url: 'http://localhost:12001/api/v1/api-monitor-mcp/mcp_abc/mcp',
-        accessToken: 'rpamcp_secret',
       }),
     ).toEqual({
       name: 'Orders API Monitor MCP',
       transport: 'streamable_http',
       url: 'http://localhost:12001/api/v1/api-monitor-mcp/mcp_abc/mcp',
-      headers: {
-        Authorization: 'Bearer rpamcp_secret',
-      },
     });
   });
 });

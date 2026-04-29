@@ -14,7 +14,6 @@ from backend.rpa.api_monitor_external_access import (
     build_caller_auth_requirements,
     build_external_tool_input_schema,
     extract_caller_auth_profile,
-    verify_external_access_token,
     with_caller_auth_description,
 )
 from backend.storage import get_repository
@@ -42,18 +41,11 @@ def _tool_result_payload(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _extract_external_token(request: Request) -> str:
-    authorization = request.headers.get("Authorization", "")
-    if authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return request.headers.get("X-RpaClaw-MCP-Token", "").strip()
-
-
 def _is_api_monitor_mcp(doc: Mapping[str, Any]) -> bool:
     return doc.get("source_type") == "api_monitor" or doc.get("transport") == "api_monitor"
 
 
-async def _load_external_server_doc(server_id: str, request: Request) -> tuple[dict[str, Any] | None, int, str]:
+async def _load_external_server_doc(server_id: str) -> tuple[dict[str, Any] | None, int, str]:
     repo = get_repository("user_mcp_servers")
     doc = await repo.find_one({"_id": server_id})
     if not doc or not _is_api_monitor_mcp(doc):
@@ -61,9 +53,6 @@ async def _load_external_server_doc(server_id: str, request: Request) -> tuple[d
     external_access = doc.get("external_access") if isinstance(doc.get("external_access"), dict) else {}
     if not external_access.get("enabled"):
         return None, -32001, "External access is disabled"
-    token = _extract_external_token(request)
-    if not verify_external_access_token(token, str(external_access.get("access_token_hash") or "")):
-        return None, -32002, "Invalid external access token"
     return dict(doc), 0, ""
 
 
@@ -145,7 +134,7 @@ async def api_monitor_mcp_gateway(
     request_id = body.get("id")
     is_json_rpc = _is_json_rpc_request(body)
 
-    server_doc, auth_error_code, auth_error_message = await _load_external_server_doc(server_id, request)
+    server_doc, auth_error_code, auth_error_message = await _load_external_server_doc(server_id)
     if auth_error_code:
         return _json_rpc_error(request_id, auth_error_code, auth_error_message)
     assert server_doc is not None

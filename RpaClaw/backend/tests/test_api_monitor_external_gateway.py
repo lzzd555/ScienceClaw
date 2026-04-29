@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.route import api_monitor_mcp_gateway as gateway
-from backend.rpa.api_monitor_external_access import hash_external_access_token
 
 
 class _MemoryRepo:
@@ -58,8 +57,6 @@ def _server_doc(**overrides):
         "api_monitor_auth": {"credential_type": "test", "login_url": "https://login.example.test"},
         "external_access": {
             "enabled": True,
-            "access_token_hash": hash_external_access_token("rpamcp_secret"),
-            "token_hint": "rpamcp_...cret",
         },
     }
     doc.update(overrides)
@@ -94,7 +91,7 @@ def _build_app():
     return app
 
 
-def test_initialize_requires_valid_external_token(monkeypatch):
+def test_initialize_works_when_external_access_enabled(monkeypatch):
     app = _build_app()
     client = TestClient(app)
     server_repo = _MemoryRepo([_server_doc()])
@@ -108,20 +105,9 @@ def test_initialize_requires_valid_external_token(monkeypatch):
     response = client.post(
         "/api/v1/api-monitor-mcp/mcp_api_monitor/mcp",
         json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
-        headers={"Authorization": "Bearer wrong"},
     )
-
     assert response.status_code == 200
-    assert response.json()["id"] == 1
-    assert response.json()["error"]["code"] == -32002
-
-    ok = client.post(
-        "/api/v1/api-monitor-mcp/mcp_api_monitor/mcp",
-        json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
-        headers={"Authorization": "Bearer rpamcp_secret"},
-    )
-    assert ok.status_code == 200
-    assert ok.json()["result"]["serverInfo"]["name"] == "Example MCP"
+    assert response.json()["result"]["serverInfo"]["name"] == "Example MCP"
 
 
 def test_tools_list_adds_auth_schema_for_test_credential(monkeypatch):
@@ -138,7 +124,6 @@ def test_tools_list_adds_auth_schema_for_test_credential(monkeypatch):
     response = client.post(
         "/api/v1/api-monitor-mcp/mcp_api_monitor/mcp",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        headers={"Authorization": "Bearer rpamcp_secret"},
     )
 
     assert response.status_code == 200
@@ -168,7 +153,6 @@ def test_tools_call_returns_error_when_test_auth_missing(monkeypatch):
             "method": "tools/call",
             "params": {"name": "search_orders", "arguments": {"keyword": "abc"}},
         },
-        headers={"Authorization": "Bearer rpamcp_secret"},
     )
 
     payload = response.json()["result"]
@@ -216,7 +200,6 @@ def test_tools_call_uses_caller_profile(monkeypatch):
                 },
             },
         },
-        headers={"Authorization": "Bearer rpamcp_secret"},
     )
 
     result = response.json()["result"]

@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
-import secrets
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Mapping
@@ -12,7 +9,6 @@ from backend.rpa.api_monitor_runtime_profile import ApiMonitorRuntimeProfile
 
 CALLER_AUTH_EXTENSION_KEY = "x-rpaclaw-authRequirements"
 TARGET_AUTH_HEADER = "X-RpaClaw-Target-Authorization"
-EXTERNAL_ACCESS_TOKEN_PREFIX = "rpamcp_"
 
 
 class CallerAuthError(ValueError):
@@ -159,28 +155,6 @@ def extract_caller_auth_profile(
     }
 
 
-def generate_external_access_token() -> str:
-    return EXTERNAL_ACCESS_TOKEN_PREFIX + secrets.token_urlsafe(32)
-
-
-def hash_external_access_token(token: str) -> str:
-    digest = hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
-
-
-def verify_external_access_token(token: str, token_hash: str) -> bool:
-    if not token or not token_hash:
-        return False
-    return hmac.compare_digest(hash_external_access_token(token), str(token_hash))
-
-
-def token_hint(token: str) -> str:
-    value = str(token or "")
-    if len(value) <= 12:
-        return value[:4] + "..." if value else ""
-    return f"{value[:7]}...{value[-4:]}"
-
-
 def build_external_mcp_url(api_v1_base_url: str, server_id: str) -> str:
     base = str(api_v1_base_url or "").rstrip("/")
     return f"{base}/api-monitor-mcp/{server_id}/mcp"
@@ -196,7 +170,6 @@ def serialize_external_access_state(
     server_doc: Mapping[str, Any],
     *,
     external_url: str,
-    once_visible_token: str = "",
 ) -> dict[str, Any]:
     external_access = server_doc.get("external_access") if isinstance(server_doc, Mapping) else {}
     if not isinstance(external_access, Mapping):
@@ -205,13 +178,9 @@ def serialize_external_access_state(
     state = {
         "enabled": bool(external_access.get("enabled")),
         "url": external_url,
-        "token_hint": str(external_access.get("token_hint") or ""),
         "created_at": _iso(external_access.get("created_at")),
-        "last_rotated_at": _iso(external_access.get("last_rotated_at")),
         "last_used_at": _iso(external_access.get("last_used_at")),
         "require_caller_credentials": bool(requirements.get("required")),
         "caller_auth_requirements": requirements,
     }
-    if once_visible_token:
-        state["access_token"] = once_visible_token
     return state

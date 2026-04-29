@@ -11,11 +11,7 @@ from backend.rpa.api_monitor_external_access import (
     build_external_mcp_url,
     build_external_tool_input_schema,
     extract_caller_auth_profile,
-    generate_external_access_token,
-    hash_external_access_token,
     serialize_external_access_state,
-    token_hint,
-    verify_external_access_token,
     with_caller_auth_description,
 )
 
@@ -149,20 +145,6 @@ def test_placeholder_ignores_auth_argument():
     }
 
 
-def test_external_access_token_hash_and_verify():
-    token = generate_external_access_token()
-    token_hash = hash_external_access_token(token)
-
-    assert token.startswith("rpamcp_")
-    assert token_hash.startswith("sha256:")
-    assert verify_external_access_token(token, token_hash) is True
-    assert verify_external_access_token(token + "x", token_hash) is False
-
-
-def test_token_hint_masks_token():
-    assert token_hint("rpamcp_abcdefghijklmnopqrstuvwxyz") == "rpamcp_...wxyz"
-
-
 def test_build_external_mcp_url_uses_api_v1_prefix():
     assert (
         build_external_mcp_url("http://localhost:12001/api/v1", "mcp_abc123")
@@ -170,26 +152,22 @@ def test_build_external_mcp_url_uses_api_v1_prefix():
     )
 
 
-def test_serialize_external_access_state_hides_hash_and_optionally_returns_once_token():
+def test_serialize_external_access_state_returns_url_and_no_token_fields():
     state = serialize_external_access_state(
         {
             "external_access": {
                 "enabled": True,
-                "access_token_hash": "sha256:secret",
-                "token_hint": "rpamcp_...abcd",
                 "created_at": datetime(2026, 4, 28, 1, 2, 3),
-                "last_rotated_at": datetime(2026, 4, 28, 2, 3, 4),
                 "last_used_at": datetime(2026, 4, 28, 3, 4, 5),
             },
             "api_monitor_auth": {"credential_type": "test"},
         },
         external_url="http://localhost:12001/api/v1/api-monitor-mcp/mcp_abc123/mcp",
-        once_visible_token="rpamcp_once",
     )
 
     assert state["enabled"] is True
     assert state["url"] == "http://localhost:12001/api/v1/api-monitor-mcp/mcp_abc123/mcp"
-    assert state["token_hint"] == "rpamcp_...abcd"
-    assert state["access_token"] == "rpamcp_once"
     assert state["require_caller_credentials"] is True
+    assert "access_token" not in state
     assert "access_token_hash" not in state
+    assert "token_hint" not in state

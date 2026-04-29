@@ -83,10 +83,7 @@ export interface CallerAuthRequirements {
 export interface ApiMonitorExternalAccessState {
   enabled: boolean;
   url: string;
-  token_hint: string;
-  access_token?: string;
   created_at: string;
-  last_rotated_at: string;
   last_used_at: string;
   require_caller_credentials: boolean;
   caller_auth_requirements: CallerAuthRequirements;
@@ -253,13 +250,6 @@ export async function getApiMonitorExternalAccess(serverKey: string): Promise<Ap
 export async function enableApiMonitorExternalAccess(serverKey: string): Promise<ApiMonitorExternalAccessState> {
   const response = await apiClient.post<ApiResponse<ApiMonitorExternalAccessState>>(
     `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-external-access/enable`,
-  );
-  return response.data.data;
-}
-
-export async function rotateApiMonitorExternalAccessToken(serverKey: string): Promise<ApiMonitorExternalAccessState> {
-  const response = await apiClient.post<ApiResponse<ApiMonitorExternalAccessState>>(
-    `/mcp/servers/${encodeServerKey(serverKey)}/api-monitor-external-access/rotate-token`,
   );
   return response.data.data;
 }

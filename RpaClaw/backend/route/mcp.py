@@ -20,10 +20,7 @@ from backend.rpa.api_monitor_auth import validate_api_monitor_auth_config
 from backend.rpa.api_monitor_external_access import (
     build_caller_auth_requirements,
     build_external_mcp_url,
-    generate_external_access_token,
-    hash_external_access_token,
     serialize_external_access_state,
-    token_hint,
 )
 from backend.rpa.api_monitor_token_flow import normalize_token_flow_config
 from backend.credential.vault import get_vault
@@ -319,13 +316,10 @@ def _api_monitor_external_url(request: Request, server_id: str) -> str:
 def _serialize_api_monitor_external_access_for_request(
     request: Request,
     server_doc: Dict[str, Any],
-    *,
-    once_visible_token: str = "",
 ) -> Dict[str, Any]:
     return serialize_external_access_state(
         server_doc,
         external_url=_api_monitor_external_url(request, str(server_doc["_id"])),
-        once_visible_token=once_visible_token,
     )
 
 
@@ -589,15 +583,13 @@ async def get_api_monitor_mcp_detail(
     )
 
 
-def _external_access_update_payload(token: str, *, enabled: bool, now: datetime) -> Dict[str, Any]:
+def _external_access_update_payload(server_doc: Dict[str, Any], *, enabled: bool, now: datetime) -> Dict[str, Any]:
+    requirements = build_caller_auth_requirements(server_doc.get("api_monitor_auth") or {})
     return {
         "enabled": enabled,
-        "access_token_hash": hash_external_access_token(token),
-        "token_hint": token_hint(token),
-        "created_at": now,
-        "last_rotated_at": now,
-        "last_used_at": "",
-        "require_caller_credentials": False,
+        "created_at": (server_doc.get("external_access") or {}).get("created_at") or now,
+        "last_used_at": (server_doc.get("external_access") or {}).get("last_used_at") or "",
+        "require_caller_credentials": bool(requirements.get("required")),
         "allowed_credential_channels": ["arguments", "headers"],
         "allowed_target_auth_headers": ["authorization"],
     }
@@ -621,64 +613,15 @@ async def enable_api_monitor_external_access(
 ) -> ApiResponse:
     user_id = str(current_user.id)
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
-    token = generate_external_access_token()
     now = datetime.now()
-    requirements = build_caller_auth_requirements(server_doc.get("api_monitor_auth") or {})
-    external_access = _external_access_update_payload(token, enabled=True, now=now)
-    external_access["require_caller_credentials"] = bool(requirements.get("required"))
+    external_access = _external_access_update_payload(server_doc, enabled=True, now=now)
     repo = get_repository("user_mcp_servers")
     await repo.update_one(
         {"_id": str(server_doc["_id"]), "user_id": user_id},
         {"$set": {"external_access": external_access, "updated_at": now}},
     )
     updated_doc = {**server_doc, "external_access": external_access}
-    return ApiResponse(
-        data=_serialize_api_monitor_external_access_for_request(
-            request,
-            updated_doc,
-            once_visible_token=token,
-        )
-    )
-
-
-@router.post("/mcp/servers/{server_key}/api-monitor-external-access/rotate-token", response_model=ApiResponse)
-async def rotate_api_monitor_external_access_token(
-    server_key: str,
-    request: Request,
-    current_user: User = Depends(require_user),
-) -> ApiResponse:
-    user_id = str(current_user.id)
-    server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
-    token = generate_external_access_token()
-    now = datetime.now()
-    existing = server_doc.get("external_access") if isinstance(server_doc.get("external_access"), dict) else {}
-    external_access = dict(existing or {})
-    external_access.update(
-        {
-            "enabled": True,
-            "access_token_hash": hash_external_access_token(token),
-            "token_hint": token_hint(token),
-            "last_rotated_at": now,
-            "allowed_credential_channels": ["arguments", "headers"],
-            "allowed_target_auth_headers": ["authorization"],
-        }
-    )
-    external_access.setdefault("created_at", now)
-    requirements = build_caller_auth_requirements(server_doc.get("api_monitor_auth") or {})
-    external_access["require_caller_credentials"] = bool(requirements.get("required"))
-    repo = get_repository("user_mcp_servers")
-    await repo.update_one(
-        {"_id": str(server_doc["_id"]), "user_id": user_id},
-        {"$set": {"external_access": external_access, "updated_at": now}},
-    )
-    updated_doc = {**server_doc, "external_access": external_access}
-    return ApiResponse(
-        data=_serialize_api_monitor_external_access_for_request(
-            request,
-            updated_doc,
-            once_visible_token=token,
-        )
-    )
+    return ApiResponse(data=_serialize_api_monitor_external_access_for_request(request, updated_doc))
 
 
 @router.post("/mcp/servers/{server_key}/api-monitor-external-access/disable", response_model=ApiResponse)
@@ -689,9 +632,8 @@ async def disable_api_monitor_external_access(
 ) -> ApiResponse:
     user_id = str(current_user.id)
     server_doc = await _get_owned_api_monitor_server_doc(server_key, user_id)
-    external_access = dict(server_doc.get("external_access") or {})
-    external_access["enabled"] = False
     now = datetime.now()
+    external_access = _external_access_update_payload(server_doc, enabled=False, now=now)
     repo = get_repository("user_mcp_servers")
     await repo.update_one(
         {"_id": str(server_doc["_id"]), "user_id": user_id},
