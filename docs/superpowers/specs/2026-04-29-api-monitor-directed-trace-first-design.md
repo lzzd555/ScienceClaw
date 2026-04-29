@@ -209,6 +209,14 @@ planner 应收到类似下面的结构：
 - 最近失败动作指纹呈现 `A, B, A, B`：设置 `loop_detected=true`，并把两个 fingerprint 都加入 `blocked_actions`。
 - 如果失败步骤捕获到了 API 调用，不要把它视为无效步骤。应把 call IDs 附加到 trace，由完成检查判断是否已经满足目标。
 
+解除阻塞规则：
+
+- `blocked_actions` 和同义的 `block_steps` 不是长期累积黑名单，只能作为每轮从最近 directed traces 派生出来的临时重试上下文。
+- 任意步骤执行成功后，必须清除当前上下文中的 `blocked_actions`/`block_steps`，下一轮从新的页面观察和最新 traces 重新计算。
+- 同一个动作指纹成功执行后，该 fingerprint 的连续失败计数和累计失败跳过状态必须清零。
+- 如果成功步骤导致 `url_changed=true` 或 `dom_changed=true`，此前页面状态下产生的 loop 标记也必须失效。
+- A/B/A/B loop 只看最近失败窗口；成功步骤会打断该窗口，下一轮不得继续沿用旧的 `loop_detected=true`。
+
 重试保护不应把一个动作改写成另一个动作。它只能：
 
 - 通知 planner；
@@ -335,6 +343,7 @@ directed step prompt 应继续强调：
 - 同一个 action fingerprint 重复失败后会出现在 `blocked_actions`。
 - 第三次完全相同失败动作指纹会以 `retry_guard_skipped` 跳过。
 - A/B/A/B 失败动作指纹会设置 `loop_detected=true`。
+- 任意步骤执行成功后，下一轮 retry context 会清除 `blocked_actions`/`block_steps` 和旧的 loop 标记。
 - 执行失败仍会 drain 捕获到的 API 调用，并把 call IDs 附加到 trace。
 - 捕获到的 API 调用仍然是 `_generate_tools_from_calls(...)` 的唯一输入。
 - 现有 `safe_directed` 业务安全行为保持不变。
