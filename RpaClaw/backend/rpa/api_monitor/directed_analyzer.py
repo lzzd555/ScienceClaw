@@ -129,6 +129,10 @@ DIRECTED_STEP_SYSTEM = """\
 - 目标 API 已捕获或用户目标已满足时返回 done，且 next_action 为空。
 - 当 observation.completion_check 为 true 时，重点判断上一轮动作和 captured API 是否已经满足用户目标；满足则返回 done，不满足再返回 continue。
 - 没有安全或有意义的浏览器动作时返回 blocked，且 next_action 为空。
+- 如果 retry_context.blocked_actions 或 retry_context.block_steps 中列出动作，除非当前 DOM 明显变化，否则不要继续选择这些动作。
+- 如果 retry_context.loop_detected 为 true，必须选择真正不同的路线、等待状态变化，或返回 blocked。
+- 如果 retry_context.recent_traces 显示某一步已经捕获到匹配用户目标的 API，返回 done。
+- 任意成功步骤会清除旧的 block_steps；不要把旧页面状态下的失败当成长期黑名单。
 
 安全判定：
 - 搜索、筛选、分页、打开详情、切换 tab、展开区域通常是 safe。
@@ -153,6 +157,9 @@ DIRECTED_STEP_USER = """\
 
 最新观察 observation：
 {observation}
+
+重试上下文 retry_context：
+{retry_context}
 
 基于当前页面状态决策。每次只返回一个下一步动作，或者返回 done/blocked。
 """
@@ -249,6 +256,7 @@ async def build_directed_step_decision(
     compact_snapshot: Dict[str, Any],
     run_history: List[Dict[str, Any]],
     observation: Dict[str, Any],
+    retry_context: Optional[Dict[str, Any]] = None,
     model_config: Optional[Dict] = None,
 ) -> DirectedStepDecision:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -262,6 +270,7 @@ async def build_directed_step_decision(
                 compact_snapshot=json.dumps(compact_snapshot, ensure_ascii=False, indent=2),
                 run_history=json.dumps(run_history, ensure_ascii=False, indent=2),
                 observation=json.dumps(observation, ensure_ascii=False, indent=2),
+                retry_context=json.dumps(retry_context or {}, ensure_ascii=False, indent=2),
             )
         ),
     ]

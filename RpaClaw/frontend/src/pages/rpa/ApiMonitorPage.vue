@@ -532,6 +532,12 @@ const startAnalysis = async () => {
       case 'directed_step_planned':
         addLog('ANALYZE', `第 ${data.step || '-'} 轮决策: ${data.summary || data.goal_status || ''}`);
         break;
+      case 'directed_trace_added':
+        addLog('ANALYZE', `第 ${data.step || '-'} 轮 trace 已创建`);
+        break;
+      case 'directed_trace_updated':
+        addLog('ANALYZE', `第 ${data.step || '-'} 轮 trace 已更新: ${data.execution?.result || data.decision?.goal_status || ''}`);
+        break;
       case 'directed_action_detail':
         addLog('BUILD', `${data.description}  →  ${data.code}`);
         break;

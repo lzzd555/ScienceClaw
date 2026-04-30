@@ -33,10 +33,19 @@ from .directed_analyzer import (
     describe_action,
     describe_locator_code,
 )
+from .directed_trace import (
+    build_directed_retry_context,
+    captured_call_ids,
+    decision_snapshot,
+    directed_action_fingerprint,
+    execution_snapshot,
+    observation_from_payload,
+    retry_guard_skip_reason,
+)
 
 from .confidence import dedup_key_for_tool, score_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
-from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall
+from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall, DirectedAnalysisTrace
 from .network_capture import NetworkCaptureEngine, dedup_key
 
 logger = logging.getLogger(__name__)
@@ -868,6 +877,18 @@ class ApiMonitorSessionManager:
                     ),
                 }
                 observation = await self._observe_directed_page(page, instruction)
+                before_observation = observation_from_payload(observation)
+                trace = DirectedAnalysisTrace(
+                    step=step_index,
+                    instruction=instruction,
+                    mode=mode,
+                    before=before_observation,
+                )
+                session.directed_traces.append(trace)
+                yield {
+                    "event": "directed_trace_added",
+                    "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                }
                 observation_for_prompt = {
                     "url": observation["url"],
                     "title": observation["title"],
@@ -875,6 +896,12 @@ class ApiMonitorSessionManager:
                     "new_call_count": len(directed_calls),
                     "last_result": run_history[-1] if run_history else None,
                 }
+                completed_traces = session.directed_traces[:-1]
+                retry_context = build_directed_retry_context(
+                    completed_traces,
+                    captured_api_summary=self._summarize_directed_calls(directed_calls),
+                )
+                observation_for_prompt["retry_context"] = retry_context
                 yield {
                     "event": "directed_step_snapshot",
                     "data": json.dumps(
@@ -894,10 +921,19 @@ class ApiMonitorSessionManager:
                         compact_snapshot=observation["compact_snapshot"],
                         run_history=run_history,
                         observation=observation_for_prompt,
+                        retry_context=retry_context,
                         model_config=model_config,
                     )
                 except Exception as planner_exc:
                     error_text = str(planner_exc)
+                    trace.execution = execution_snapshot(
+                        result="planner_failed",
+                        error=error_text,
+                        before=trace.before,
+                        after=trace.before,
+                    )
+                    trace.after = trace.before
+                    trace.updated_at = datetime.now()
                     run_history.append(
                         {
                             "step": step_index,
@@ -920,10 +956,18 @@ class ApiMonitorSessionManager:
                             ensure_ascii=False,
                         ),
                     }
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                    }
                     if failed_steps >= max_failures:
                         stop_reason = f"Reached max directed planner failures: {max_failures}"
                         break
                     continue
+                trace.decision = decision_snapshot(decision)
+                if decision.next_action is not None:
+                    trace.action_fingerprint = directed_action_fingerprint(decision.next_action)
+                trace.updated_at = datetime.now()
                 yield {
                     "event": "directed_step_planned",
                     "data": json.dumps(
@@ -940,6 +984,17 @@ class ApiMonitorSessionManager:
 
                 if decision.goal_status in ("done", "blocked"):
                     stop_reason = decision.done_reason or decision.summary or decision.goal_status
+                    trace.execution = execution_snapshot(
+                        result=decision.goal_status,
+                        before=trace.before,
+                        after=trace.before,
+                    )
+                    trace.after = trace.before
+                    trace.updated_at = datetime.now()
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                    }
                     yield {
                         "event": "directed_done",
                         "data": json.dumps(
@@ -961,6 +1016,14 @@ class ApiMonitorSessionManager:
                 filtered = filter_action_for_business_safety(action, business_safety)
                 if filtered.skipped:
                     skipped = filtered.skipped
+                    trace.execution = execution_snapshot(
+                        result="skipped",
+                        error=skipped.reason,
+                        before=trace.before,
+                        after=trace.before,
+                    )
+                    trace.after = trace.before
+                    trace.updated_at = datetime.now()
                     run_history.append(
                         {
                             "step": step_index,
@@ -981,12 +1044,62 @@ class ApiMonitorSessionManager:
                             ensure_ascii=False,
                         ),
                     }
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                    }
                     continue
 
                 allowed_action = filtered.allowed
                 if allowed_action is None:
                     stop_reason = "No allowed directed action returned"
                     break
+
+                skip_reason = retry_guard_skip_reason(trace.action_fingerprint or "", completed_traces)
+                if skip_reason:
+                    trace.execution = execution_snapshot(
+                        result="retry_guard_skipped",
+                        error=skip_reason,
+                        before=trace.before,
+                        after=trace.before,
+                    )
+                    trace.after = trace.before
+                    trace.retry_advice = {
+                        "reason": skip_reason,
+                        "blocked_actions": retry_context.get("blocked_actions", []),
+                        "block_steps": retry_context.get("block_steps", []),
+                    }
+                    trace.updated_at = datetime.now()
+                    run_history.append(
+                        {
+                            "step": step_index,
+                            "result": "retry_guard_skipped",
+                            "description": allowed_action.description,
+                            "code": describe_locator_code(allowed_action),
+                            "error": skip_reason,
+                            "expected_change": decision.expected_change,
+                        }
+                    )
+                    failed_steps += 1
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                    }
+                    yield {
+                        "event": "directed_replan",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "description": allowed_action.description,
+                                "error": skip_reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    if failed_steps >= max_failures:
+                        stop_reason = f"Reached max directed action failures: {max_failures}"
+                        break
+                    continue
 
                 yield {
                     "event": "directed_action_detail",
@@ -1005,6 +1118,25 @@ class ApiMonitorSessionManager:
                     await execute_directed_action(page, allowed_action)
                 except Exception as action_exc:
                     error_text = str(action_exc)
+                    failed_step_calls: List[CapturedApiCall] = []
+                    if capture:
+                        failed_step_calls = capture.drain_new_calls()
+                        if failed_step_calls:
+                            directed_calls.extend(failed_step_calls)
+                            session.captured_calls.extend(failed_step_calls)
+                    try:
+                        after_payload = await self._observe_directed_page(page, instruction)
+                        trace.after = observation_from_payload(after_payload)
+                    except Exception:
+                        trace.after = trace.before
+                    trace.execution = execution_snapshot(
+                        result="failed",
+                        error=error_text,
+                        before=trace.before,
+                        after=trace.after,
+                    )
+                    trace.captured_call_ids = captured_call_ids(failed_step_calls)
+                    trace.updated_at = datetime.now()
                     run_history.append(
                         {
                             "step": step_index,
@@ -1015,11 +1147,6 @@ class ApiMonitorSessionManager:
                             "expected_change": decision.expected_change,
                         }
                     )
-                    if capture:
-                        failed_step_calls = capture.drain_new_calls()
-                        if failed_step_calls:
-                            directed_calls.extend(failed_step_calls)
-                            session.captured_calls.extend(failed_step_calls)
                     failed_steps += 1
                     yield {
                         "event": "directed_replan",
@@ -1031,6 +1158,10 @@ class ApiMonitorSessionManager:
                             },
                             ensure_ascii=False,
                         ),
+                    }
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
                     }
                     if failed_steps >= max_failures:
                         stop_reason = f"Reached max directed action failures: {max_failures}"
@@ -1082,6 +1213,19 @@ class ApiMonitorSessionManager:
                     session.captured_calls.extend(step_calls)
                     if run_history:
                         run_history[-1]["new_calls"] = self._summarize_directed_calls(step_calls)
+                trace.after = trace.before
+                trace.execution = execution_snapshot(
+                    result="executed",
+                    before=trace.before,
+                    after=trace.after,
+                )
+                trace.captured_call_ids = captured_call_ids(step_calls)
+                trace.updated_at = datetime.now()
+                yield {
+                    "event": "directed_trace_updated",
+                    "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                }
+                if step_calls:
                     yield {
                         "event": "calls_captured",
                         "data": json.dumps(
@@ -1119,6 +1263,10 @@ class ApiMonitorSessionManager:
                             compact_snapshot=observation["compact_snapshot"],
                             run_history=run_history,
                             observation=completion_observation,
+                            retry_context=build_directed_retry_context(
+                                session.directed_traces,
+                                captured_api_summary=self._summarize_directed_calls(directed_calls),
+                            ),
                             model_config=model_config,
                         )
                     except Exception as planner_exc:

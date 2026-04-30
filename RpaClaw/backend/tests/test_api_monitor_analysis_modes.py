@@ -4,7 +4,14 @@ from backend.rpa.api_monitor.analysis_modes import (
     ANALYSIS_MODE_REGISTRY,
     get_analysis_mode_config,
 )
-from backend.rpa.api_monitor.models import AnalyzeSessionRequest, ApiMonitorSession
+from backend.rpa.api_monitor.models import (
+    AnalyzeSessionRequest,
+    ApiMonitorSession,
+    DirectedAnalysisTrace,
+    DirectedDecisionSnapshot,
+    DirectedExecutionSnapshot,
+    DirectedObservation,
+)
 
 
 def test_analyze_request_defaults_to_free_mode():
@@ -52,6 +59,49 @@ def _route_session() -> ApiMonitorSession:
         sandbox_session_id="sandbox-1",
         target_url="https://example.test/app",
     )
+
+
+def test_api_monitor_session_stores_directed_traces():
+    session = _route_session()
+    trace = DirectedAnalysisTrace(
+        step=1,
+        instruction="搜索订单",
+        mode="safe_directed",
+        before=DirectedObservation(
+            url="https://example.test/orders",
+            title="Orders",
+            dom_digest="orders-before",
+            compact_snapshot_summary={"actionable_count": 2},
+        ),
+        decision=DirectedDecisionSnapshot(
+            goal_status="continue",
+            summary="点击搜索",
+            expected_change="捕获订单搜索接口",
+            action={
+                "action": "click",
+                "locator": {"method": "role", "role": "button", "name": "搜索"},
+                "description": "点击搜索",
+                "risk": "safe",
+            },
+            risk="safe",
+        ),
+        action_fingerprint="click|role|button|搜索",
+        execution=DirectedExecutionSnapshot(result="executed", url_changed=False, dom_changed=True),
+        after=DirectedObservation(
+            url="https://example.test/orders",
+            title="Orders",
+            dom_digest="orders-after",
+            compact_snapshot_summary={"actionable_count": 3},
+        ),
+        captured_call_ids=["call-1"],
+    )
+
+    session.directed_traces.append(trace)
+
+    dumped = session.model_dump(mode="json")
+    assert dumped["directed_traces"][0]["step"] == 1
+    assert dumped["directed_traces"][0]["execution"]["result"] == "executed"
+    assert dumped["directed_traces"][0]["captured_call_ids"] == ["call-1"]
 
 
 def _route_app() -> FastAPI:
@@ -198,6 +248,10 @@ from backend.rpa.api_monitor.directed_analyzer import (
     filter_action_for_business_safety,
     filter_actions_for_business_safety,
 )
+from backend.rpa.api_monitor.directed_trace import (
+    build_directed_retry_context,
+    directed_action_fingerprint,
+)
 
 
 def test_safe_directed_filters_unsafe_actions():
@@ -328,6 +382,45 @@ def test_directed_step_prompt_includes_history_and_current_snapshot(monkeypatch)
     assert "每次只返回一个下一步动作" in prompt
 
 
+def test_directed_step_prompt_includes_retry_context(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from backend.rpa.api_monitor import directed_analyzer
+
+    captured_messages = []
+
+    class _FakeModel:
+        async def ainvoke(self, messages):
+            captured_messages.extend(messages)
+            return AIMessage(
+                content='{"goal_status":"blocked","summary":"搜索按钮已重复失败","next_action":null,"done_reason":"blocked action"}'
+            )
+
+    monkeypatch.setattr(directed_analyzer, "get_llm_model", lambda config=None, streaming=False: _FakeModel())
+
+    decision = asyncio.run(
+        directed_analyzer.build_directed_step_decision(
+            instruction="搜索订单",
+            compact_snapshot={"url": "https://example.test/orders", "actionable_nodes": [{"name": "搜索"}]},
+            run_history=[],
+            observation={"url": "https://example.test/orders", "title": "Orders"},
+            retry_context={
+                "blocked_actions": [{"fingerprint": "click|role|button|搜索", "reason": "连续 2 次失败"}],
+                "block_steps": [{"fingerprint": "click|role|button|搜索", "reason": "连续 2 次失败"}],
+                "loop_detected": False,
+                "recent_traces": [],
+                "captured_api_summary": [],
+            },
+            model_config={"model_name": "fake"},
+        )
+    )
+
+    prompt = "\n".join(str(message.content) for message in captured_messages if hasattr(message, "content"))
+    assert decision.goal_status == "blocked"
+    assert "重试上下文 retry_context" in prompt
+    assert "blocked_actions" in prompt
+    assert "click|role|button|搜索" in prompt
+
+
 def test_directed_step_decision_repairs_invalid_json_response(monkeypatch):
     from langchain_core.messages import AIMessage
     from backend.rpa.api_monitor import directed_analyzer
@@ -456,6 +549,133 @@ def test_filter_action_for_business_safety_handles_single_step_actions():
     assert filter_action_for_business_safety(unsafe_action, "guarded").allowed is None
     assert filter_action_for_business_safety(unsafe_action, "guarded").skipped == unsafe_action
     assert filter_action_for_business_safety(unsafe_action, "user_controlled").allowed == unsafe_action
+
+
+def test_directed_action_fingerprint_uses_action_locator_and_value():
+    action = DirectedAction(
+        action="fill",
+        locator={"method": "placeholder", "value": "订单号"},
+        value="123",
+        description="填写订单号",
+        risk="safe",
+    )
+
+    assert directed_action_fingerprint(action) == "fill|placeholder|订单号|123"
+
+
+def test_build_directed_retry_context_blocks_repeated_failures():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["blocked_actions"][0]["fingerprint"] == "click|role|button|搜索"
+    assert "连续 2 次失败" in context["blocked_actions"][0]["reason"]
+    assert context["loop_detected"] is False
+    assert context["recent_traces"][-1]["result"] == "failed"
+
+
+def test_directed_retry_context_clears_blocked_actions_after_success():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=3,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(url="https://example.test/orders", dom_digest="orders"),
+            after=DirectedObservation(url="https://example.test/orders", dom_digest="orders-results"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="executed", dom_changed=True),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["blocked_actions"] == []
+    assert context["block_steps"] == []
+    assert context["loop_detected"] is False
+    assert context["successful_transitions"][0]["dom_changed"] is True
+
+
+def test_directed_retry_context_success_breaks_loop_window():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="B",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=3,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=4,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="executed"),
+        ),
+        DirectedAnalysisTrace(
+            step=5,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="B",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["loop_detected"] is False
+    assert context["blocked_actions"] == []
 
 
 class _FakePage:
@@ -853,7 +1073,7 @@ def test_directed_analysis_uses_compact_snapshot_and_generates_tools(monkeypatch
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         calls["plan_instruction"] = instruction
         calls["compact_snapshot"] = compact_snapshot
         return DirectedStepDecision(goal_status="done", summary="完成", done_reason="无需额外动作")
@@ -908,7 +1128,7 @@ def test_directed_analysis_emits_skipped_actions(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         if not run_history:
             return DirectedStepDecision(
                 goal_status="continue",
@@ -967,7 +1187,7 @@ def test_directed_analysis_pre_drains_historical_calls(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         return DirectedStepDecision(goal_status="done", summary="完成", done_reason="只验证 pre-drain")
 
     async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
@@ -1030,7 +1250,7 @@ def test_directed_analysis_replans_after_dom_changes(monkeypatch):
             "dom_digest": "detail-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(
             {
                 "compact_snapshot": compact_snapshot,
@@ -1121,7 +1341,7 @@ def test_directed_analysis_asks_ai_to_stop_after_capturing_calls(monkeypatch):
 
     decisions = []
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decisions.append({"run_history": list(run_history), "observation": dict(observation)})
         if run_history and run_history[-1].get("new_calls"):
             return DirectedStepDecision(
@@ -1193,7 +1413,7 @@ def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(list(run_history))
         if not run_history:
             return DirectedStepDecision(
@@ -1236,6 +1456,190 @@ def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
     assert any(event["event"] == "analysis_complete" for event in events)
 
 
+def test_directed_analysis_records_trace_for_action_failure(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], []])
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "same-page",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        if len(session.directed_traces) == 1:
+            return DirectedStepDecision(
+                goal_status="continue",
+                summary="点击搜索",
+                expected_change="捕获搜索接口",
+                next_action=DirectedAction(
+                    action="click",
+                    locator={"method": "role", "role": "button", "name": "搜索"},
+                    description="点击搜索",
+                    risk="safe",
+                ),
+            )
+        return DirectedStepDecision(goal_status="blocked", summary="无法继续", done_reason="搜索按钮不存在")
+
+    async def fake_execute_action(page, action):
+        raise RuntimeError("Locator not found: 搜索")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert session.directed_traces[0].step == 1
+    assert session.directed_traces[0].before.dom_digest == "same-page"
+    assert session.directed_traces[0].decision.summary == "点击搜索"
+    assert session.directed_traces[0].action_fingerprint == "click|role|button|搜索"
+    assert session.directed_traces[0].execution.result == "failed"
+    assert "Locator not found" in session.directed_traces[0].execution.error
+    assert any(event["event"] == "directed_trace_added" for event in events)
+    assert any(event["event"] == "directed_trace_updated" for event in events)
+
+
+def test_directed_analysis_passes_retry_context_and_skips_repeated_action(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], [], [], []])
+
+    contexts = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "orders",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        contexts.append(retry_context or {})
+        if len(contexts) <= 4:
+            return DirectedStepDecision(
+                goal_status="continue",
+                summary="点击搜索",
+                next_action=DirectedAction(
+                    action="click",
+                    locator={"method": "role", "role": "button", "name": "搜索"},
+                    description="点击搜索",
+                    risk="safe",
+                ),
+            )
+        return DirectedStepDecision(goal_status="blocked", summary="停止", done_reason="重复失败")
+
+    async def fake_execute_action(page, action):
+        raise RuntimeError("Locator not found: 搜索")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert any(ctx.get("blocked_actions") for ctx in contexts[2:])
+    assert any(trace.execution and trace.execution.result == "retry_guard_skipped" for trace in session.directed_traces)
+    assert any(event["event"] == "directed_replan" and "重复失败" in event["data"] for event in events)
+
+
+def test_directed_trace_does_not_feed_tool_generation(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    call = _captured_call()
+    manager._captures[session.id] = _SequencedCapture([[], [call]])
+
+    tool_calls = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "orders",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        if observation.get("completion_check"):
+            return DirectedStepDecision(goal_status="done", summary="完成", done_reason="已捕获 API")
+        return DirectedStepDecision(
+            goal_status="continue",
+            summary="点击搜索",
+            next_action=DirectedAction(
+                action="click",
+                locator={"method": "role", "role": "button", "name": "搜索"},
+                description="点击搜索",
+                risk="safe",
+            ),
+        )
+
+    async def fake_execute_action(page, action):
+        return None
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        tool_calls.extend(calls_arg)
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_wait_for_directed_settle", lambda *args, **kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert tool_calls == [call]
+    assert session.directed_traces[0].captured_call_ids == [call.id]
+
+
 def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()
@@ -1254,7 +1658,7 @@ def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(list(run_history))
         if not run_history:
             raise ValueError("LLM returned invalid JSON")
@@ -1303,7 +1707,7 @@ def test_directed_analysis_allows_twenty_failures_before_stopping(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         attempts.append(len(run_history))
         raise ValueError("LLM returned invalid JSON")
 
@@ -1349,7 +1753,7 @@ def test_directed_analysis_filters_unsafe_action_each_step(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         contexts.append(list(run_history))
         if not run_history:
             return DirectedStepDecision(

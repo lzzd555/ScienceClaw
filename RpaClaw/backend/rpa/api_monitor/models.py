@@ -73,6 +73,50 @@ class ApiToolDefinition(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── Directed analysis trace ──────────────────────────────────────────
+
+
+class DirectedObservation(BaseModel):
+    url: str = ""
+    title: str = ""
+    dom_digest: str = ""
+    compact_snapshot_summary: Dict = Field(default_factory=dict)
+    observed_at: datetime = Field(default_factory=datetime.now)
+
+
+class DirectedDecisionSnapshot(BaseModel):
+    goal_status: str = "continue"
+    summary: str = ""
+    expected_change: str = ""
+    done_reason: str = ""
+    action: Optional[Dict] = None
+    risk: str = "safe"
+
+
+class DirectedExecutionSnapshot(BaseModel):
+    result: str
+    error: str = ""
+    duration_ms: Optional[int] = None
+    url_changed: bool = False
+    dom_changed: bool = False
+
+
+class DirectedAnalysisTrace(BaseModel):
+    id: str = Field(default_factory=_gen_id)
+    step: int
+    instruction: str
+    mode: str
+    before: DirectedObservation
+    decision: Optional[DirectedDecisionSnapshot] = None
+    action_fingerprint: Optional[str] = None
+    execution: Optional[DirectedExecutionSnapshot] = None
+    after: Optional[DirectedObservation] = None
+    captured_call_ids: List[str] = Field(default_factory=list)
+    retry_advice: Dict = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
 # ── Session ──────────────────────────────────────────────────────────
 
 
@@ -84,6 +128,7 @@ class ApiMonitorSession(BaseModel):
     target_url: Optional[str] = None
     captured_calls: List[CapturedApiCall] = Field(default_factory=list)
     tool_definitions: List[ApiToolDefinition] = Field(default_factory=list)
+    directed_traces: List[DirectedAnalysisTrace] = Field(default_factory=list)
     active_tab_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
