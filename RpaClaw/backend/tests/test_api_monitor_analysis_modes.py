@@ -866,7 +866,7 @@ def test_directed_analysis_uses_compact_snapshot_and_generates_tools(monkeypatch
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         calls["plan_instruction"] = instruction
         calls["compact_snapshot"] = compact_snapshot
         return DirectedStepDecision(goal_status="done", summary="完成", done_reason="无需额外动作")
@@ -921,7 +921,7 @@ def test_directed_analysis_emits_skipped_actions(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         if not run_history:
             return DirectedStepDecision(
                 goal_status="continue",
@@ -980,7 +980,7 @@ def test_directed_analysis_pre_drains_historical_calls(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         return DirectedStepDecision(goal_status="done", summary="完成", done_reason="只验证 pre-drain")
 
     async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
@@ -1043,7 +1043,7 @@ def test_directed_analysis_replans_after_dom_changes(monkeypatch):
             "dom_digest": "detail-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(
             {
                 "compact_snapshot": compact_snapshot,
@@ -1134,7 +1134,7 @@ def test_directed_analysis_asks_ai_to_stop_after_capturing_calls(monkeypatch):
 
     decisions = []
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decisions.append({"run_history": list(run_history), "observation": dict(observation)})
         if run_history and run_history[-1].get("new_calls"):
             return DirectedStepDecision(
@@ -1206,7 +1206,7 @@ def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(list(run_history))
         if not run_history:
             return DirectedStepDecision(
@@ -1372,6 +1372,67 @@ def test_directed_analysis_passes_retry_context_and_skips_repeated_action(monkey
     assert any(event["event"] == "directed_replan" and "重复失败" in event["data"] for event in events)
 
 
+def test_directed_trace_does_not_feed_tool_generation(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    call = _captured_call()
+    manager._captures[session.id] = _SequencedCapture([[], [call]])
+
+    tool_calls = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "orders",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        if observation.get("completion_check"):
+            return DirectedStepDecision(goal_status="done", summary="完成", done_reason="已捕获 API")
+        return DirectedStepDecision(
+            goal_status="continue",
+            summary="点击搜索",
+            next_action=DirectedAction(
+                action="click",
+                locator={"method": "role", "role": "button", "name": "搜索"},
+                description="点击搜索",
+                risk="safe",
+            ),
+        )
+
+    async def fake_execute_action(page, action):
+        return None
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        tool_calls.extend(calls_arg)
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_wait_for_directed_settle", lambda *args, **kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert tool_calls == [call]
+    assert session.directed_traces[0].captured_call_ids == [call.id]
+
+
 def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()
@@ -1390,7 +1451,7 @@ def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         decision_contexts.append(list(run_history))
         if not run_history:
             raise ValueError("LLM returned invalid JSON")
@@ -1439,7 +1500,7 @@ def test_directed_analysis_allows_twenty_failures_before_stopping(monkeypatch):
             "dom_digest": "same-page",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         attempts.append(len(run_history))
         raise ValueError("LLM returned invalid JSON")
 
@@ -1485,7 +1546,7 @@ def test_directed_analysis_filters_unsafe_action_each_step(monkeypatch):
             "dom_digest": "orders",
         }
 
-    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, model_config=None):
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
         contexts.append(list(run_history))
         if not run_history:
             return DirectedStepDecision(

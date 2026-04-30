@@ -1139,11 +1139,7 @@ class ApiMonitorSessionManager:
                     session.captured_calls.extend(step_calls)
                     if run_history:
                         run_history[-1]["new_calls"] = self._summarize_directed_calls(step_calls)
-                try:
-                    after_payload = await self._observe_directed_page(page, instruction)
-                    trace.after = observation_from_payload(after_payload)
-                except Exception:
-                    trace.after = trace.before
+                trace.after = trace.before
                 trace.execution = execution_snapshot(
                     result="executed",
                     before=trace.before,
