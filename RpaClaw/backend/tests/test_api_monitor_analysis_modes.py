@@ -552,6 +552,93 @@ def test_build_directed_retry_context_blocks_repeated_failures():
     assert context["recent_traces"][-1]["result"] == "failed"
 
 
+def test_directed_retry_context_clears_blocked_actions_after_success():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=3,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(url="https://example.test/orders", dom_digest="orders"),
+            after=DirectedObservation(url="https://example.test/orders", dom_digest="orders-results"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="executed", dom_changed=True),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["blocked_actions"] == []
+    assert context["block_steps"] == []
+    assert context["loop_detected"] is False
+    assert context["successful_transitions"][0]["dom_changed"] is True
+
+
+def test_directed_retry_context_success_breaks_loop_window():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="B",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=3,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+        DirectedAnalysisTrace(
+            step=4,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="A",
+            execution=DirectedExecutionSnapshot(result="executed"),
+        ),
+        DirectedAnalysisTrace(
+            step=5,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(),
+            action_fingerprint="B",
+            execution=DirectedExecutionSnapshot(result="failed"),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["loop_detected"] is False
+    assert context["blocked_actions"] == []
+
+
 class _FakePage:
     def __init__(self):
         self.calls = []

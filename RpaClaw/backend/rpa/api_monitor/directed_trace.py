@@ -87,12 +87,13 @@ def build_directed_retry_context(
 ) -> dict[str, Any]:
     recent = traces[-10:]
     recent_summary = [_trace_summary(trace) for trace in recent]
+    active_traces = _traces_since_last_success(traces)
     failed = [
         trace
-        for trace in traces
+        for trace in active_traces
         if _trace_result(trace) in {"failed", "planner_failed", "retry_guard_skipped"}
     ]
-    blocked = _blocked_actions(traces)
+    blocked = _blocked_actions(active_traces)
     loop_detected = _loop_detected(failed)
     if loop_detected:
         for fingerprint in _recent_failed_fingerprints(failed)[-LOOP_WINDOW:]:
@@ -115,9 +116,10 @@ def build_directed_retry_context(
 def retry_guard_skip_reason(action_fingerprint: str, traces: list[DirectedAnalysisTrace]) -> str:
     if not action_fingerprint:
         return ""
+    active_traces = _traces_since_last_success(traces)
     failures = [
         trace
-        for trace in traces
+        for trace in active_traces
         if trace.action_fingerprint == action_fingerprint
         and _trace_result(trace) in {"failed", "retry_guard_skipped"}
     ]
@@ -141,6 +143,13 @@ def _compact_snapshot_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _trace_result(trace: DirectedAnalysisTrace) -> str:
     return trace.execution.result if trace.execution else ""
+
+
+def _traces_since_last_success(traces: list[DirectedAnalysisTrace]) -> list[DirectedAnalysisTrace]:
+    for index in range(len(traces) - 1, -1, -1):
+        if _trace_result(traces[index]) == "executed":
+            return traces[index + 1 :]
+    return traces
 
 
 def _trace_summary(trace: DirectedAnalysisTrace) -> dict[str, Any]:
