@@ -248,6 +248,10 @@ from backend.rpa.api_monitor.directed_analyzer import (
     filter_action_for_business_safety,
     filter_actions_for_business_safety,
 )
+from backend.rpa.api_monitor.directed_trace import (
+    build_directed_retry_context,
+    directed_action_fingerprint,
+)
 
 
 def test_safe_directed_filters_unsafe_actions():
@@ -506,6 +510,46 @@ def test_filter_action_for_business_safety_handles_single_step_actions():
     assert filter_action_for_business_safety(unsafe_action, "guarded").allowed is None
     assert filter_action_for_business_safety(unsafe_action, "guarded").skipped == unsafe_action
     assert filter_action_for_business_safety(unsafe_action, "user_controlled").allowed == unsafe_action
+
+
+def test_directed_action_fingerprint_uses_action_locator_and_value():
+    action = DirectedAction(
+        action="fill",
+        locator={"method": "placeholder", "value": "订单号"},
+        value="123",
+        description="填写订单号",
+        risk="safe",
+    )
+
+    assert directed_action_fingerprint(action) == "fill|placeholder|订单号|123"
+
+
+def test_build_directed_retry_context_blocks_repeated_failures():
+    traces = [
+        DirectedAnalysisTrace(
+            step=1,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+        DirectedAnalysisTrace(
+            step=2,
+            instruction="搜索订单",
+            mode="safe_directed",
+            before=DirectedObservation(dom_digest="orders"),
+            action_fingerprint="click|role|button|搜索",
+            execution=DirectedExecutionSnapshot(result="failed", error="Locator not found"),
+        ),
+    ]
+
+    context = build_directed_retry_context(traces, captured_api_summary=[])
+
+    assert context["blocked_actions"][0]["fingerprint"] == "click|role|button|搜索"
+    assert "连续 2 次失败" in context["blocked_actions"][0]["reason"]
+    assert context["loop_detected"] is False
+    assert context["recent_traces"][-1]["result"] == "failed"
 
 
 class _FakePage:
