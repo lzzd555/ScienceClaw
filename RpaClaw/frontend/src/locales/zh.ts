@@ -645,6 +645,8 @@ export default {
   'API Monitor Placeholder credential type hint': '占位类型只校验所选凭证，当前不会把认证信息注入请求。',
   'API Monitor Test credential type': '测试（登录认证）',
   'API Monitor Test credential type hint': '测试类型将凭证 POST 到登录地址获取 token，然后注入 Bearer token 到请求中。',
+  'API Monitor IDaaS credential type': 'IDaaS 凭证',
+  'API Monitor IDaaS credential type hint': 'IDaaS 类型要求外部调用者通过 _auth 提供 X-RE-AppId（Header）和 X-Auth-Token（Cookie）。',
   'Login URL': '登录地址',
   'Login URL placeholder': '例如 http://localhost:11451/api/login',
   'Authentication': '认证',
