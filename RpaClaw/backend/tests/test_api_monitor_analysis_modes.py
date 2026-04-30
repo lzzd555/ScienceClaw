@@ -4,7 +4,14 @@ from backend.rpa.api_monitor.analysis_modes import (
     ANALYSIS_MODE_REGISTRY,
     get_analysis_mode_config,
 )
-from backend.rpa.api_monitor.models import AnalyzeSessionRequest, ApiMonitorSession
+from backend.rpa.api_monitor.models import (
+    AnalyzeSessionRequest,
+    ApiMonitorSession,
+    DirectedAnalysisTrace,
+    DirectedDecisionSnapshot,
+    DirectedExecutionSnapshot,
+    DirectedObservation,
+)
 
 
 def test_analyze_request_defaults_to_free_mode():
@@ -52,6 +59,49 @@ def _route_session() -> ApiMonitorSession:
         sandbox_session_id="sandbox-1",
         target_url="https://example.test/app",
     )
+
+
+def test_api_monitor_session_stores_directed_traces():
+    session = _route_session()
+    trace = DirectedAnalysisTrace(
+        step=1,
+        instruction="搜索订单",
+        mode="safe_directed",
+        before=DirectedObservation(
+            url="https://example.test/orders",
+            title="Orders",
+            dom_digest="orders-before",
+            compact_snapshot_summary={"actionable_count": 2},
+        ),
+        decision=DirectedDecisionSnapshot(
+            goal_status="continue",
+            summary="点击搜索",
+            expected_change="捕获订单搜索接口",
+            action={
+                "action": "click",
+                "locator": {"method": "role", "role": "button", "name": "搜索"},
+                "description": "点击搜索",
+                "risk": "safe",
+            },
+            risk="safe",
+        ),
+        action_fingerprint="click|role|button|搜索",
+        execution=DirectedExecutionSnapshot(result="executed", url_changed=False, dom_changed=True),
+        after=DirectedObservation(
+            url="https://example.test/orders",
+            title="Orders",
+            dom_digest="orders-after",
+            compact_snapshot_summary={"actionable_count": 3},
+        ),
+        captured_call_ids=["call-1"],
+    )
+
+    session.directed_traces.append(trace)
+
+    dumped = session.model_dump(mode="json")
+    assert dumped["directed_traces"][0]["step"] == 1
+    assert dumped["directed_traces"][0]["execution"]["result"] == "executed"
+    assert dumped["directed_traces"][0]["captured_call_ids"] == ["call-1"]
 
 
 def _route_app() -> FastAPI:
