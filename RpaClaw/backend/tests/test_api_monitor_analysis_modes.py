@@ -1249,6 +1249,69 @@ def test_directed_analysis_feeds_action_failure_into_next_step(monkeypatch):
     assert any(event["event"] == "analysis_complete" for event in events)
 
 
+def test_directed_analysis_records_trace_for_action_failure(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], []])
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "same-page",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        if len(session.directed_traces) == 1:
+            return DirectedStepDecision(
+                goal_status="continue",
+                summary="点击搜索",
+                expected_change="捕获搜索接口",
+                next_action=DirectedAction(
+                    action="click",
+                    locator={"method": "role", "role": "button", "name": "搜索"},
+                    description="点击搜索",
+                    risk="safe",
+                ),
+            )
+        return DirectedStepDecision(goal_status="blocked", summary="无法继续", done_reason="搜索按钮不存在")
+
+    async def fake_execute_action(page, action):
+        raise RuntimeError("Locator not found: 搜索")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert session.directed_traces[0].step == 1
+    assert session.directed_traces[0].before.dom_digest == "same-page"
+    assert session.directed_traces[0].decision.summary == "点击搜索"
+    assert session.directed_traces[0].action_fingerprint == "click|role|button|搜索"
+    assert session.directed_traces[0].execution.result == "failed"
+    assert "Locator not found" in session.directed_traces[0].execution.error
+    assert any(event["event"] == "directed_trace_added" for event in events)
+    assert any(event["event"] == "directed_trace_updated" for event in events)
+
+
 def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()
