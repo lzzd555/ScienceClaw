@@ -382,6 +382,45 @@ def test_directed_step_prompt_includes_history_and_current_snapshot(monkeypatch)
     assert "每次只返回一个下一步动作" in prompt
 
 
+def test_directed_step_prompt_includes_retry_context(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from backend.rpa.api_monitor import directed_analyzer
+
+    captured_messages = []
+
+    class _FakeModel:
+        async def ainvoke(self, messages):
+            captured_messages.extend(messages)
+            return AIMessage(
+                content='{"goal_status":"blocked","summary":"搜索按钮已重复失败","next_action":null,"done_reason":"blocked action"}'
+            )
+
+    monkeypatch.setattr(directed_analyzer, "get_llm_model", lambda config=None, streaming=False: _FakeModel())
+
+    decision = asyncio.run(
+        directed_analyzer.build_directed_step_decision(
+            instruction="搜索订单",
+            compact_snapshot={"url": "https://example.test/orders", "actionable_nodes": [{"name": "搜索"}]},
+            run_history=[],
+            observation={"url": "https://example.test/orders", "title": "Orders"},
+            retry_context={
+                "blocked_actions": [{"fingerprint": "click|role|button|搜索", "reason": "连续 2 次失败"}],
+                "block_steps": [{"fingerprint": "click|role|button|搜索", "reason": "连续 2 次失败"}],
+                "loop_detected": False,
+                "recent_traces": [],
+                "captured_api_summary": [],
+            },
+            model_config={"model_name": "fake"},
+        )
+    )
+
+    prompt = "\n".join(str(message.content) for message in captured_messages if hasattr(message, "content"))
+    assert decision.goal_status == "blocked"
+    assert "重试上下文 retry_context" in prompt
+    assert "blocked_actions" in prompt
+    assert "click|role|button|搜索" in prompt
+
+
 def test_directed_step_decision_repairs_invalid_json_response(monkeypatch):
     from langchain_core.messages import AIMessage
     from backend.rpa.api_monitor import directed_analyzer
