@@ -171,3 +171,100 @@ def test_serialize_external_access_state_returns_url_and_no_token_fields():
     assert "access_token" not in state
     assert "access_token_hash" not in state
     assert "token_hint" not in state
+
+
+# ── IDaaS credential type ──────────────────────────────────────────────
+
+
+def test_idaas_build_caller_auth_requirements():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+    assert requirements == {
+        "required": True,
+        "credential_type": "idaas",
+        "accepted_fields": ["_auth.headers.X-RE-AppId", "_auth.cookie.X-Auth-Token"],
+        "notes": ["Provide IDaaS X-RE-AppId header and X-Auth-Token cookie via _auth."],
+    }
+
+
+def test_idaas_external_tool_schema_contains_auth_fields():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+    schema = {
+        "type": "object",
+        "properties": {"keyword": {"type": "string"}},
+        "required": ["keyword"],
+    }
+
+    external_schema = build_external_tool_input_schema(schema, requirements)
+
+    assert external_schema["required"] == ["keyword", "_auth"]
+    auth_props = external_schema["properties"]["_auth"]["properties"]
+    assert auth_props["headers"]["required"] == ["X-RE-AppId"]
+    assert auth_props["headers"]["properties"]["X-RE-AppId"]["type"] == "string"
+    assert auth_props["cookie"]["required"] == ["X-Auth-Token"]
+    assert auth_props["cookie"]["properties"]["X-Auth-Token"]["type"] == "string"
+    assert external_schema["properties"]["_auth"]["required"] == ["headers", "cookie"]
+
+
+def test_idaas_extract_caller_auth_profile_from_arguments():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+    arguments = {
+        "keyword": "invoice",
+        "_auth": {
+            "headers": {"X-RE-AppId": "my-app-123"},
+            "cookie": {"X-Auth-Token": "token-abc"},
+        },
+    }
+
+    cleaned, profile, preview = extract_caller_auth_profile(
+        arguments,
+        requirements=requirements,
+        request_headers={},
+    )
+
+    assert cleaned == {"keyword": "invoice"}
+    assert profile.headers["X-RE-AppId"] == "my-app-123"
+    assert profile.headers["Cookie"] == "X-Auth-Token=token-abc"
+    assert profile.variables["auth_token"] == "token-abc"
+    assert preview == {
+        "credential_type": "idaas",
+        "source": "_auth",
+        "headers": ["X-RE-AppId", "Cookie"],
+        "injected": True,
+    }
+
+
+def test_idaas_extract_caller_auth_errors_when_missing_fields():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+
+    with pytest.raises(CallerAuthError, match="Missing IDaaS"):
+        extract_caller_auth_profile(
+            {"keyword": "invoice", "_auth": {"headers": {"X-RE-AppId": "app"}, "cookie": {}}},
+            requirements=requirements,
+            request_headers={},
+        )
+
+
+def test_idaas_extract_caller_auth_errors_when_missing_app_id():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+
+    with pytest.raises(CallerAuthError, match="Missing IDaaS"):
+        extract_caller_auth_profile(
+            {"keyword": "invoice", "_auth": {"headers": {}, "cookie": {"X-Auth-Token": "tok"}}},
+            requirements=requirements,
+            request_headers={},
+        )
+
+
+def test_idaas_description_contains_idaas_hint():
+    requirements = build_caller_auth_requirements({"credential_type": "idaas"})
+
+    description, extension = with_caller_auth_description("Search orders", requirements)
+
+    assert "credential_type=idaas" in description
+    assert "X-RE-AppId" in description
+    assert "X-Auth-Token" in description
+    assert extension[CALLER_AUTH_EXTENSION_KEY] == {
+        "required": True,
+        "credential_type": "idaas",
+        "accepted_fields": ["_auth.headers.X-RE-AppId", "_auth.cookie.X-Auth-Token"],
+    }
