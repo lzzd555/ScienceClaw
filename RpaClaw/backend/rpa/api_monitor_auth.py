@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 PLACEHOLDER_CREDENTIAL_TYPE = "placeholder"
 TEST_CREDENTIAL_TYPE = "test"
-ALLOWED_API_MONITOR_CREDENTIAL_TYPES = {PLACEHOLDER_CREDENTIAL_TYPE, TEST_CREDENTIAL_TYPE}
+IDAAS_CREDENTIAL_TYPE = "idaas"
+ALLOWED_API_MONITOR_CREDENTIAL_TYPES = {PLACEHOLDER_CREDENTIAL_TYPE, TEST_CREDENTIAL_TYPE, IDAAS_CREDENTIAL_TYPE}
 
 NOISE_HEADERS = {
     "accept",
@@ -215,6 +216,18 @@ async def apply_api_monitor_auth_to_request(
             },
         )
 
+    if credential_type == IDAAS_CREDENTIAL_TYPE:
+        return ApiMonitorAuthApplication(
+            headers=next_headers,
+            query=next_query,
+            body=next_body,
+            preview={
+                "credential_type": IDAAS_CREDENTIAL_TYPE,
+                "credential_configured": False,
+                "injected": False,
+            },
+        )
+
     return ApiMonitorAuthApplication(error=f"Unsupported API Monitor credential type: {credential_type}")
 
 
@@ -287,6 +300,16 @@ async def apply_api_monitor_auth_to_profile(
                 "injected": True,
                 "login_url": login_url,
                 "profile": profile.preview(),
+            },
+        )
+
+    if credential_type == IDAAS_CREDENTIAL_TYPE:
+        return ApiMonitorAuthApplication(
+            headers=dict(profile.headers),
+            preview={
+                "credential_type": IDAAS_CREDENTIAL_TYPE,
+                "credential_configured": False,
+                "injected": False,
             },
         )
 

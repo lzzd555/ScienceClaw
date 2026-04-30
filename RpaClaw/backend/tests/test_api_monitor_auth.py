@@ -192,3 +192,71 @@ async def test_test_credential_auth_writes_authorization_to_profile():
     assert profile.variables["auth_token"] == "login-token"
     assert profile.has_cookies is True
     assert "login-token" not in str(app.preview)
+
+
+# ── IDaaS credential type ──────────────────────────────────────────────
+
+
+def test_normalize_api_monitor_auth_config_accepts_idaas():
+    assert normalize_api_monitor_auth_config(
+        {"credential_type": "idaas", "credential_id": ""}
+    ) == {"credential_type": "idaas", "credential_id": ""}
+
+
+def test_normalize_api_monitor_auth_config_accepts_idaas_without_credential_id():
+    assert normalize_api_monitor_auth_config({"credential_type": "idaas"}) == {
+        "credential_type": "idaas",
+        "credential_id": "",
+    }
+
+
+@pytest.mark.anyio
+async def test_validate_idaas_does_not_require_credential_id():
+    config = await validate_api_monitor_auth_config(
+        "user-1",
+        {"credential_type": "idaas"},
+        vault=FakeVault({}),
+    )
+    assert config == {"credential_type": "idaas", "credential_id": ""}
+
+
+@pytest.mark.anyio
+async def test_apply_idaas_to_request_returns_no_injection():
+    from backend.rpa.api_monitor_auth import apply_api_monitor_auth_to_request
+
+    app = await apply_api_monitor_auth_to_request(
+        user_id="user-1",
+        auth_config={"credential_type": "idaas"},
+        headers={"Content-Type": "application/json"},
+        query={},
+        body={},
+        vault=FakeVault({}),
+    )
+
+    assert app.error == ""
+    assert app.headers == {"Content-Type": "application/json"}
+    assert app.preview == {
+        "credential_type": "idaas",
+        "credential_configured": False,
+        "injected": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_apply_idaas_to_profile_returns_no_injection():
+    profile = ApiMonitorRuntimeProfile(base_url="https://api.example.test")
+
+    app = await apply_api_monitor_auth_to_profile(
+        user_id="user-1",
+        auth_config={"credential_type": "idaas"},
+        profile=profile,
+        client=_LoginClient(),
+        vault=FakeVault({}),
+    )
+
+    assert app.error == ""
+    assert app.preview == {
+        "credential_type": "idaas",
+        "credential_configured": False,
+        "injected": False,
+    }
