@@ -13,7 +13,7 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Set
 
 from playwright.async_api import BrowserContext, Page
 
@@ -51,6 +51,7 @@ from .network_capture import NetworkCaptureEngine, dedup_key
 logger = logging.getLogger(__name__)
 
 PAGE_TIMEOUT_MS = 60_000
+DOM_CONTEXT_SCAN_TIMEOUT_S = 2.0
 
 # ── Interactive element scanner ──────────────────────────────────────
 
@@ -323,10 +324,15 @@ class ApiMonitorSessionManager:
         self.sessions: Dict[str, ApiMonitorSession] = {}
         self._contexts: Dict[str, BrowserContext] = {}
         self._pages: Dict[str, Page] = {}
+        self._session_pages: Dict[str, List[Page]] = {}
+        self._listener_pages: Set[tuple[str, int]] = set()
         self._captures: Dict[str, NetworkCaptureEngine] = {}
         self._screencasts: Dict[str, SessionScreencastController] = {}
         self._request_evidence: Dict[str, Dict[str, Dict]] = {}
         self._last_action_at: Dict[str, float] = {}
+        self._stop_recording_tasks: Dict[str, asyncio.Task[List[ApiToolDefinition]]] = {}
+        self._last_recording_tools: Dict[str, List[ApiToolDefinition]] = {}
+        self._last_recording_calls: Dict[str, List[CapturedApiCall]] = {}
 
     def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
         """Register an active screencast controller so capture logs can be forwarded."""
@@ -386,12 +392,12 @@ class ApiMonitorSessionManager:
 
         self._request_evidence[session_id] = {}
         self._contexts[session_id] = context
-        self._pages[session_id] = page
 
         # Install network capture. During initial navigation page.url can still be
         # about:blank, so fall back to the intended target URL for origin filtering.
         def _capture_page_url() -> str:
-            current_url = page.url
+            current_page = self._pages.get(session_id) or page
+            current_url = current_page.url
             if current_url and current_url != "about:blank":
                 return current_url
             return session.target_url or target_url
@@ -402,9 +408,12 @@ class ApiMonitorSessionManager:
             async_evidence_provider=lambda request: self._async_evidence_for_request(session_id, request),
         )
         self._captures[session_id] = capture
-        self._install_listeners(session_id, page, capture)
+        self._adopt_page(session_id, page, make_active=True)
 
-        await self._install_source_evidence_capture(session_id, context, page)
+        def _on_context_page(new_page: Page) -> None:
+            self._adopt_page(session_id, new_page, make_active=True)
+
+        context.on("page", _on_context_page)
 
         # Navigate in background — don't block the HTTP response
         if target_url:
@@ -430,6 +439,14 @@ class ApiMonitorSessionManager:
         self._captures.pop(session_id, None)
         self._request_evidence.pop(session_id, None)
         self._last_action_at.pop(session_id, None)
+        self._stop_recording_tasks.pop(session_id, None)
+        self._last_recording_tools.pop(session_id, None)
+        self._last_recording_calls.pop(session_id, None)
+        self._session_pages.pop(session_id, None)
+        self._listener_pages = {
+            key for key in self._listener_pages
+            if key[0] != session_id
+        }
         self._pages.pop(session_id, None)
         self._screencasts.pop(session_id, None)
 
@@ -534,18 +551,21 @@ class ApiMonitorSessionManager:
 
     def list_tabs(self, session_id: str) -> List[Dict]:
         """Return tab info for the session (used by screencast controller)."""
-        page = self._pages.get(session_id)
         session = self.sessions.get(session_id)
-        if not page or not session:
+        if not session:
             return []
 
+        active_page = self._pages.get(session_id)
+        pages = self._session_pages.get(session_id) or ([active_page] if active_page else [])
         return [
             {
-                "tab_id": session.id,
+                "tab_id": f"{session.id}:{idx}",
                 "title": "",
-                "url": session.target_url or "",
-                "active": True,
+                "url": getattr(page, "url", "") or session.target_url or "",
+                "active": page is active_page,
             }
+            for idx, page in enumerate(pages)
+            if page is not None
         ]
 
     # ── Recording ────────────────────────────────────────────────────
@@ -571,6 +591,11 @@ class ApiMonitorSessionManager:
                 )
 
         self._mark_action(session_id)
+        task = self._stop_recording_tasks.get(session_id)
+        if task and task.done():
+            self._stop_recording_tasks.pop(session_id, None)
+        self._last_recording_tools.pop(session_id, None)
+        self._last_recording_calls.pop(session_id, None)
 
         # Keep session.captured_calls intact — the full session history is needed
         # for token flow analysis.  Only the capture engine buffer was cleared.
@@ -583,7 +608,53 @@ class ApiMonitorSessionManager:
         session_id: str,
         model_config: Optional[Dict] = None,
     ) -> List[ApiToolDefinition]:
-        """Stop recording, drain captured calls, generate tool definitions."""
+        """Stop recording, drain captured calls, generate tool definitions.
+
+        Stop is idempotent because callers may retry after a transient HTTP
+        disconnect while the first stop is still generating tools.
+        """
+        session = self._require_session(session_id)
+
+        existing_task = self._stop_recording_tasks.get(session_id)
+        if existing_task:
+            try:
+                return await asyncio.shield(existing_task)
+            finally:
+                if existing_task.done():
+                    self._stop_recording_tasks.pop(session_id, None)
+
+        if session.status != "recording":
+            cached_tools = self._last_recording_tools.get(session_id)
+            if cached_tools is not None:
+                return list(cached_tools)
+            cached_calls = self._last_recording_calls.get(session_id)
+            if cached_calls:
+                tools = await self._generate_tools_from_calls(
+                    session_id,
+                    list(cached_calls),
+                    source="manual",
+                    model_config=model_config,
+                )
+                self._last_recording_tools[session_id] = list(tools)
+                return tools
+            return []
+
+        task = asyncio.create_task(
+            self._stop_recording_once(session_id, model_config=model_config)
+        )
+        self._stop_recording_tasks[session_id] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                self._stop_recording_tasks.pop(session_id, None)
+
+    async def _stop_recording_once(
+        self,
+        session_id: str,
+        model_config: Optional[Dict] = None,
+    ) -> List[ApiToolDefinition]:
+        """Perform the single authoritative stop for a recording window."""
         session = self._require_session(session_id)
 
         capture = self._captures.get(session_id)
@@ -592,6 +663,7 @@ class ApiMonitorSessionManager:
             new_calls = capture.drain_new_calls()
 
         session.captured_calls.extend(new_calls)
+        self._last_recording_calls[session_id] = list(new_calls)
         session.status = "idle"
         session.updated_at = datetime.now()
 
@@ -599,9 +671,11 @@ class ApiMonitorSessionManager:
             tools = await self._generate_tools_from_calls(
                 session_id, new_calls, source="manual", model_config=model_config,
             )
+            self._last_recording_tools[session_id] = list(tools)
             return tools
 
         logger.info("[ApiMonitor] Recording stopped for session %s, %d calls captured", session_id, len(new_calls))
+        self._last_recording_tools[session_id] = []
         return []
 
     # ── Page analysis (async generator) ──────────────────────────────
@@ -1321,12 +1395,20 @@ class ApiMonitorSessionManager:
         page = self._pages.get(session_id)
         if page:
             try:
-                dom_data = await page.evaluate(_SCAN_DOM_CONTEXT_JS)
+                dom_data = await asyncio.wait_for(
+                    page.evaluate(_SCAN_DOM_CONTEXT_JS),
+                    timeout=DOM_CONTEXT_SCAN_TIMEOUT_S,
+                )
                 dom_context = json.dumps(dom_data, ensure_ascii=False, indent=2)
                 logger.debug("[ApiMonitor] DOM context scanned: %d forms, %d inputs, %d buttons",
                              len(dom_data.get("forms", [])),
                              len(dom_data.get("inputs", [])),
                              len(dom_data.get("buttons", [])))
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[ApiMonitor] DOM context scan timed out after %.1fs; generating API tools without DOM context",
+                    DOM_CONTEXT_SCAN_TIMEOUT_S,
+                )
             except Exception as exc:
                 logger.warning("[ApiMonitor] DOM context scan failed: %s", exc)
 
@@ -1518,6 +1600,10 @@ class ApiMonitorSessionManager:
         capture: NetworkCaptureEngine,
     ) -> None:
         """Install page.on('request') and page.on('response') listeners."""
+        listener_key = (session_id, id(page))
+        if listener_key in self._listener_pages:
+            return
+        self._listener_pages.add(listener_key)
 
         def on_request(request) -> None:
             logger.debug(
@@ -1540,6 +1626,57 @@ class ApiMonitorSessionManager:
         page.on("response", on_response)
 
         logger.info("[ApiMonitor] Network listeners installed for session %s", session_id)
+
+    def _adopt_page(self, session_id: str, page: Page, *, make_active: bool) -> None:
+        """Track a page in the session and install API capture hooks on it."""
+        session = self._require_session(session_id)
+        pages = self._session_pages.setdefault(session_id, [])
+        if page not in pages:
+            pages.append(page)
+
+        if make_active:
+            self._pages[session_id] = page
+            session.active_tab_id = f"{session.id}:{pages.index(page)}"
+            if getattr(page, "url", ""):
+                session.target_url = page.url
+            session.updated_at = datetime.now()
+
+        page.set_default_timeout(PAGE_TIMEOUT_MS)
+        page.set_default_navigation_timeout(PAGE_TIMEOUT_MS)
+
+        capture = self._captures.get(session_id)
+        if capture:
+            self._install_listeners(session_id, page, capture)
+
+        async def _install_page_evidence() -> None:
+            context = self._contexts.get(session_id) or getattr(page, "context", None)
+            if context is not None:
+                await self._install_source_evidence_capture(session_id, context, page)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            loop.create_task(_install_page_evidence())
+
+        def _on_close() -> None:
+            current_pages = self._session_pages.get(session_id, [])
+            if page in current_pages:
+                current_pages.remove(page)
+            self._listener_pages.discard((session_id, id(page)))
+            if self._pages.get(session_id) is page:
+                fallback = current_pages[-1] if current_pages else None
+                if fallback is not None:
+                    self._pages[session_id] = fallback
+                    session.active_tab_id = f"{session.id}:{current_pages.index(fallback)}"
+                    if getattr(fallback, "url", ""):
+                        session.target_url = fallback.url
+                else:
+                    self._pages.pop(session_id, None)
+                    session.active_tab_id = None
+
+        page.on("close", _on_close)
 
     # ── Internal helpers ─────────────────────────────────────────────
 

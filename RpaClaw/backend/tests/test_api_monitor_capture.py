@@ -163,6 +163,29 @@ class TestCaptureEvidence:
         assert evidence["initiator_type"] == "script"
         assert evidence["action_window_matched"] is True
 
+    def test_on_request_uses_request_frame_url_for_origin_filter(self):
+        from backend.rpa.api_monitor.network_capture import NetworkCaptureEngine
+
+        class _Frame:
+            url = "https://popup.example.test/workbench"
+
+        class _PopupRequest:
+            url = "https://popup.example.test/api/search"
+            method = "GET"
+            headers = {"accept": "application/json"}
+            resource_type = "fetch"
+            post_data = None
+            frame = _Frame()
+
+        engine = NetworkCaptureEngine(
+            page_url_provider=lambda: "https://app.example.test/home",
+        )
+
+        request = _PopupRequest()
+        engine.on_request(request)
+
+        assert id(request) in engine._in_flight
+
 
 class TestSourceEvidenceHelpers:
     def test_extract_initiator_urls_from_cdp_stack(self):

@@ -729,7 +729,7 @@ def test_build_locator_rejects_unknown_method():
 from datetime import datetime
 
 from backend.rpa.api_monitor.manager import ApiMonitorSessionManager
-from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest
+from backend.rpa.api_monitor.models import ApiToolDefinition, CapturedApiCall, CapturedRequest
 
 
 class _FakeCapture:
@@ -762,6 +762,20 @@ class _SequencedCapture:
         return self._batches.pop(0)
 
 
+def _captured_call_for_stop(call_id: str, url: str) -> CapturedApiCall:
+    return CapturedApiCall(
+        id=call_id,
+        request=CapturedRequest(
+            request_id=call_id,
+            url=url,
+            method="GET",
+            headers={},
+            timestamp=datetime(2026, 1, 1),
+            resource_type="fetch",
+        ),
+    )
+
+
 class _FakeDirectedPage:
     url = "https://example.test/orders"
     main_frame = object()
@@ -771,6 +785,199 @@ class _FakeDirectedPage:
 
     async def wait_for_timeout(self, _timeout):
         return None
+
+
+class _FakeMonitorPage:
+    def __init__(self, url="https://example.test/app"):
+        self.url = url
+        self.main_frame = object()
+        self.context = None
+        self.default_timeout = None
+        self.default_navigation_timeout = None
+        self.listeners = {}
+
+    def set_default_timeout(self, timeout):
+        self.default_timeout = timeout
+
+    def set_default_navigation_timeout(self, timeout):
+        self.default_navigation_timeout = timeout
+
+    def on(self, event, callback):
+        self.listeners.setdefault(event, []).append(callback)
+
+
+class _FakeMonitorContext:
+    async def new_cdp_session(self, _page):
+        raise RuntimeError("CDP unavailable in unit test")
+
+
+def test_adopt_page_switches_active_page_and_installs_network_listeners():
+    manager = ApiMonitorSessionManager()
+    session = ApiMonitorSession(
+        id="session-popup",
+        user_id="user-1",
+        sandbox_session_id="sandbox-1",
+        target_url="https://example.test/app",
+    )
+    manager.sessions[session.id] = session
+    manager._request_evidence[session.id] = {}
+    manager._captures[session.id] = _FakeCapture()
+
+    original = _FakeMonitorPage("https://example.test/app")
+    popup = _FakeMonitorPage("https://example.test/popup")
+    original.context = _FakeMonitorContext()
+    popup.context = original.context
+
+    manager._adopt_page(session.id, original, make_active=True)
+    manager._adopt_page(session.id, popup, make_active=True)
+
+    assert manager.get_page(session.id) is popup
+    assert "request" in popup.listeners
+    assert "response" in popup.listeners
+    assert manager.list_tabs(session.id) == [
+        {
+            "tab_id": f"{session.id}:0",
+            "title": "",
+            "url": "https://example.test/app",
+            "active": False,
+        },
+        {
+            "tab_id": f"{session.id}:1",
+            "title": "",
+            "url": "https://example.test/popup",
+            "active": True,
+        },
+    ]
+
+
+def test_stop_recording_retry_returns_previous_tools_without_draining_later_calls():
+    manager = ApiMonitorSessionManager()
+    session = ApiMonitorSession(
+        id="session-stop-retry",
+        user_id="user-1",
+        sandbox_session_id="sandbox-1",
+        status="recording",
+        target_url="https://example.test/app",
+    )
+    manager.sessions[session.id] = session
+    recorded_call = _captured_call_for_stop("recorded", "https://example.test/api/recorded")
+    later_call = _captured_call_for_stop("later", "https://example.test/api/later")
+    capture = _SequencedCapture([[recorded_call], [later_call]])
+    manager._captures[session.id] = capture
+
+    generated = []
+
+    async def fake_generate(session_id, calls, source="auto", model_config=None):
+        generated.append([call.id for call in calls])
+        tool = ApiToolDefinition(
+            session_id=session_id,
+            name=f"tool_{calls[0].id}",
+            description="Generated",
+            method="GET",
+            url_pattern=calls[0].request.url,
+            yaml_definition="name: generated\ndescription: Generated",
+            source=source,
+        )
+        manager.sessions[session_id].tool_definitions.append(tool)
+        return [tool]
+
+    manager._generate_tools_from_calls = fake_generate
+
+    first_tools = asyncio.run(manager.stop_recording(session.id))
+    second_tools = asyncio.run(manager.stop_recording(session.id))
+
+    assert [tool.name for tool in first_tools] == ["tool_recorded"]
+    assert [tool.name for tool in second_tools] == ["tool_recorded"]
+    assert generated == [["recorded"]]
+    assert capture._drain_count == 1
+
+
+def test_concurrent_stop_recording_reuses_in_flight_stop_task():
+    async def run_test():
+        manager = ApiMonitorSessionManager()
+        session = ApiMonitorSession(
+            id="session-concurrent-stop",
+            user_id="user-1",
+            sandbox_session_id="sandbox-1",
+            status="recording",
+            target_url="https://example.test/app",
+        )
+        manager.sessions[session.id] = session
+        recorded_call = _captured_call_for_stop("recorded", "https://example.test/api/recorded")
+        later_call = _captured_call_for_stop("later", "https://example.test/api/later")
+        capture = _SequencedCapture([[recorded_call], [later_call]])
+        manager._captures[session.id] = capture
+        release_generation = asyncio.Event()
+        generated = []
+
+        async def fake_generate(session_id, calls, source="auto", model_config=None):
+            generated.append([call.id for call in calls])
+            await release_generation.wait()
+            tool = ApiToolDefinition(
+                session_id=session_id,
+                name=f"tool_{calls[0].id}",
+                description="Generated",
+                method="GET",
+                url_pattern=calls[0].request.url,
+                yaml_definition="name: generated\ndescription: Generated",
+                source=source,
+            )
+            manager.sessions[session_id].tool_definitions.append(tool)
+            return [tool]
+
+        manager._generate_tools_from_calls = fake_generate
+
+        first_task = asyncio.create_task(manager.stop_recording(session.id))
+        await asyncio.sleep(0)
+        second_task = asyncio.create_task(manager.stop_recording(session.id))
+        await asyncio.sleep(0)
+        release_generation.set()
+        first_tools, second_tools = await asyncio.gather(first_task, second_task)
+
+        assert [tool.name for tool in first_tools] == ["tool_recorded"]
+        assert [tool.name for tool in second_tools] == ["tool_recorded"]
+        assert generated == [["recorded"]]
+        assert capture._drain_count == 1
+
+    asyncio.run(run_test())
+
+
+def test_stop_recording_does_not_wait_for_hanging_dom_scan(monkeypatch):
+    async def run_test():
+        manager = ApiMonitorSessionManager()
+        session = ApiMonitorSession(
+            id="session-dom-timeout",
+            user_id="user-1",
+            sandbox_session_id="sandbox-1",
+            status="recording",
+            target_url="https://example.test/app",
+        )
+        manager.sessions[session.id] = session
+        recorded_call = _captured_call_for_stop("recorded", "https://example.test/api/recorded")
+        manager._captures[session.id] = _SequencedCapture([[recorded_call]])
+
+        class _HangingPage:
+            async def evaluate(self, _script):
+                await asyncio.Event().wait()
+
+        manager._pages[session.id] = _HangingPage()
+        monkeypatch.setattr("backend.rpa.api_monitor.manager.DOM_CONTEXT_SCAN_TIMEOUT_S", 0.01)
+
+        async def fake_generate_tool_definition(**kwargs):
+            assert kwargs["dom_context"] == ""
+            return "name: generated\ndescription: Generated"
+
+        monkeypatch.setattr(
+            "backend.rpa.api_monitor.manager.generate_tool_definition",
+            fake_generate_tool_definition,
+        )
+
+        tools = await asyncio.wait_for(manager.stop_recording(session.id), timeout=1)
+
+        assert [tool.name for tool in tools] == ["generated"]
+        assert manager._last_recording_calls[session.id] == [recorded_call]
+
+    asyncio.run(run_test())
 
 
 def test_build_directed_dom_digest_changes_when_visible_actions_change():
