@@ -34,11 +34,13 @@ from .directed_analyzer import (
     describe_locator_code,
 )
 from .directed_trace import (
+    build_directed_retry_context,
     captured_call_ids,
     decision_snapshot,
     directed_action_fingerprint,
     execution_snapshot,
     observation_from_payload,
+    retry_guard_skip_reason,
 )
 
 from .confidence import dedup_key_for_tool, score_api_candidate
@@ -820,6 +822,12 @@ class ApiMonitorSessionManager:
                     "new_call_count": len(directed_calls),
                     "last_result": run_history[-1] if run_history else None,
                 }
+                completed_traces = session.directed_traces[:-1]
+                retry_context = build_directed_retry_context(
+                    completed_traces,
+                    captured_api_summary=self._summarize_directed_calls(directed_calls),
+                )
+                observation_for_prompt["retry_context"] = retry_context
                 yield {
                     "event": "directed_step_snapshot",
                     "data": json.dumps(
@@ -839,6 +847,7 @@ class ApiMonitorSessionManager:
                         compact_snapshot=observation["compact_snapshot"],
                         run_history=run_history,
                         observation=observation_for_prompt,
+                        retry_context=retry_context,
                         model_config=model_config,
                     )
                 except Exception as planner_exc:
@@ -971,6 +980,52 @@ class ApiMonitorSessionManager:
                 if allowed_action is None:
                     stop_reason = "No allowed directed action returned"
                     break
+
+                skip_reason = retry_guard_skip_reason(trace.action_fingerprint or "", completed_traces)
+                if skip_reason:
+                    trace.execution = execution_snapshot(
+                        result="retry_guard_skipped",
+                        error=skip_reason,
+                        before=trace.before,
+                        after=trace.before,
+                    )
+                    trace.after = trace.before
+                    trace.retry_advice = {
+                        "reason": skip_reason,
+                        "blocked_actions": retry_context.get("blocked_actions", []),
+                        "block_steps": retry_context.get("block_steps", []),
+                    }
+                    trace.updated_at = datetime.now()
+                    run_history.append(
+                        {
+                            "step": step_index,
+                            "result": "retry_guard_skipped",
+                            "description": allowed_action.description,
+                            "code": describe_locator_code(allowed_action),
+                            "error": skip_reason,
+                            "expected_change": decision.expected_change,
+                        }
+                    )
+                    failed_steps += 1
+                    yield {
+                        "event": "directed_trace_updated",
+                        "data": json.dumps(trace.model_dump(mode="json"), ensure_ascii=False),
+                    }
+                    yield {
+                        "event": "directed_replan",
+                        "data": json.dumps(
+                            {
+                                "step": step_index,
+                                "description": allowed_action.description,
+                                "error": skip_reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                    if failed_steps >= max_failures:
+                        stop_reason = f"Reached max directed action failures: {max_failures}"
+                        break
+                    continue
 
                 yield {
                     "event": "directed_action_detail",
@@ -1138,6 +1193,10 @@ class ApiMonitorSessionManager:
                             compact_snapshot=observation["compact_snapshot"],
                             run_history=run_history,
                             observation=completion_observation,
+                            retry_context=build_directed_retry_context(
+                                session.directed_traces,
+                                captured_api_summary=self._summarize_directed_calls(directed_calls),
+                            ),
                             model_config=model_config,
                         )
                     except Exception as planner_exc:

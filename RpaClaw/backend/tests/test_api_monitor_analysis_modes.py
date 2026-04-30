@@ -1312,6 +1312,66 @@ def test_directed_analysis_records_trace_for_action_failure(monkeypatch):
     assert any(event["event"] == "directed_trace_updated" for event in events)
 
 
+def test_directed_analysis_passes_retry_context_and_skips_repeated_action(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    manager._captures[session.id] = _SequencedCapture([[], [], [], []])
+
+    contexts = []
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {},
+            "compact_snapshot": {"url": page.url, "actionable_nodes": [{"name": "搜索"}]},
+            "dom_digest": "orders",
+        }
+
+    async def fake_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        contexts.append(retry_context or {})
+        if len(contexts) <= 4:
+            return DirectedStepDecision(
+                goal_status="continue",
+                summary="点击搜索",
+                next_action=DirectedAction(
+                    action="click",
+                    locator={"method": "role", "role": "button", "name": "搜索"},
+                    description="点击搜索",
+                    risk="safe",
+                ),
+            )
+        return DirectedStepDecision(goal_status="blocked", summary="停止", done_reason="重复失败")
+
+    async def fake_execute_action(page, action):
+        raise RuntimeError("Locator not found: 搜索")
+
+    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
+        return []
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="搜索订单",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert any(ctx.get("blocked_actions") for ctx in contexts[2:])
+    assert any(trace.execution and trace.execution.result == "retry_guard_skipped" for trace in session.directed_traces)
+    assert any(event["event"] == "directed_replan" and "重复失败" in event["data"] for event in events)
+
+
 def test_directed_analysis_feeds_planner_failure_into_next_step(monkeypatch):
     manager = ApiMonitorSessionManager()
     session = _route_session()

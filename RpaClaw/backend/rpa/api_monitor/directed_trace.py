@@ -124,7 +124,7 @@ def retry_guard_skip_reason(action_fingerprint: str, traces: list[DirectedAnalys
         and _trace_result(trace) in {"failed", "retry_guard_skipped"}
     ]
     if len(failures) >= TOTAL_FAILURE_SKIP_LIMIT:
-        return f"动作指纹 {action_fingerprint} 已失败 {len(failures)} 次"
+        return f"重复失败：动作指纹 {action_fingerprint} 已失败 {len(failures)} 次"
     return ""
 
 
