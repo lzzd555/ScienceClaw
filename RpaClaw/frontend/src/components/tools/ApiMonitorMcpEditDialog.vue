@@ -135,7 +135,7 @@ const tokenFlowsJsonError = ref('');
 const form = reactive({
   name: '',
   description: '',
-  credentialType: 'placeholder' as 'placeholder' | 'test',
+  credentialType: 'placeholder' as 'placeholder' | 'test' | 'idaas',
   credentialId: '',
   loginUrl: '',
   timeoutMs: 20000,

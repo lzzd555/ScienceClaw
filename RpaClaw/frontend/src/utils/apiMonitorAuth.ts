@@ -2,6 +2,7 @@ import type { ApiMonitorAuthConfig, ApiMonitorAuthConfigPublish, ApiMonitorCrede
 
 export const API_MONITOR_PLACEHOLDER_CREDENTIAL_TYPE: ApiMonitorCredentialType = 'placeholder';
 export const API_MONITOR_TEST_CREDENTIAL_TYPE: ApiMonitorCredentialType = 'test';
+export const API_MONITOR_IDAAS_CREDENTIAL_TYPE: ApiMonitorCredentialType = 'idaas';
 
 export const API_MONITOR_CREDENTIAL_TYPE_OPTIONS = [
   {
@@ -13,6 +14,11 @@ export const API_MONITOR_CREDENTIAL_TYPE_OPTIONS = [
     value: API_MONITOR_TEST_CREDENTIAL_TYPE,
     labelKey: 'API Monitor Test credential type',
     descriptionKey: 'API Monitor Test credential type hint',
+  },
+  {
+    value: API_MONITOR_IDAAS_CREDENTIAL_TYPE,
+    labelKey: 'API Monitor IDaaS credential type',
+    descriptionKey: 'API Monitor IDaaS credential type hint',
   },
 ] as const;
 

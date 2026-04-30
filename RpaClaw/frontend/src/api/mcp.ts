@@ -22,7 +22,7 @@ export interface McpToolPolicy {
   blocked_tools: string[];
 }
 
-export type ApiMonitorCredentialType = 'placeholder' | 'test';
+export type ApiMonitorCredentialType = 'placeholder' | 'test' | 'idaas';
 
 export interface TokenFlowRuntimeConfig {
   id: string;
