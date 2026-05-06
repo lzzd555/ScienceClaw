@@ -235,22 +235,36 @@ async def analyze_session(
     model_config = await _resolve_user_model_config(str(current_user.id))
 
     async def event_generator():
-        if mode_config.handler == "free":
-            async for event in api_monitor_manager.analyze_page(
-                session_id,
-                model_config=model_config,
-            ):
-                yield event
-            return
+        import asyncio as _asyncio
+        queue: _asyncio.Queue[dict] = _asyncio.Queue()
 
-        async for event in api_monitor_manager.analyze_directed_page(
-            session_id,
-            instruction=instruction,
-            mode=mode_config.key,
-            business_safety=mode_config.business_safety,
-            model_config=model_config,
-        ):
-            yield event
+        def sink(event: str, data: dict) -> None:
+            queue.put_nowait({
+                "event": event,
+                "data": json.dumps(data, ensure_ascii=False),
+            })
+
+        api_monitor_manager._analysis_event_sinks[session_id] = sink
+        try:
+            source = (
+                api_monitor_manager.analyze_page(session_id, model_config=model_config)
+                if mode_config.handler == "free"
+                else api_monitor_manager.analyze_directed_page(
+                    session_id,
+                    instruction=instruction,
+                    mode=mode_config.key,
+                    business_safety=mode_config.business_safety,
+                    model_config=model_config,
+                )
+            )
+            async for event in source:
+                yield event
+                while not queue.empty():
+                    yield await queue.get()
+            while not queue.empty():
+                yield await queue.get()
+        finally:
+            api_monitor_manager._analysis_event_sinks.pop(session_id, None)
 
     return EventSourceResponse(event_generator())
 

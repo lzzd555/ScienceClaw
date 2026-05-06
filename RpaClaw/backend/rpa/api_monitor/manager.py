@@ -13,7 +13,7 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import AsyncGenerator, Dict, List, Optional, Set
+from typing import AsyncGenerator, Callable, Dict, List, Optional, Set
 
 from playwright.async_api import BrowserContext, Page
 
@@ -335,6 +335,25 @@ class ApiMonitorSessionManager:
         self._last_recording_calls: Dict[str, List[CapturedApiCall]] = {}
         self._generation_tasks: Dict[str, Dict[str, asyncio.Task[None]]] = defaultdict(dict)
         self._generation_semaphore = asyncio.Semaphore(2)
+        self._analysis_event_sinks: Dict[str, Callable[[str, dict], None]] = {}
+
+    def _emit_analysis_event(self, session_id: str, event: str, data: dict) -> None:
+        sink = self._analysis_event_sinks.get(session_id)
+        if sink:
+            sink(event, data)
+
+    def _candidate_event_payload(self, candidate: ApiToolGenerationCandidate) -> dict:
+        return {
+            "candidate_id": candidate.id,
+            "dedup_key": candidate.dedup_key,
+            "method": candidate.method,
+            "url_pattern": candidate.url_pattern,
+            "status": candidate.status,
+            "source_call_count": len(candidate.source_call_ids),
+            "tool_id": candidate.tool_id,
+            "error": candidate.error,
+            "retry_after": candidate.retry_after.isoformat() if candidate.retry_after else None,
+        }
 
     def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
         """Register an active screencast controller so capture logs can be forwarded."""
@@ -1852,9 +1871,11 @@ class ApiMonitorSessionManager:
             if self._is_rate_limit_error(exc):
                 candidate.status = "rate_limited"
                 candidate.retry_after = self._retry_after_for_attempt(candidate.attempts)
+                self._emit_analysis_event(session_id, "api_candidate_rate_limited", self._candidate_event_payload(candidate))
             else:
                 candidate.status = "failed"
                 candidate.retry_after = None
+                self._emit_analysis_event(session_id, "api_tool_generation_failed", self._candidate_event_payload(candidate))
             candidate.updated_at = datetime.now()
             session.updated_at = datetime.now()
             return None
@@ -1901,6 +1922,14 @@ class ApiMonitorSessionManager:
         candidate.error = ""
         candidate.updated_at = datetime.now()
         session.updated_at = datetime.now()
+        self._emit_analysis_event(
+            session_id,
+            "api_tool_generated",
+            {
+                **self._candidate_event_payload(candidate),
+                "tool": tool.model_dump(mode="json"),
+            },
+        )
         return tool
 
     async def _capture_generation_dom_context(self, session_id: str) -> tuple[dict, str, str, str]:
@@ -1953,6 +1982,8 @@ class ApiMonitorSessionManager:
                 title=title,
                 dom_digest=dom_digest,
             )
+            event_name = "api_candidate_created" if _created else "api_candidate_updated"
+            self._emit_analysis_event(session_id, event_name, self._candidate_event_payload(candidate))
             changed.append(candidate)
             if candidate.status in ("pending", "stale", "failed"):
                 self._enqueue_generation_candidate(session_id, candidate.id, model_config=model_config)
