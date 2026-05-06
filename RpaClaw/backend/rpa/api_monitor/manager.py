@@ -586,7 +586,7 @@ class ApiMonitorSessionManager:
             # buffer, so a separate capture.clear() is not needed.
             pre_calls = capture.drain_new_calls()
             if pre_calls:
-                session.captured_calls.extend(pre_calls)
+                await self._process_captured_calls_for_generation(session_id, pre_calls)
                 logger.info(
                     "[ApiMonitor] Drained %d pre-recording calls for session %s",
                     len(pre_calls), session_id,
@@ -664,7 +664,11 @@ class ApiMonitorSessionManager:
         if capture:
             new_calls = capture.drain_new_calls()
 
-        session.captured_calls.extend(new_calls)
+        await self._process_captured_calls_for_generation(
+            session_id,
+            new_calls,
+            model_config=model_config,
+        )
         self._last_recording_calls[session_id] = list(new_calls)
         session.status = "idle"
         session.updated_at = datetime.now()
@@ -775,7 +779,7 @@ class ApiMonitorSessionManager:
                     # history so they are available for token flow analysis.
                     pre_calls = capture.drain_new_calls()
                     if pre_calls:
-                        session.captured_calls.extend(pre_calls)
+                        await self._process_captured_calls_for_generation(session_id, pre_calls)
 
                 probed_calls = await self._probe_element(page, elem)
 
@@ -789,7 +793,7 @@ class ApiMonitorSessionManager:
                         }),
                     }
 
-            session.captured_calls.extend(all_probed_calls)
+            await self._process_captured_calls_for_generation(session_id, all_probed_calls)
 
             # Step 4: Generate tool definitions
             yield {
@@ -856,7 +860,7 @@ class ApiMonitorSessionManager:
             if capture:
                 pre_calls = capture.drain_new_calls()
                 if pre_calls:
-                    session.captured_calls.extend(pre_calls)
+                    await self._process_captured_calls_for_generation(session_id, pre_calls)
 
             max_failures = 20
             max_steps = 40
@@ -1125,7 +1129,11 @@ class ApiMonitorSessionManager:
                         failed_step_calls = capture.drain_new_calls()
                         if failed_step_calls:
                             directed_calls.extend(failed_step_calls)
-                            session.captured_calls.extend(failed_step_calls)
+                            await self._process_captured_calls_for_generation(
+                                session_id,
+                                failed_step_calls,
+                                model_config=model_config,
+                            )
                     try:
                         after_payload = await self._observe_directed_page(page, instruction)
                         trace.after = observation_from_payload(after_payload)
@@ -1212,7 +1220,11 @@ class ApiMonitorSessionManager:
                     step_calls = capture.drain_new_calls()
                 if step_calls:
                     directed_calls.extend(step_calls)
-                    session.captured_calls.extend(step_calls)
+                    await self._process_captured_calls_for_generation(
+                        session_id,
+                        step_calls,
+                        model_config=model_config,
+                    )
                     if run_history:
                         run_history[-1]["new_calls"] = self._summarize_directed_calls(step_calls)
                 trace.after = trace.before
@@ -1890,6 +1902,61 @@ class ApiMonitorSessionManager:
         candidate.updated_at = datetime.now()
         session.updated_at = datetime.now()
         return tool
+
+    async def _capture_generation_dom_context(self, session_id: str) -> tuple[dict, str, str, str]:
+        page = self._pages.get(session_id)
+        if not page:
+            return {}, "", "", ""
+        try:
+            dom_data = await asyncio.wait_for(
+                page.evaluate(_SCAN_DOM_CONTEXT_JS),
+                timeout=DOM_CONTEXT_SCAN_TIMEOUT_S,
+            )
+        except Exception:
+            dom_data = {}
+        try:
+            observation = await self._observe_directed_page(page, "")
+            return dom_data, observation.get("url", ""), observation.get("title", ""), observation.get("dom_digest", "")
+        except Exception:
+            return dom_data, getattr(page, "url", "") or "", "", ""
+
+    async def _process_captured_calls_for_generation(
+        self,
+        session_id: str,
+        calls: list[CapturedApiCall],
+        *,
+        dom_context: dict | None = None,
+        page_url: str = "",
+        title: str = "",
+        dom_digest: str = "",
+        model_config: Optional[Dict] = None,
+    ) -> list[ApiToolGenerationCandidate]:
+        if not calls:
+            return []
+        session = self._require_session(session_id)
+        existing_ids = {call.id for call in session.captured_calls}
+        for call in calls:
+            if call.id not in existing_ids:
+                session.captured_calls.append(call)
+                existing_ids.add(call.id)
+
+        if dom_context is None:
+            dom_context, page_url, title, dom_digest = await self._capture_generation_dom_context(session_id)
+
+        changed: list[ApiToolGenerationCandidate] = []
+        for call in calls:
+            candidate, _created = self._upsert_generation_candidate(
+                session_id,
+                call,
+                dom_context=dom_context,
+                page_url=page_url,
+                title=title,
+                dom_digest=dom_digest,
+            )
+            changed.append(candidate)
+            if candidate.status in ("pending", "stale", "failed"):
+                self._enqueue_generation_candidate(session_id, candidate.id, model_config=model_config)
+        return changed
 
     def reconcile_generation_candidates(
         self,

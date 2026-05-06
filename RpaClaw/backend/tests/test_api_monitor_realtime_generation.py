@@ -250,3 +250,32 @@ class TestGenerateToolForCandidate(unittest.IsolatedAsyncioTestCase):
         assert candidate.attempts == 1
         assert candidate.error == "bad yaml"
         assert session.captured_calls == [call]
+
+
+# ── Processing helper tests ───────────────────────────────────────────────
+
+
+class TestProcessCapturedCalls(unittest.IsolatedAsyncioTestCase):
+
+    async def test_process_captured_calls_appends_session_and_enqueues(self):
+        manager, session_id = _manager_with_session()
+        enqueued: list[tuple[str, str]] = []
+
+        def fake_enqueue(session_id_arg: str, candidate_id: str, **kwargs):
+            enqueued.append((session_id_arg, candidate_id))
+
+        with patch.object(manager, "_enqueue_generation_candidate", side_effect=fake_enqueue):
+            calls = [_call("call-1")]
+            candidates = await manager._process_captured_calls_for_generation(
+                session_id,
+                calls,
+                dom_context={"inputs": [{"name": "q"}]},
+                page_url="https://example.com/app",
+                title="Orders",
+                dom_digest="digest-1",
+            )
+
+        session = manager.sessions[session_id]
+        assert session.captured_calls == calls
+        assert len(candidates) == 1
+        assert enqueued == [(session_id, candidates[0].id)]
