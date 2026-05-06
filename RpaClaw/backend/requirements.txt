@@ -18,6 +18,7 @@ langchain-google-genai
 langgraph==1.0.8
 langgraph-prebuilt==1.0.8
 httpx==0.28.1
+truststore>=0.10.0
 tavily-python==0.7.21
 pyyaml>=6.0
 deepagents==0.4.4

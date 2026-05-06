@@ -13,6 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from contextlib import asynccontextmanager
 
+from backend.tls_trust import configure_tls_trust
+
+configure_tls_trust()
+
 from backend.storage import init_storage, close_storage, get_repository
 from backend.route.auth import router as auth_router
 from backend.route.sessions import router as sessions_router, cleanup_orphaned_sessions, graceful_shutdown_agents
