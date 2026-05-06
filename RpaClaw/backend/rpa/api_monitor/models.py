@@ -69,6 +69,41 @@ class ApiToolDefinition(BaseModel):
     selected: bool = False
     confidence_reasons: List[str] = Field(default_factory=list)
     source_evidence: Dict = Field(default_factory=dict)
+    generation_candidate_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Generation candidate ──────────────────────────────────────────────
+
+
+GenerationStatus = Literal[
+    "pending",
+    "running",
+    "generated",
+    "failed",
+    "rate_limited",
+    "stale",
+]
+
+
+class ApiToolGenerationCandidate(BaseModel):
+    id: str = Field(default_factory=_gen_id)
+    session_id: str
+    dedup_key: str
+    method: str
+    url_pattern: str
+    source_call_ids: List[str] = Field(default_factory=list)
+    sample_call_ids: List[str] = Field(default_factory=list)
+    status: GenerationStatus = "pending"
+    tool_id: Optional[str] = None
+    error: str = ""
+    retry_after: Optional[datetime] = None
+    attempts: int = 0
+    capture_dom_context: Dict = Field(default_factory=dict)
+    capture_page_url: str = ""
+    capture_title: str = ""
+    capture_dom_digest: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -129,6 +164,7 @@ class ApiMonitorSession(BaseModel):
     captured_calls: List[CapturedApiCall] = Field(default_factory=list)
     tool_definitions: List[ApiToolDefinition] = Field(default_factory=list)
     directed_traces: List[DirectedAnalysisTrace] = Field(default_factory=list)
+    generation_candidates: List[ApiToolGenerationCandidate] = Field(default_factory=list)
     active_tab_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
