@@ -9,6 +9,35 @@ export const API_MONITOR_STOP_RECORDING_TIMEOUT_MS = 15 * 60 * 1000
 
 export type ApiToolConfidence = 'high' | 'medium' | 'low'
 
+export type ApiToolGenerationStatus =
+  | 'pending'
+  | 'running'
+  | 'generated'
+  | 'failed'
+  | 'rate_limited'
+  | 'stale'
+
+export interface ApiToolGenerationCandidate {
+  id: string
+  session_id: string
+  dedup_key: string
+  method: string
+  url_pattern: string
+  source_call_ids: string[]
+  sample_call_ids: string[]
+  status: ApiToolGenerationStatus
+  tool_id?: string | null
+  error: string
+  retry_after?: string | null
+  attempts: number
+  capture_dom_context: Record<string, unknown>
+  capture_page_url: string
+  capture_title: string
+  capture_dom_digest: string
+  created_at: string
+  updated_at: string
+}
+
 export interface CapturedRequest {
   request_id: string
   url: string
@@ -53,6 +82,7 @@ export interface ApiToolDefinition {
   selected: boolean
   confidence_reasons: string[]
   source_evidence: Record<string, unknown>
+  generation_candidate_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -65,6 +95,7 @@ export interface ApiMonitorSession {
   target_url?: string
   captured_calls: CapturedApiCall[]
   tool_definitions: ApiToolDefinition[]
+  generation_candidates: ApiToolGenerationCandidate[]
   created_at: string
   updated_at: string
 }
@@ -340,4 +371,27 @@ export async function getAuthProfile(sessionId: string): Promise<ApiMonitorAuthP
 export async function getTokenFlowProfile(sessionId: string): Promise<TokenFlowProfileResponse> {
   const response = await apiClient.get(`/api-monitor/session/${sessionId}/token-flow-profile`)
   return response.data.profile
+}
+
+/**
+ * List generation candidates for a session.
+ */
+export async function listGenerationCandidates(
+  sessionId: string,
+): Promise<ApiToolGenerationCandidate[]> {
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/generation-candidates`)
+  return response.data.candidates
+}
+
+/**
+ * Retry a failed generation candidate.
+ */
+export async function retryGenerationCandidate(
+  sessionId: string,
+  candidateId: string,
+): Promise<ApiToolGenerationCandidate> {
+  const response = await apiClient.post(
+    `/api-monitor/session/${sessionId}/generation-candidates/${candidateId}/retry`,
+  )
+  return response.data.candidate
 }

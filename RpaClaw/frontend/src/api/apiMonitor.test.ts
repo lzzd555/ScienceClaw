@@ -63,3 +63,53 @@ describe('apiMonitor analyzeSession', () => {
     expect(API_MONITOR_STOP_RECORDING_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60 * 1000)
   })
 })
+
+describe('apiMonitor generation candidates', () => {
+  beforeEach(() => {
+    vi.resetModules()
+  })
+
+  it('lists generation candidates', async () => {
+    const { apiClient } = await import('@/api/client')
+    const candidate = {
+      id: 'candidate-1',
+      session_id: 'session-1',
+      dedup_key: 'GET /api/orders',
+      method: 'GET',
+      url_pattern: '/api/orders',
+      source_call_ids: ['call-1'],
+      sample_call_ids: ['call-1'],
+      status: 'running' as const,
+      tool_id: null,
+      error: '',
+      retry_after: null,
+      attempts: 0,
+      capture_dom_context: {},
+      capture_page_url: 'https://example.com/app',
+      capture_title: 'Orders',
+      capture_dom_digest: 'digest-1',
+      created_at: '2026-04-30T00:00:00',
+      updated_at: '2026-04-30T00:00:00',
+    }
+    vi.mocked(apiClient.get).mockResolvedValue({ data: { candidates: [candidate] } })
+    const { listGenerationCandidates } = await import('./apiMonitor')
+
+    await expect(listGenerationCandidates('session-1')).resolves.toEqual([candidate])
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api-monitor/session/session-1/generation-candidates',
+    )
+  })
+
+  it('retries generation candidates', async () => {
+    const { apiClient } = await import('@/api/client')
+    vi.mocked(apiClient.post).mockResolvedValue({ data: { candidate: { id: 'candidate-1' } } })
+    const { retryGenerationCandidate } = await import('./apiMonitor')
+
+    await expect(retryGenerationCandidate('session-1', 'candidate-1')).resolves.toEqual({
+      id: 'candidate-1',
+    })
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api-monitor/session/session-1/generation-candidates/candidate-1/retry',
+    )
+  })
+})
