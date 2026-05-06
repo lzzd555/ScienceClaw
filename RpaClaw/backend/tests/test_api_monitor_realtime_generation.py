@@ -1,4 +1,7 @@
+import unittest
 from datetime import datetime
+
+from unittest.mock import patch
 
 from backend.rpa.api_monitor.models import (
     ApiMonitorSession,
@@ -145,3 +148,61 @@ def test_reconcile_generation_candidates_rebuilds_missing_candidate():
     assert len(candidates) == 1
     assert candidates[0].source_call_ids == ["call-1"]
     assert session.generation_candidates[0].dedup_key == "GET /api/orders"
+
+
+# ── Worker success path tests ────────────────────────────────────────────
+
+
+class TestGenerateToolForCandidate(unittest.IsolatedAsyncioTestCase):
+
+    async def test_generate_candidate_creates_tool_and_applies_confidence(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        # Provide source_evidence so the confidence scorer gives a high score:
+        #   action_window_matched=True (+30), business_path (+25),
+        #   json_response (+20), has_source (+15), response_richness (+10) = 100
+        call = _call("call-1")
+        call.source_evidence = {
+            "action_window_matched": True,
+            "initiator_urls": ["https://example.com/app"],
+            "js_stack_urls": [],
+            "frame_url": "https://example.com/app",
+        }
+        session.captured_calls.append(call)
+        candidate, _ = manager._upsert_generation_candidate(
+            session_id,
+            call,
+            dom_context={"forms": [{"inputs": [{"name": "page"}]}]},
+            page_url="https://example.com/app",
+            title="Orders",
+            dom_digest="digest-1",
+        )
+
+        async def fake_generate_tool_definition(**kwargs):
+            assert kwargs["method"] == "GET"
+            assert kwargs["url_pattern"] == "/api/orders?page={page}"
+            assert "page" in kwargs["dom_context"]
+            return (
+                "name: list_orders\n"
+                "description: List orders\n"
+                "method: GET\n"
+                "url: /api/orders\n"
+                "parameters:\n  type: object\n  properties: {}\n"
+                "response:\n  type: object\n  properties: {}\n"
+            )
+
+        with patch(
+            "backend.rpa.api_monitor.manager.generate_tool_definition",
+            fake_generate_tool_definition,
+        ):
+            tool = await manager._generate_tool_for_candidate(session_id, candidate.id)
+
+        assert tool is not None
+        assert tool.name == "list_orders"
+        assert tool.generation_candidate_id == candidate.id
+        assert tool.source_calls == ["call-1"]
+        assert tool.confidence == "high"
+        assert tool.selected is True
+        assert candidate.status == "generated"
+        assert candidate.tool_id == tool.id
+        assert session.tool_definitions == [tool]

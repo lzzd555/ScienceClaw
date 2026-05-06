@@ -1746,6 +1746,96 @@ class ApiMonitorSessionManager:
     def _enqueue_generation_candidate(self, session_id: str, candidate_id: str) -> None:
         return None
 
+    def _calls_for_candidate(
+        self,
+        session: ApiMonitorSession,
+        candidate: ApiToolGenerationCandidate,
+    ) -> list[CapturedApiCall]:
+        by_id = {call.id: call for call in session.captured_calls}
+        calls = [by_id[call_id] for call_id in candidate.sample_call_ids if call_id in by_id]
+        if calls:
+            return calls
+        return [call for call in session.captured_calls if self._candidate_dedup_key(call) == candidate.dedup_key][:5]
+
+    async def _generate_tool_for_candidate(
+        self,
+        session_id: str,
+        candidate_id: str,
+        *,
+        model_config: Optional[Dict] = None,
+    ) -> ApiToolDefinition | None:
+        session = self._require_session(session_id)
+        candidate = next(
+            (item for item in session.generation_candidates if item.id == candidate_id),
+            None,
+        )
+        if candidate is None:
+            return None
+
+        samples = self._calls_for_candidate(session, candidate)
+        if not samples:
+            candidate.status = "failed"
+            candidate.error = "No captured calls available for this candidate"
+            candidate.updated_at = datetime.now()
+            return None
+
+        candidate.status = "running"
+        candidate.error = ""
+        candidate.updated_at = datetime.now()
+        dom_context = json.dumps(candidate.capture_dom_context, ensure_ascii=False, indent=2)
+
+        yaml_def = await generate_tool_definition(
+            method=candidate.method,
+            url_pattern=candidate.url_pattern,
+            samples=samples,
+            page_context=candidate.capture_page_url or session.target_url or "",
+            dom_context=dom_context,
+            model_config=model_config,
+        )
+        name, description = self._parse_yaml_metadata(yaml_def)
+
+        existing = next(
+            (tool for tool in session.tool_definitions if tool.generation_candidate_id == candidate.id),
+            None,
+        )
+        if existing is None:
+            tool = ApiToolDefinition(
+                session_id=session_id,
+                name=name,
+                description=description,
+                method=candidate.method,
+                url_pattern=candidate.url_pattern,
+                yaml_definition=yaml_def,
+                source_calls=[call.id for call in samples],
+                source="auto",
+                generation_candidate_id=candidate.id,
+            )
+            session.tool_definitions.append(tool)
+        else:
+            tool = existing
+            tool.name = name
+            tool.description = description
+            tool.method = candidate.method
+            tool.url_pattern = candidate.url_pattern
+            tool.yaml_definition = yaml_def
+            tool.source_calls = [call.id for call in samples]
+            tool.updated_at = datetime.now()
+
+        tool = _apply_confidence_to_tool(tool, samples)
+        new_tools = [tool]
+        self._dedup_session_tools(session_id, new_tools)
+
+        if tool.id in {item.id for item in session.tool_definitions}:
+            candidate.status = "generated"
+            candidate.tool_id = tool.id
+        else:
+            candidate.status = "generated"
+            candidate.tool_id = None
+        candidate.error = ""
+        candidate.updated_at = datetime.now()
+        session.updated_at = datetime.now()
+        return tool
+
     def reconcile_generation_candidates(
         self,
         session_id: str,
