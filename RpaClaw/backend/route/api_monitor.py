@@ -78,6 +78,13 @@ def _verify_session_owner(session: Optional[ApiMonitorSession], user: User) -> N
         raise HTTPException(status_code=403, detail="Not authorized")
 
 
+def _token_flow_calls_for_session(session: ApiMonitorSession) -> list:
+    by_id = {}
+    for call in [*getattr(session, "evidence_calls", []), *session.captured_calls]:
+        by_id.setdefault(call.id, call)
+    return list(by_id.values())
+
+
 # ── Session management ──────────────────────────────────────────────
 
 
@@ -446,11 +453,13 @@ async def get_token_flow_profile(
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
-    calls = session.captured_calls
+    calls = _token_flow_calls_for_session(session)
     logger.info(
-        "[TokenFlow] session=%s captured_calls=%d",
+        "[TokenFlow] session=%s token_flow_calls=%d captured_calls=%d evidence_calls=%d",
         session_id,
         len(calls),
+        len(session.captured_calls),
+        len(getattr(session, "evidence_calls", [])),
     )
     profile = build_api_monitor_token_flow_profile(calls)
     logger.info(
@@ -506,7 +515,7 @@ async def publish_mcp(
             sel.model_dump() for sel in request.api_monitor_auth.token_flows if sel.enabled
         ]
     token_flows = resolve_token_flows_for_publish(
-        session.captured_calls, token_flow_selections
+        _token_flow_calls_for_session(session), token_flow_selections
     )
 
     # Resolve manual token flows

@@ -757,7 +757,7 @@ def test_build_locator_rejects_unknown_method():
 from datetime import datetime
 
 from backend.rpa.api_monitor.manager import ApiMonitorSessionManager
-from backend.rpa.api_monitor.models import ApiToolDefinition, CapturedApiCall, CapturedRequest
+from backend.rpa.api_monitor.models import ApiToolDefinition, CapturedApiCall, CapturedRequest, CapturedResponse
 
 
 class _FakeCapture:
@@ -1023,17 +1023,35 @@ def test_observe_directed_page_returns_snapshot_compact_digest_and_metadata(monk
     assert observation["dom_digest"]
 
 
-def _captured_call() -> CapturedApiCall:
+def _captured_call(
+    *,
+    call_id: str = "req-1",
+    method: str = "GET",
+    path: str = "/api/orders",
+    request_headers: dict | None = None,
+    request_body: str | None = None,
+    response_body: str | None = None,
+) -> CapturedApiCall:
     return CapturedApiCall(
+        id=call_id,
         request=CapturedRequest(
-            request_id="req-1",
-            url="https://example.test/api/orders?keyword=123",
-            method="GET",
-            headers={},
+            request_id=call_id,
+            url=f"https://example.test{path}?keyword=123",
+            method=method,
+            headers=request_headers or {},
+            body=request_body,
             timestamp=datetime(2026, 4, 28),
             resource_type="fetch",
         ),
-        url_pattern="/api/orders",
+        response=CapturedResponse(
+            status=200,
+            status_text="OK",
+            headers={"content-type": "application/json"},
+            body=response_body or '{"ok":true}',
+            content_type="application/json",
+            timestamp=datetime(2026, 4, 28),
+        ),
+        url_pattern=path,
     )
 
 
@@ -1042,6 +1060,78 @@ async def _collect_events(generator):
     async for event in generator:
         events.append(event)
     return events
+
+
+def test_free_analysis_pre_probe_calls_are_evidence_only(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    historical = _captured_call(call_id="csrf-call", method="GET", path="/api/csrf")
+    probed = _captured_call(call_id="orders-call", method="GET", path="/api/orders")
+    manager._captures[session.id] = _FakeCapture(pre_calls=[historical], post_calls=[probed])
+
+    async def fake_scan(_page):
+        return [{"tag": "button", "text": "Search", "locator": "button"}]
+
+    async def fake_analyze_elements(*, url, elements, model_config=None):
+        return {"safe": list(range(len(elements))), "skipped": []}
+
+    async def fake_probe(_page, _elem):
+        return manager._captures[session.id].drain_new_calls()
+
+    monkeypatch.setattr(manager, "_scan_interactive_elements", fake_scan)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.analyze_elements", fake_analyze_elements)
+    monkeypatch.setattr(manager, "_probe_element", fake_probe)
+    monkeypatch.setattr(manager, "_enqueue_generation_candidate", lambda *args, **kwargs: None)
+
+    events = asyncio.run(_collect_events(manager.analyze_page(session.id)))
+
+    assert any(event["event"] == "analysis_complete" for event in events)
+    assert session.evidence_calls == [historical]
+    assert session.captured_calls == [probed]
+    assert [candidate.source_call_ids for candidate in session.generation_candidates] == [[probed.id]]
+
+
+def test_directed_analysis_pre_step_calls_are_evidence_only(monkeypatch):
+    manager = ApiMonitorSessionManager()
+    session = _route_session()
+    manager.sessions[session.id] = session
+    manager._pages[session.id] = _FakeDirectedPage()
+    historical = _captured_call(call_id="csrf-call", method="GET", path="/api/csrf")
+    manager._captures[session.id] = _FakeCapture(pre_calls=[historical], post_calls=[])
+
+    async def fake_observe(page, instruction):
+        return {
+            "url": page.url,
+            "title": "Orders",
+            "raw_snapshot": {"url": page.url, "title": "Orders"},
+            "compact_snapshot": {"url": page.url, "title": "Orders"},
+            "dom_digest": "orders",
+        }
+
+    async def fake_build_directed_step_decision(*, instruction, compact_snapshot, run_history, observation, retry_context=None, model_config=None):
+        return DirectedStepDecision(goal_status="done", summary="完成", done_reason="只验证 pre-drain")
+
+    monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
+    monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_build_directed_step_decision)
+    monkeypatch.setattr(manager, "_enqueue_generation_candidate", lambda *args, **kwargs: None)
+
+    events = asyncio.run(
+        _collect_events(
+            manager.analyze_directed_page(
+                session.id,
+                instruction="find orders",
+                mode="safe_directed",
+                business_safety="guarded",
+            )
+        )
+    )
+
+    assert any(event["event"] == "analysis_complete" for event in events)
+    assert session.evidence_calls == [historical]
+    assert session.captured_calls == []
+    assert session.generation_candidates == []
 
 
 def test_directed_analysis_uses_compact_snapshot_and_generates_tools(monkeypatch):
@@ -1195,9 +1285,10 @@ def test_directed_analysis_pre_drains_historical_calls(monkeypatch):
         )
     )
 
-    # Historical call was moved to session.captured_calls, not passed to tool generation
-    assert len(session.captured_calls) == 1
-    assert session.captured_calls[0].request.request_id == "req-1"
+    # Historical call is evidence-only: available for token flow, but not for tool generation.
+    assert session.captured_calls == []
+    assert len(session.evidence_calls) == 1
+    assert session.evidence_calls[0].request.request_id == "req-1"
     assert tool_calls_arg == []
 
 

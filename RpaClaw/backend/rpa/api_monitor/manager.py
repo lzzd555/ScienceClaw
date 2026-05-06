@@ -606,20 +606,14 @@ class ApiMonitorSessionManager:
 
         capture = self._captures.get(session_id)
         if capture:
-            # Drain calls captured before recording (e.g. page-load XHR responses
-            # containing CSRF tokens) into session history so token flow analysis
-            # can find them later.  drain_new_calls() already clears the internal
-            # buffer, so a separate capture.clear() is not needed.
+            # Pre-recording calls can provide token/auth evidence, but they were
+            # not triggered inside the recording window and must not generate tools.
             pre_calls = capture.drain_new_calls()
             if pre_calls:
-                await self._process_captured_calls_for_generation(
-                    session_id,
-                    pre_calls,
-                    model_config=model_config,
-                )
+                added = self._store_evidence_calls(session_id, pre_calls)
                 logger.info(
-                    "[ApiMonitor] Drained %d pre-recording calls for session %s",
-                    len(pre_calls), session_id,
+                    "[ApiMonitor] Stored %d pre-recording calls as evidence for session %s",
+                    len(added), session_id,
                 )
 
         self._mark_action(session_id)
@@ -629,8 +623,8 @@ class ApiMonitorSessionManager:
         self._last_recording_tools.pop(session_id, None)
         self._last_recording_calls.pop(session_id, None)
 
-        # Keep session.captured_calls intact — the full session history is needed
-        # for token flow analysis.  Only the capture engine buffer was cleared.
+        # Keep generation-eligible calls intact; pre-window token/auth calls are
+        # stored separately in evidence_calls.
         session.status = "recording"
         session.updated_at = datetime.now()
         await self._stop_recording_drain_task(session_id)
@@ -850,12 +844,11 @@ class ApiMonitorSessionManager:
 
                 capture = self._captures.get(session_id)
                 if capture:
-                    # Drain any calls accumulated since the last probe (including
-                    # initial page-load calls on the first iteration) into session
-                    # history so they are available for token flow analysis.
+                    # Calls accumulated before this probe are token/auth evidence,
+                    # not APIs triggered by the current analyzed element.
                     pre_calls = capture.drain_new_calls()
                     if pre_calls:
-                        await self._process_captured_calls_for_generation(session_id, pre_calls)
+                        self._store_evidence_calls(session_id, pre_calls)
 
                 probed_calls = await self._probe_element(page, elem)
 
@@ -930,7 +923,7 @@ class ApiMonitorSessionManager:
             if capture:
                 pre_calls = capture.drain_new_calls()
                 if pre_calls:
-                    await self._process_captured_calls_for_generation(session_id, pre_calls)
+                    self._store_evidence_calls(session_id, pre_calls)
 
             max_failures = 20
             max_steps = 40
@@ -2092,17 +2085,24 @@ class ApiMonitorSessionManager:
         if not calls:
             return []
         session = self._require_session(session_id)
-        existing_ids = {call.id for call in session.captured_calls}
+        evidence_ids = {call.id for call in session.evidence_calls}
+        captured_ids = {call.id for call in session.captured_calls}
+        generation_calls: list[CapturedApiCall] = []
         for call in calls:
-            if call.id not in existing_ids:
+            if call.id in evidence_ids:
+                continue
+            if call.id not in captured_ids:
                 session.captured_calls.append(call)
-                existing_ids.add(call.id)
+                captured_ids.add(call.id)
+            generation_calls.append(call)
+        if not generation_calls:
+            return []
 
         if dom_context is None:
             dom_context, page_url, title, dom_digest = await self._capture_generation_dom_context(session_id)
 
         changed: list[ApiToolGenerationCandidate] = []
-        for call in calls:
+        for call in generation_calls:
             candidate, _created = self._upsert_generation_candidate(
                 session_id,
                 call,
@@ -2117,6 +2117,36 @@ class ApiMonitorSessionManager:
             if candidate.status in ("pending", "stale", "failed"):
                 self._enqueue_generation_candidate(session_id, candidate.id, model_config=model_config)
         return changed
+
+    def _store_evidence_calls(
+        self,
+        session_id: str,
+        calls: list[CapturedApiCall],
+    ) -> list[CapturedApiCall]:
+        if not calls:
+            return []
+        session = self._require_session(session_id)
+        existing_ids = {
+            *(call.id for call in session.captured_calls),
+            *(call.id for call in session.evidence_calls),
+        }
+        added: list[CapturedApiCall] = []
+        for call in calls:
+            if call.id in existing_ids:
+                continue
+            session.evidence_calls.append(call)
+            existing_ids.add(call.id)
+            added.append(call)
+        if added:
+            session.updated_at = datetime.now()
+        return added
+
+    def _token_flow_calls(self, session_id: str) -> list[CapturedApiCall]:
+        session = self._require_session(session_id)
+        by_id: dict[str, CapturedApiCall] = {}
+        for call in [*session.evidence_calls, *session.captured_calls]:
+            by_id.setdefault(call.id, call)
+        return list(by_id.values())
 
     def reconcile_generation_candidates(
         self,

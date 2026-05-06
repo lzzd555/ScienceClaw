@@ -484,7 +484,7 @@ def test_token_flow_profile_endpoint_returns_masked_profile(monkeypatch):
 
     session = _build_session()
     ts = datetime(2026, 4, 27, 10, 0, 0)
-    session.captured_calls = [
+    session.evidence_calls = [
         CapturedApiCall(
             request=CapturedRequest(
                 request_id="req-1", url="https://example.test/api/session", method="GET",
@@ -499,6 +499,8 @@ def test_token_flow_profile_endpoint_returns_masked_profile(monkeypatch):
             ),
             url_pattern="/api/session",
         ),
+    ]
+    session.captured_calls = [
         CapturedApiCall(
             request=CapturedRequest(
                 request_id="req-2", url="https://example.test/api/orders", method="POST",
@@ -533,7 +535,7 @@ def test_publish_with_token_flow_selection_persists_runtime_config(monkeypatch):
 
     session = _build_session()
     ts = datetime(2026, 4, 27, 10, 0, 0)
-    session.captured_calls = [
+    session.evidence_calls = [
         CapturedApiCall(
             request=CapturedRequest(
                 request_id="req-1", url="https://example.test/api/session", method="GET",
@@ -548,6 +550,8 @@ def test_publish_with_token_flow_selection_persists_runtime_config(monkeypatch):
             ),
             url_pattern="/api/session",
         ),
+    ]
+    session.captured_calls = [
         CapturedApiCall(
             request=CapturedRequest(
                 request_id="req-2", url="https://example.test/api/orders", method="POST",

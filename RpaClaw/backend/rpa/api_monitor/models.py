@@ -162,6 +162,7 @@ class ApiMonitorSession(BaseModel):
     status: str = "idle"  # idle, analyzing, recording, stopped
     target_url: Optional[str] = None
     captured_calls: List[CapturedApiCall] = Field(default_factory=list)
+    evidence_calls: List[CapturedApiCall] = Field(default_factory=list)
     tool_definitions: List[ApiToolDefinition] = Field(default_factory=list)
     directed_traces: List[DirectedAnalysisTrace] = Field(default_factory=list)
     generation_candidates: List[ApiToolGenerationCandidate] = Field(default_factory=list)

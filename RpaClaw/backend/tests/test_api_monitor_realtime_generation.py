@@ -41,6 +41,22 @@ def test_session_contains_generation_candidates_by_default():
     assert session.generation_candidates == []
 
 
+def test_session_separates_generation_calls_from_evidence_calls():
+    session = ApiMonitorSession(
+        user_id="user-1",
+        sandbox_session_id="sandbox-1",
+        target_url="https://example.com",
+    )
+    evidence_call = _call("csrf-call", method="GET", path="/api/csrf")
+    generation_call = _call("orders-call", method="GET", path="/api/orders")
+
+    session.evidence_calls.append(evidence_call)
+    session.captured_calls.append(generation_call)
+
+    assert session.evidence_calls == [evidence_call]
+    assert session.captured_calls == [generation_call]
+
+
 def test_tool_definition_can_reference_generation_candidate():
     tool = ApiToolDefinition(
         session_id="session-1",
@@ -63,13 +79,27 @@ from backend.rpa.api_monitor.manager import ApiMonitorSessionManager
 from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
 
 
-def _call(call_id: str, url: str = "https://example.com/api/orders?page=1") -> CapturedApiCall:
+def _call(
+    call_id: str,
+    url: str | None = None,
+    *,
+    method: str = "GET",
+    path: str | None = None,
+) -> CapturedApiCall:
+    if path is None:
+        path = "/api/orders?page={page}"
+        url = url or "https://example.com/api/orders?page=1"
+    else:
+        url = url or f"https://example.com{path}"
+    url_pattern = path
+    if url is not None and "?" in url and path == "/api/orders?page={page}":
+        url_pattern = "/api/orders?page={page}"
     return CapturedApiCall(
         id=call_id,
         request=CapturedRequest(
             request_id=call_id,
             url=url,
-            method="GET",
+            method=method,
             headers={},
             timestamp=datetime(2026, 1, 1),
             resource_type="fetch",
@@ -82,7 +112,7 @@ def _call(call_id: str, url: str = "https://example.com/api/orders?page=1") -> C
             content_type="application/json",
             timestamp=datetime(2026, 1, 1),
         ),
-        url_pattern="/api/orders?page={page}",
+        url_pattern=url_pattern,
     )
 
 
@@ -370,6 +400,81 @@ class TestProcessCapturedCalls(unittest.IsolatedAsyncioTestCase):
         assert session.captured_calls == calls
         assert len(candidates) == 1
         assert enqueued == [(session_id, candidates[0].id)]
+
+    async def test_process_evidence_calls_does_not_create_generation_candidate(self):
+        manager, session_id = _manager_with_session()
+        call = _call("csrf-call", method="GET", path="/api/csrf")
+        enqueued: list[tuple[str, str]] = []
+
+        def fake_enqueue(session_id_arg: str, candidate_id: str, **kwargs):
+            enqueued.append((session_id_arg, candidate_id))
+
+        with patch.object(manager, "_enqueue_generation_candidate", side_effect=fake_enqueue):
+            added = manager._store_evidence_calls(session_id, [call])
+
+        session = manager.sessions[session_id]
+        assert added == [call]
+        assert session.evidence_calls == [call]
+        assert session.captured_calls == []
+        assert session.generation_candidates == []
+        assert enqueued == []
+
+    async def test_evidence_call_is_not_promoted_to_generation_candidate(self):
+        manager, session_id = _manager_with_session()
+        call = _call("csrf-call", method="GET", path="/api/csrf")
+        session = manager.sessions[session_id]
+        session.evidence_calls.append(call)
+        enqueued: list[tuple[str, str]] = []
+
+        def fake_enqueue(session_id_arg: str, candidate_id: str, **kwargs):
+            enqueued.append((session_id_arg, candidate_id))
+
+        with patch.object(manager, "_enqueue_generation_candidate", side_effect=fake_enqueue):
+            candidates = await manager._process_captured_calls_for_generation(session_id, [call])
+
+        assert candidates == []
+        assert session.evidence_calls == [call]
+        assert session.captured_calls == []
+        assert session.generation_candidates == []
+        assert enqueued == []
+
+    async def test_store_evidence_calls_deduplicates_against_generation_and_evidence_calls(self):
+        manager, session_id = _manager_with_session()
+        evidence_call = _call("csrf-call", method="GET", path="/api/csrf")
+        generated_call = _call("orders-call", method="GET", path="/api/orders")
+        session = manager.sessions[session_id]
+        session.evidence_calls.append(evidence_call)
+        session.captured_calls.append(generated_call)
+
+        added = manager._store_evidence_calls(session_id, [evidence_call, generated_call])
+
+        assert added == []
+        assert session.evidence_calls == [evidence_call]
+        assert session.captured_calls == [generated_call]
+
+    async def test_start_recording_stores_pre_calls_as_evidence_only(self):
+        manager, session_id = _manager_with_session()
+        pre_call = _call("csrf-call", method="GET", path="/api/csrf")
+        session = manager.sessions[session_id]
+
+        class _Capture:
+            def __init__(self):
+                self.calls = [pre_call]
+
+            def drain_new_calls(self):
+                calls = list(self.calls)
+                self.calls = []
+                return calls
+
+        manager._captures[session_id] = _Capture()
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
+
+        await manager.start_recording(session_id)
+        await manager._stop_recording_drain_task(session_id)
+
+        assert session.evidence_calls == [pre_call]
+        assert session.captured_calls == []
+        assert session.generation_candidates == []
 
     async def test_stop_recording_does_not_run_legacy_batch_generation(self):
         manager, session_id = _manager_with_session()
