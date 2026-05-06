@@ -259,8 +259,6 @@ async def analyze_session(
             )
             async for event in source:
                 yield event
-                while not queue.empty():
-                    yield await queue.get()
             while not queue.empty():
                 yield await queue.get()
         finally:

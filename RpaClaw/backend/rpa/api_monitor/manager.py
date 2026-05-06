@@ -1242,6 +1242,10 @@ class ApiMonitorSessionManager:
                     await self._process_captured_calls_for_generation(
                         session_id,
                         step_calls,
+                        dom_context=observation.get("raw_snapshot"),
+                        page_url=observation.get("url", ""),
+                        title=observation.get("title", ""),
+                        dom_digest=observation.get("dom_digest", ""),
                         model_config=model_config,
                     )
                     if run_history:
