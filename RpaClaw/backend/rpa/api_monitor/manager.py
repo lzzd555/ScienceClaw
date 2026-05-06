@@ -45,7 +45,7 @@ from .directed_trace import (
 
 from .confidence import dedup_key_for_tool, score_api_candidate
 from .llm_analyzer import analyze_elements, generate_tool_definition
-from .models import ApiMonitorSession, ApiToolDefinition, CapturedApiCall, DirectedAnalysisTrace
+from .models import ApiMonitorSession, ApiToolDefinition, ApiToolGenerationCandidate, CapturedApiCall, DirectedAnalysisTrace
 from .network_capture import NetworkCaptureEngine, dedup_key
 
 logger = logging.getLogger(__name__)
@@ -1679,6 +1679,92 @@ class ApiMonitorSessionManager:
         page.on("close", _on_close)
 
     # ── Internal helpers ─────────────────────────────────────────────
+
+    def _candidate_dedup_key(self, call: CapturedApiCall) -> str:
+        return dedup_key(call)
+
+    def _candidate_url_pattern(self, call: CapturedApiCall) -> str:
+        return call.url_pattern or call.request.url
+
+    def _find_generation_candidate(
+        self,
+        session: ApiMonitorSession,
+        dedup_key_value: str,
+    ) -> ApiToolGenerationCandidate | None:
+        for candidate in session.generation_candidates:
+            if candidate.dedup_key == dedup_key_value:
+                return candidate
+        return None
+
+    def _upsert_generation_candidate(
+        self,
+        session_id: str,
+        call: CapturedApiCall,
+        *,
+        dom_context: dict | None = None,
+        page_url: str = "",
+        title: str = "",
+        dom_digest: str = "",
+    ) -> tuple[ApiToolGenerationCandidate, bool]:
+        session = self._require_session(session_id)
+        key = self._candidate_dedup_key(call)
+        candidate = self._find_generation_candidate(session, key)
+        created = candidate is None
+        now = datetime.now()
+
+        if candidate is None:
+            candidate = ApiToolGenerationCandidate(
+                session_id=session_id,
+                dedup_key=key,
+                method=call.request.method,
+                url_pattern=self._candidate_url_pattern(call),
+                capture_dom_context=dom_context or {},
+                capture_page_url=page_url,
+                capture_title=title,
+                capture_dom_digest=dom_digest,
+            )
+            session.generation_candidates.append(candidate)
+
+        if call.id not in candidate.source_call_ids:
+            candidate.source_call_ids.append(call.id)
+        if call.id not in candidate.sample_call_ids and len(candidate.sample_call_ids) < 5:
+            candidate.sample_call_ids.append(call.id)
+
+        if not candidate.capture_dom_context and dom_context:
+            candidate.capture_dom_context = dom_context
+            candidate.capture_page_url = page_url
+            candidate.capture_title = title
+            candidate.capture_dom_digest = dom_digest
+
+        if not created and candidate.status in ("generated", "running"):
+            candidate.status = "stale"
+
+        candidate.updated_at = now
+        session.updated_at = now
+        return candidate, created
+
+    def _enqueue_generation_candidate(self, session_id: str, candidate_id: str) -> None:
+        return None
+
+    def reconcile_generation_candidates(
+        self,
+        session_id: str,
+        *,
+        enqueue: bool = True,
+    ) -> list[ApiToolGenerationCandidate]:
+        session = self._require_session(session_id)
+        changed: list[ApiToolGenerationCandidate] = []
+
+        for call in session.captured_calls:
+            candidate, created = self._upsert_generation_candidate(session_id, call)
+            if created or candidate.status in ("pending", "failed", "rate_limited", "stale"):
+                changed.append(candidate)
+
+        if enqueue:
+            for candidate in changed:
+                self._enqueue_generation_candidate(session_id, candidate.id)
+
+        return changed
 
     def _require_session(self, session_id: str) -> ApiMonitorSession:
         """Get session or raise ValueError."""
