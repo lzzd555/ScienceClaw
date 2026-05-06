@@ -257,10 +257,37 @@ async def analyze_session(
                     model_config=model_config,
                 )
             )
-            async for event in source:
-                yield event
-            while not queue.empty():
-                yield await queue.get()
+            source_iter = source.__aiter__()
+            source_task = _asyncio.create_task(source_iter.__anext__())
+            queue_task = _asyncio.create_task(queue.get())
+            try:
+                while source_task is not None or queue_task is not None:
+                    pending = [task for task in (source_task, queue_task) if task is not None]
+                    done, _ = await _asyncio.wait(pending, return_when=_asyncio.FIRST_COMPLETED)
+
+                    if queue_task is not None and queue_task in done:
+                        yield queue_task.result()
+                        queue_task = _asyncio.create_task(queue.get()) if source_task is not None else None
+
+                    if source_task is not None and source_task in done:
+                        try:
+                            event = source_task.result()
+                        except StopAsyncIteration:
+                            source_task = None
+                            while not queue.empty():
+                                yield await queue.get()
+                            if queue_task is not None:
+                                queue_task.cancel()
+                                queue_task = None
+                        else:
+                            while not queue.empty():
+                                yield await queue.get()
+                            yield event
+                            source_task = _asyncio.create_task(source_iter.__anext__())
+            finally:
+                for task in (source_task, queue_task):
+                    if task is not None and not task.done():
+                        task.cancel()
         finally:
             api_monitor_manager._analysis_event_sinks.pop(session_id, None)
 
@@ -277,7 +304,8 @@ async def start_recording(
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
-    await api_monitor_manager.start_recording(session_id)
+    model_config = await _resolve_user_model_config(str(current_user.id))
+    await api_monitor_manager.start_recording(session_id, model_config=model_config)
     return {"status": "success"}
 
 

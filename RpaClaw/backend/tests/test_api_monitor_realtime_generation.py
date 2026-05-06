@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import datetime
 
@@ -97,6 +98,13 @@ def _manager_with_session() -> tuple[ApiMonitorSessionManager, str]:
     return manager, session.id
 
 
+async def _collect_events(generator):
+    events = []
+    async for event in generator:
+        events.append(event)
+    return events
+
+
 def test_upsert_generation_candidate_creates_placeholder():
     manager, session_id = _manager_with_session()
     call = _call("call-1")
@@ -148,6 +156,21 @@ def test_reconcile_generation_candidates_rebuilds_missing_candidate():
     assert len(candidates) == 1
     assert candidates[0].source_call_ids == ["call-1"]
     assert session.generation_candidates[0].dedup_key == "GET /api/orders"
+
+
+def test_reconcile_does_not_mark_generated_candidate_stale_without_new_calls():
+    manager, session_id = _manager_with_session()
+    session = manager.sessions[session_id]
+    call = _call("call-1")
+    session.captured_calls.append(call)
+    candidate, _ = manager._upsert_generation_candidate(session_id, call)
+    candidate.status = "generated"
+    candidate.tool_id = "tool-1"
+
+    candidates = manager.reconcile_generation_candidates(session_id, enqueue=False)
+
+    assert candidates == []
+    assert candidate.status == "generated"
 
 
 # ── Worker success path tests ────────────────────────────────────────────
@@ -251,6 +274,74 @@ class TestGenerateToolForCandidate(unittest.IsolatedAsyncioTestCase):
         assert candidate.error == "bad yaml"
         assert session.captured_calls == [call]
 
+    async def test_running_candidate_regenerates_when_new_sample_marks_stale(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        first = _call("call-1", "https://example.com/api/orders?page=1")
+        second = _call("call-2", "https://example.com/api/orders?page=2")
+        session.captured_calls.append(first)
+        candidate, _ = manager._upsert_generation_candidate(session_id, first)
+        sample_counts: list[int] = []
+
+        async def fake_generate_tool_definition(**kwargs):
+            sample_counts.append(len(kwargs["samples"]))
+            if len(sample_counts) == 1:
+                session.captured_calls.append(second)
+                manager._upsert_generation_candidate(session_id, second)
+            return (
+                "name: list_orders\n"
+                "description: List orders\n"
+                "method: GET\n"
+                "url: /api/orders\n"
+                "parameters:\n  type: object\n  properties: {}\n"
+                "response:\n  type: object\n  properties: {}\n"
+            )
+
+        with patch(
+            "backend.rpa.api_monitor.manager.generate_tool_definition",
+            fake_generate_tool_definition,
+        ):
+            await manager._run_generation_candidate(session_id, candidate.id)
+
+        assert sample_counts == [1, 2]
+        assert candidate.status == "generated"
+        assert candidate.source_call_ids == ["call-1", "call-2"]
+
+    async def test_enqueue_generation_candidate_records_followup_when_task_is_running(self):
+        manager, session_id = _manager_with_session()
+        call = _call("call-1")
+        candidate, _ = manager._upsert_generation_candidate(session_id, call)
+        pending_task = asyncio.create_task(asyncio.sleep(60))
+        manager._generation_tasks.setdefault(session_id, {})[candidate.id] = pending_task
+
+        try:
+            manager._enqueue_generation_candidate(session_id, candidate.id)
+
+            assert (session_id, candidate.id) in manager._generation_followups
+        finally:
+            pending_task.cancel()
+            try:
+                await pending_task
+            except asyncio.CancelledError:
+                pass
+
+    async def test_worker_marks_candidate_failed_when_unexpected_generation_error_escapes(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        call = _call("call-1")
+        session.captured_calls.append(call)
+        candidate, _ = manager._upsert_generation_candidate(session_id, call)
+
+        async def broken_generate(session_id_arg, candidate_id_arg, **kwargs):
+            candidate.status = "running"
+            raise RuntimeError("parse exploded")
+
+        with patch.object(manager, "_generate_tool_for_candidate", side_effect=broken_generate):
+            await manager._run_generation_candidate(session_id, candidate.id)
+
+        assert candidate.status == "failed"
+        assert candidate.error == "parse exploded"
+
 
 # ── Processing helper tests ───────────────────────────────────────────────
 
@@ -279,6 +370,130 @@ class TestProcessCapturedCalls(unittest.IsolatedAsyncioTestCase):
         assert session.captured_calls == calls
         assert len(candidates) == 1
         assert enqueued == [(session_id, candidates[0].id)]
+
+    async def test_stop_recording_does_not_run_legacy_batch_generation(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        session.status = "recording"
+        calls = [_call("call-1")]
+
+        class _Capture:
+            def drain_new_calls(self):
+                return calls
+
+        async def forbidden_generate(*args, **kwargs):
+            raise AssertionError("legacy batch generation should not run")
+
+        manager._captures[session_id] = _Capture()
+        manager._generate_tools_from_calls = forbidden_generate
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
+
+        tools = await manager.stop_recording(session_id)
+
+        assert tools == []
+        assert session.status == "idle"
+        assert session.captured_calls == calls
+        assert len(session.generation_candidates) == 1
+
+    async def test_recording_drain_loop_processes_calls_before_stop(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        session.status = "recording"
+        call = _call("call-1")
+
+        class _Capture:
+            def __init__(self):
+                self.calls = [call]
+
+            def drain_new_calls(self):
+                calls = list(self.calls)
+                self.calls = []
+                return calls
+
+        manager._captures[session_id] = _Capture()
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
+
+        task = asyncio.create_task(manager._recording_drain_loop(session_id, model_config=None, interval_s=0.01))
+        manager._recording_drain_tasks[session_id] = task
+        await asyncio.sleep(0.05)
+        await manager._stop_recording_drain_task(session_id)
+
+        assert session.captured_calls == [call]
+        assert [candidate.source_call_ids for candidate in session.generation_candidates] == [["call-1"]]
+
+    async def test_recording_drain_stop_waits_for_in_flight_processing(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        session.status = "recording"
+        call = _call("call-1")
+        entered_processing = asyncio.Event()
+        release_processing = asyncio.Event()
+
+        class _Capture:
+            def __init__(self):
+                self.calls = [call]
+
+            def drain_new_calls(self):
+                calls = list(self.calls)
+                self.calls = []
+                return calls
+
+        async def slow_dom_context(session_id_arg):
+            entered_processing.set()
+            await release_processing.wait()
+            return {}, "", "", ""
+
+        manager._captures[session_id] = _Capture()
+        manager._capture_generation_dom_context = slow_dom_context
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
+
+        task = asyncio.create_task(manager._recording_drain_loop(session_id, model_config=None, interval_s=0.01))
+        manager._recording_drain_tasks[session_id] = task
+        await asyncio.wait_for(entered_processing.wait(), timeout=1)
+
+        stop_task = asyncio.create_task(manager._stop_recording_drain_task(session_id))
+        await asyncio.sleep(0)
+
+        assert not stop_task.done()
+
+        release_processing.set()
+        await asyncio.wait_for(stop_task, timeout=1)
+
+        assert session.captured_calls == [call]
+        assert [candidate.source_call_ids for candidate in session.generation_candidates] == [["call-1"]]
+
+    async def test_free_analysis_processes_each_probe_batch_without_final_replay(self):
+        manager, session_id = _manager_with_session()
+
+        class _Page:
+            url = "https://example.com/app"
+
+        manager._pages[session_id] = _Page()
+        first = _call("call-1", "https://example.com/api/orders?page=1")
+        second = _call("call-2", "https://example.com/api/users?page=1")
+        batches: list[list[str]] = []
+
+        async def fake_scan(page):
+            return [{"tag": "a", "text": "Orders"}, {"tag": "a", "text": "Users"}]
+
+        async def fake_analyze_elements(**kwargs):
+            return {"safe": [0, 1], "skip": []}
+
+        async def fake_probe(page, elem):
+            return [first] if elem["text"] == "Orders" else [second]
+
+        async def fake_process(session_id_arg, calls, **kwargs):
+            batches.append([call.id for call in calls])
+            return []
+
+        with patch.object(manager, "_scan_interactive_elements", side_effect=fake_scan):
+            with patch("backend.rpa.api_monitor.manager.analyze_elements", fake_analyze_elements):
+                with patch.object(manager, "_probe_element", side_effect=fake_probe):
+                    with patch.object(manager, "_process_captured_calls_for_generation", side_effect=fake_process):
+                        events = await _collect_events(manager.analyze_page(session_id))
+
+        assert batches == [["call-1"], ["call-2"]]
+        assert any(event["event"] == "analysis_complete" for event in events)
 
 
 # ── Retry generation candidate tests ───────────────────────────────────

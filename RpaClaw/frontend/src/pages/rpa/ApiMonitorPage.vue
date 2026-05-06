@@ -66,8 +66,12 @@ const session = ref<ApiMonitorSession | null>(null);
 const urlInput = ref('https://');
 const tools = ref<ApiToolDefinition[]>([]);
 const generationCandidates = ref<ApiToolGenerationCandidate[]>([]);
+let generationRefreshTimer: ReturnType<typeof window.setInterval> | null = null;
 const visibleGenerationCandidates = computed(() =>
   generationCandidates.value.filter((candidate) => candidate.status !== 'generated' || !candidate.tool_id),
+);
+const hasActiveGenerationCandidates = computed(() =>
+  generationCandidates.value.some((candidate) => ['pending', 'running', 'stale'].includes(candidate.status)),
 );
 const detectedItemCount = computed(() => tools.value.length + visibleGenerationCandidates.value.length);
 const adoptedTools = computed(() => tools.value.filter((tool) => tool.selected));
@@ -496,6 +500,7 @@ const handleStartSession = async () => {
 const startAnalysis = async () => {
   if (!canRunAnalysis.value) return;
   isAnalyzing.value = true;
+  startGenerationRefresh();
   const mode = selectedAnalysisMode.value;
   const instruction = showAnalysisInstruction.value ? analysisInstruction.value.trim() : '';
   addLog('INFO', `开始${mode.label}...`);
@@ -611,18 +616,13 @@ const startAnalysis = async () => {
       case 'analysis_complete':
         addLog('INFO', `分析完成: ${data.tools_generated} 个工具, ${data.total_calls} 个调用`);
         isAnalyzing.value = false;
-        Promise.all([
-          listTools(sessionId.value),
-          listGenerationCandidates(sessionId.value),
-        ]).then(([t, c]) => {
-          tools.value = t;
-          generationCandidates.value = c;
-        }).catch(() => {});
+        refreshGenerationState().catch(() => {});
         cleanup();
         break;
       case 'analysis_error':
         addLog('ERROR', data.error);
         isAnalyzing.value = false;
+        refreshGenerationState().catch(() => {});
         cleanup();
         break;
     }
@@ -653,15 +653,13 @@ const toggleRecording = async () => {
   if (isRecording.value) {
     try {
       addLog('INFO', '正在停止录制...');
-      const [newTools, newCandidates] = await Promise.all([
-        apiStopRecording(sessionId.value),
-        listGenerationCandidates(sessionId.value),
-      ]);
+      await apiStopRecording(sessionId.value);
       isRecording.value = false;
-      addLog('INFO', `录制已停止。生成了 ${newTools.length} 个工具。`);
-      // Refresh tools list
-      tools.value = await listTools(sessionId.value);
-      generationCandidates.value = newCandidates;
+      await refreshGenerationState();
+      addLog(
+        'INFO',
+        `录制已停止。当前 ${tools.value.length} 个工具，${visibleGenerationCandidates.value.length} 个仍在生成。`,
+      );
     } catch (err: any) {
       addLog('ERROR', `停止录制失败: ${err.message}`);
     }
@@ -670,6 +668,7 @@ const toggleRecording = async () => {
       addLog('INFO', '正在开始录制...');
       await apiStartRecording(sessionId.value);
       isRecording.value = true;
+      startGenerationRefresh();
       addLog('INFO', '录制已开始。请与浏览器交互以捕获 API 调用。');
     } catch (err: any) {
       addLog('ERROR', `开始录制失败: ${err.message}`);
@@ -942,6 +941,33 @@ const upsertGenerationCandidate = (candidate: ApiToolGenerationCandidate) => {
   }
 };
 
+const refreshGenerationState = async () => {
+  if (!sessionId.value) return;
+  const [nextTools, nextCandidates] = await Promise.all([
+    listTools(sessionId.value),
+    listGenerationCandidates(sessionId.value),
+  ]);
+  tools.value = nextTools;
+  generationCandidates.value = nextCandidates;
+};
+
+const startGenerationRefresh = () => {
+  if (generationRefreshTimer) return;
+  generationRefreshTimer = window.setInterval(() => {
+    if (!isRecording.value && !isAnalyzing.value && !hasActiveGenerationCandidates.value) {
+      stopGenerationRefresh();
+      return;
+    }
+    refreshGenerationState().catch(() => {});
+  }, 1000);
+};
+
+const stopGenerationRefresh = () => {
+  if (!generationRefreshTimer) return;
+  window.clearInterval(generationRefreshTimer);
+  generationRefreshTimer = null;
+};
+
 const getCandidateStatusLabel = (status: ApiToolGenerationCandidate['status']) => {
   if (status === 'pending') return '等待生成';
   if (status === 'running') return '生成中';
@@ -969,6 +995,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutsideMenu, true);
+  stopGenerationRefresh();
   shouldReconnectScreencast = false;
   disconnectScreencast();
   if (sessionId.value) {

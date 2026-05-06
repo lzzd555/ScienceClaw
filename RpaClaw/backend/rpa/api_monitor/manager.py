@@ -331,9 +331,11 @@ class ApiMonitorSessionManager:
         self._request_evidence: Dict[str, Dict[str, Dict]] = {}
         self._last_action_at: Dict[str, float] = {}
         self._stop_recording_tasks: Dict[str, asyncio.Task[List[ApiToolDefinition]]] = {}
+        self._recording_drain_tasks: Dict[str, asyncio.Task[None]] = {}
         self._last_recording_tools: Dict[str, List[ApiToolDefinition]] = {}
         self._last_recording_calls: Dict[str, List[CapturedApiCall]] = {}
         self._generation_tasks: Dict[str, Dict[str, asyncio.Task[None]]] = defaultdict(dict)
+        self._generation_followups: Set[tuple[str, str]] = set()
         self._generation_semaphore = asyncio.Semaphore(2)
         self._analysis_event_sinks: Dict[str, Callable[[str, dict], None]] = {}
 
@@ -461,6 +463,7 @@ class ApiMonitorSessionManager:
         self._request_evidence.pop(session_id, None)
         self._last_action_at.pop(session_id, None)
         self._stop_recording_tasks.pop(session_id, None)
+        await self._stop_recording_drain_task(session_id)
         self._last_recording_tools.pop(session_id, None)
         self._last_recording_calls.pop(session_id, None)
         self._session_pages.pop(session_id, None)
@@ -591,7 +594,11 @@ class ApiMonitorSessionManager:
 
     # ── Recording ────────────────────────────────────────────────────
 
-    async def start_recording(self, session_id: str) -> None:
+    async def start_recording(
+        self,
+        session_id: str,
+        model_config: Optional[Dict] = None,
+    ) -> None:
         """Clear capture buffer and set session status to recording."""
         self._require_session(session_id)
 
@@ -605,7 +612,11 @@ class ApiMonitorSessionManager:
             # buffer, so a separate capture.clear() is not needed.
             pre_calls = capture.drain_new_calls()
             if pre_calls:
-                await self._process_captured_calls_for_generation(session_id, pre_calls)
+                await self._process_captured_calls_for_generation(
+                    session_id,
+                    pre_calls,
+                    model_config=model_config,
+                )
                 logger.info(
                     "[ApiMonitor] Drained %d pre-recording calls for session %s",
                     len(pre_calls), session_id,
@@ -622,17 +633,64 @@ class ApiMonitorSessionManager:
         # for token flow analysis.  Only the capture engine buffer was cleared.
         session.status = "recording"
         session.updated_at = datetime.now()
+        await self._stop_recording_drain_task(session_id)
+        self._recording_drain_tasks[session_id] = asyncio.create_task(
+            self._recording_drain_loop(session_id, model_config=model_config)
+        )
         logger.info("[ApiMonitor] Recording started for session %s", session_id)
+
+    async def _recording_drain_loop(
+        self,
+        session_id: str,
+        *,
+        model_config: Optional[Dict] = None,
+        interval_s: float = 1.0,
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval_s)
+                session = self.sessions.get(session_id)
+                if session is None or session.status != "recording":
+                    return
+                capture = self._captures.get(session_id)
+                if not capture:
+                    continue
+                calls = capture.drain_new_calls()
+                if calls:
+                    processing_task = asyncio.create_task(
+                        self._process_captured_calls_for_generation(
+                            session_id,
+                            calls,
+                            model_config=model_config,
+                        )
+                    )
+                    try:
+                        await asyncio.shield(processing_task)
+                    except asyncio.CancelledError:
+                        await processing_task
+                        raise
+        except asyncio.CancelledError:
+            raise
+
+    async def _stop_recording_drain_task(self, session_id: str) -> None:
+        task = self._recording_drain_tasks.pop(session_id, None)
+        if not task:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def stop_recording(
         self,
         session_id: str,
         model_config: Optional[Dict] = None,
     ) -> List[ApiToolDefinition]:
-        """Stop recording, drain captured calls, generate tool definitions.
+        """Stop recording, drain captured calls, and enqueue tool generation.
 
         Stop is idempotent because callers may retry after a transient HTTP
-        disconnect while the first stop is still generating tools.
+        disconnect while the first stop is still processing the capture buffer.
         """
         session = self._require_session(session_id)
 
@@ -650,12 +708,12 @@ class ApiMonitorSessionManager:
                 return list(cached_tools)
             cached_calls = self._last_recording_calls.get(session_id)
             if cached_calls:
-                tools = await self._generate_tools_from_calls(
+                candidates = await self._process_captured_calls_for_generation(
                     session_id,
                     list(cached_calls),
-                    source="manual",
                     model_config=model_config,
                 )
+                tools = self._tools_for_generation_candidates(session_id, candidates)
                 self._last_recording_tools[session_id] = list(tools)
                 return tools
             return []
@@ -677,13 +735,14 @@ class ApiMonitorSessionManager:
     ) -> List[ApiToolDefinition]:
         """Perform the single authoritative stop for a recording window."""
         session = self._require_session(session_id)
+        await self._stop_recording_drain_task(session_id)
 
         capture = self._captures.get(session_id)
         new_calls: List[CapturedApiCall] = []
         if capture:
             new_calls = capture.drain_new_calls()
 
-        await self._process_captured_calls_for_generation(
+        candidates = await self._process_captured_calls_for_generation(
             session_id,
             new_calls,
             model_config=model_config,
@@ -693,9 +752,7 @@ class ApiMonitorSessionManager:
         session.updated_at = datetime.now()
 
         if new_calls:
-            tools = await self._generate_tools_from_calls(
-                session_id, new_calls, source="manual", model_config=model_config,
-            )
+            tools = self._tools_for_generation_candidates(session_id, candidates)
             self._last_recording_tools[session_id] = list(tools)
             return tools
 
@@ -804,6 +861,11 @@ class ApiMonitorSessionManager:
 
                 if probed_calls:
                     all_probed_calls.extend(probed_calls)
+                    await self._process_captured_calls_for_generation(
+                        session_id,
+                        probed_calls,
+                        model_config=model_config,
+                    )
                     yield {
                         "event": "calls_captured",
                         "data": json.dumps({
@@ -812,20 +874,9 @@ class ApiMonitorSessionManager:
                         }),
                     }
 
-            await self._process_captured_calls_for_generation(session_id, all_probed_calls)
-
-            # Step 4: Generate tool definitions
-            yield {
-                "event": "progress",
-                "data": json.dumps({"step": "generating", "message": "Generating tool definitions via LLM..."}),
-            }
-
-            tools = await self._generate_tools_from_calls(
-                session_id, all_probed_calls, source="auto", model_config=model_config,
-            )
-
             session.status = "idle"
             session.updated_at = datetime.now()
+            tools = self._tools_for_calls(session_id, all_probed_calls)
 
             yield {
                 "event": "analysis_complete",
@@ -1354,23 +1405,9 @@ class ApiMonitorSessionManager:
             else:
                 stop_reason = f"Reached max directed steps: {max_steps}"
 
-            yield {
-                "event": "progress",
-                "data": json.dumps(
-                    {"step": "generating", "message": "Generating tool definitions via LLM..."},
-                    ensure_ascii=False,
-                ),
-            }
-
-            tools = await self._generate_tools_from_calls(
-                session_id,
-                directed_calls,
-                source="auto",
-                model_config=model_config,
-            )
-
             session.status = "idle"
             session.updated_at = datetime.now()
+            tools = self._tools_for_calls(session_id, directed_calls)
 
             yield {
                 "event": "analysis_complete",
@@ -1411,6 +1448,34 @@ class ApiMonitorSessionManager:
                 }
             )
         return summaries
+
+    def _tools_for_generation_candidates(
+        self,
+        session_id: str,
+        candidates: list[ApiToolGenerationCandidate],
+    ) -> list[ApiToolDefinition]:
+        session = self.sessions.get(session_id)
+        if not session or not candidates:
+            return []
+        tool_ids = {candidate.tool_id for candidate in candidates if candidate.tool_id}
+        return [tool for tool in session.tool_definitions if tool.id in tool_ids]
+
+    def _tools_for_calls(
+        self,
+        session_id: str,
+        calls: list[CapturedApiCall],
+    ) -> list[ApiToolDefinition]:
+        if not calls:
+            return []
+        session = self.sessions.get(session_id)
+        if not session:
+            return []
+        call_ids = {call.id for call in calls}
+        return [
+            tool
+            for tool in session.tool_definitions
+            if any(call_id in call_ids for call_id in tool.source_calls)
+        ]
 
     async def _generate_tools_from_calls(
         self,
@@ -1762,8 +1827,10 @@ class ApiMonitorSessionManager:
             )
             session.generation_candidates.append(candidate)
 
+        added_call = False
         if call.id not in candidate.source_call_ids:
             candidate.source_call_ids.append(call.id)
+            added_call = True
         if call.id not in candidate.sample_call_ids and len(candidate.sample_call_ids) < 5:
             candidate.sample_call_ids.append(call.id)
 
@@ -1773,7 +1840,7 @@ class ApiMonitorSessionManager:
             candidate.capture_title = title
             candidate.capture_dom_digest = dom_digest
 
-        if not created and candidate.status in ("generated", "running"):
+        if added_call and not created and candidate.status in ("generated", "running"):
             candidate.status = "stale"
 
         candidate.updated_at = now
@@ -1790,6 +1857,7 @@ class ApiMonitorSessionManager:
         session_tasks = self._generation_tasks.setdefault(session_id, {})
         existing = session_tasks.get(candidate_id)
         if existing and not existing.done():
+            self._generation_followups.add((session_id, candidate_id))
             return
         try:
             loop = asyncio.get_running_loop()
@@ -1807,12 +1875,66 @@ class ApiMonitorSessionManager:
         *,
         model_config: Optional[Dict] = None,
     ) -> None:
-        async with self._generation_semaphore:
-            await self._generate_tool_for_candidate(
-                session_id,
-                candidate_id,
-                model_config=model_config,
+        try:
+            async with self._generation_semaphore:
+                while True:
+                    try:
+                        await self._generate_tool_for_candidate(
+                            session_id,
+                            candidate_id,
+                            model_config=model_config,
+                        )
+                    except Exception as exc:
+                        self._mark_generation_candidate_failed(session_id, candidate_id, exc)
+                        break
+                    session = self.sessions.get(session_id)
+                    candidate = next(
+                        (item for item in (session.generation_candidates if session else []) if item.id == candidate_id),
+                        None,
+                    )
+                    if candidate is None or candidate.status != "stale":
+                        break
+        finally:
+            session_tasks = self._generation_tasks.get(session_id)
+            current_task = asyncio.current_task()
+            if session_tasks and session_tasks.get(candidate_id) is current_task:
+                session_tasks.pop(candidate_id, None)
+            followup_requested = (session_id, candidate_id) in self._generation_followups
+            self._generation_followups.discard((session_id, candidate_id))
+            session = self.sessions.get(session_id)
+            candidate = next(
+                (item for item in (session.generation_candidates if session else []) if item.id == candidate_id),
+                None,
             )
+            if followup_requested and candidate and candidate.status in ("pending", "stale", "failed"):
+                self._enqueue_generation_candidate(session_id, candidate_id, model_config=model_config)
+
+    def _mark_generation_candidate_failed(
+        self,
+        session_id: str,
+        candidate_id: str,
+        exc: Exception,
+    ) -> None:
+        session = self.sessions.get(session_id)
+        candidate = next(
+            (item for item in (session.generation_candidates if session else []) if item.id == candidate_id),
+            None,
+        )
+        if candidate is None:
+            return
+        candidate.attempts += 1
+        candidate.error = str(exc)
+        candidate.status = "rate_limited" if self._is_rate_limit_error(exc) else "failed"
+        candidate.retry_after = (
+            self._retry_after_for_attempt(candidate.attempts)
+            if candidate.status == "rate_limited"
+            else None
+        )
+        candidate.updated_at = datetime.now()
+        if session:
+            session.updated_at = datetime.now()
+        event_name = "api_candidate_rate_limited" if candidate.status == "rate_limited" else "api_tool_generation_failed"
+        self._emit_analysis_event(session_id, event_name, self._candidate_event_payload(candidate))
 
     def _calls_for_candidate(
         self,
@@ -1854,6 +1976,7 @@ class ApiMonitorSessionManager:
             candidate.error = "No captured calls available for this candidate"
             candidate.updated_at = datetime.now()
             return None
+        generated_sample_ids = {call.id for call in samples}
 
         candidate.status = "running"
         candidate.error = ""
@@ -1918,11 +2041,13 @@ class ApiMonitorSessionManager:
         self._dedup_session_tools(session_id, new_tools)
 
         if tool.id in {item.id for item in session.tool_definitions}:
-            candidate.status = "generated"
             candidate.tool_id = tool.id
         else:
-            candidate.status = "generated"
             candidate.tool_id = None
+        if any(call_id not in generated_sample_ids for call_id in candidate.sample_call_ids):
+            candidate.status = "stale"
+        else:
+            candidate.status = "generated"
         candidate.error = ""
         candidate.updated_at = datetime.now()
         session.updated_at = datetime.now()

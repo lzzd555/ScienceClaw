@@ -132,6 +132,34 @@ def test_analyze_route_empty_body_dispatches_free_mode(monkeypatch):
     assert calls == [{"session_id": "session-1", "model_config": None}]
 
 
+def test_analyze_route_streams_candidate_events_before_completion(monkeypatch):
+    async def fake_analyze_page(session_id, model_config=None):
+        api_monitor_route.api_monitor_manager._emit_analysis_event(
+            session_id,
+            "api_candidate_created",
+            {
+                "candidate_id": "candidate-1",
+                "dedup_key": "GET /api/orders",
+                "method": "GET",
+                "url_pattern": "/api/orders",
+                "status": "pending",
+            },
+        )
+        yield {"event": "analysis_complete", "data": json.dumps({"tools_generated": 0, "total_calls": 1})}
+
+    async def fake_resolve_user_model_config(user_id):
+        return None
+
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: _route_session())
+    monkeypatch.setattr(api_monitor_route.api_monitor_manager, "analyze_page", fake_analyze_page)
+    monkeypatch.setattr(api_monitor_route, "_resolve_user_model_config", fake_resolve_user_model_config)
+
+    response = TestClient(_route_app()).post("/api/v1/api-monitor/session/session-1/analyze")
+
+    assert response.status_code == 200
+    assert response.text.index("api_candidate_created") < response.text.index("analysis_complete")
+
+
 def test_analyze_route_unknown_mode_returns_400(monkeypatch):
     monkeypatch.setattr(api_monitor_route.api_monitor_manager, "get_session", lambda session_id: _route_session())
 
@@ -776,6 +804,10 @@ def _captured_call_for_stop(call_id: str, url: str) -> CapturedApiCall:
     )
 
 
+async def _forbid_legacy_generation(*args, **kwargs):
+    raise AssertionError("legacy batch generation should not run")
+
+
 class _FakeDirectedPage:
     url = "https://example.test/orders"
     main_frame = object()
@@ -865,30 +897,15 @@ def test_stop_recording_retry_returns_previous_tools_without_draining_later_call
     capture = _SequencedCapture([[recorded_call], [later_call]])
     manager._captures[session.id] = capture
 
-    generated = []
-
-    async def fake_generate(session_id, calls, source="auto", model_config=None):
-        generated.append([call.id for call in calls])
-        tool = ApiToolDefinition(
-            session_id=session_id,
-            name=f"tool_{calls[0].id}",
-            description="Generated",
-            method="GET",
-            url_pattern=calls[0].request.url,
-            yaml_definition="name: generated\ndescription: Generated",
-            source=source,
-        )
-        manager.sessions[session_id].tool_definitions.append(tool)
-        return [tool]
-
-    manager._generate_tools_from_calls = fake_generate
+    manager._generate_tools_from_calls = _forbid_legacy_generation
+    manager._enqueue_generation_candidate = lambda *args, **kwargs: None
 
     first_tools = asyncio.run(manager.stop_recording(session.id))
     second_tools = asyncio.run(manager.stop_recording(session.id))
 
-    assert [tool.name for tool in first_tools] == ["tool_recorded"]
-    assert [tool.name for tool in second_tools] == ["tool_recorded"]
-    assert generated == [["recorded"]]
+    assert first_tools == []
+    assert second_tools == []
+    assert [candidate.source_call_ids for candidate in session.generation_candidates] == [["recorded"]]
     assert capture._drain_count == 1
 
 
@@ -907,36 +924,18 @@ def test_concurrent_stop_recording_reuses_in_flight_stop_task():
         later_call = _captured_call_for_stop("later", "https://example.test/api/later")
         capture = _SequencedCapture([[recorded_call], [later_call]])
         manager._captures[session.id] = capture
-        release_generation = asyncio.Event()
-        generated = []
-
-        async def fake_generate(session_id, calls, source="auto", model_config=None):
-            generated.append([call.id for call in calls])
-            await release_generation.wait()
-            tool = ApiToolDefinition(
-                session_id=session_id,
-                name=f"tool_{calls[0].id}",
-                description="Generated",
-                method="GET",
-                url_pattern=calls[0].request.url,
-                yaml_definition="name: generated\ndescription: Generated",
-                source=source,
-            )
-            manager.sessions[session_id].tool_definitions.append(tool)
-            return [tool]
-
-        manager._generate_tools_from_calls = fake_generate
+        manager._generate_tools_from_calls = _forbid_legacy_generation
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
 
         first_task = asyncio.create_task(manager.stop_recording(session.id))
         await asyncio.sleep(0)
         second_task = asyncio.create_task(manager.stop_recording(session.id))
         await asyncio.sleep(0)
-        release_generation.set()
         first_tools, second_tools = await asyncio.gather(first_task, second_task)
 
-        assert [tool.name for tool in first_tools] == ["tool_recorded"]
-        assert [tool.name for tool in second_tools] == ["tool_recorded"]
-        assert generated == [["recorded"]]
+        assert first_tools == []
+        assert second_tools == []
+        assert [candidate.source_call_ids for candidate in session.generation_candidates] == [["recorded"]]
         assert capture._drain_count == 1
 
     asyncio.run(run_test())
@@ -963,19 +962,13 @@ def test_stop_recording_does_not_wait_for_hanging_dom_scan(monkeypatch):
         manager._pages[session.id] = _HangingPage()
         monkeypatch.setattr("backend.rpa.api_monitor.manager.DOM_CONTEXT_SCAN_TIMEOUT_S", 0.01)
 
-        async def fake_generate_tool_definition(**kwargs):
-            assert kwargs["dom_context"] == ""
-            return "name: generated\ndescription: Generated"
-
-        monkeypatch.setattr(
-            "backend.rpa.api_monitor.manager.generate_tool_definition",
-            fake_generate_tool_definition,
-        )
+        manager._enqueue_generation_candidate = lambda *args, **kwargs: None
 
         tools = await asyncio.wait_for(manager.stop_recording(session.id), timeout=1)
 
-        assert [tool.name for tool in tools] == ["generated"]
+        assert tools == []
         assert manager._last_recording_calls[session.id] == [recorded_call]
+        assert [candidate.source_call_ids for candidate in session.generation_candidates] == [["recorded"]]
 
     asyncio.run(run_test())
 
@@ -1078,14 +1071,9 @@ def test_directed_analysis_uses_compact_snapshot_and_generates_tools(monkeypatch
         calls["compact_snapshot"] = compact_snapshot
         return DirectedStepDecision(goal_status="done", summary="完成", done_reason="无需额外动作")
 
-    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
-        calls["tool_source"] = source
-        calls["tool_call_count"] = len(calls_arg)
-        return []
-
     monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
     monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_build_directed_step_decision)
-    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", _forbid_legacy_generation)
 
     events = asyncio.run(
         _collect_events(
@@ -1106,8 +1094,6 @@ def test_directed_analysis_uses_compact_snapshot_and_generates_tools(monkeypatch
         "url": "https://example.test/orders",
         "title": "Orders",
     }
-    assert calls["tool_source"] == "auto"
-    assert calls["tool_call_count"] == 0
     assert any(event["event"] == "directed_step_planned" for event in events)
     assert any(event["event"] == "analysis_complete" for event in events)
 
@@ -1587,8 +1573,6 @@ def test_directed_trace_does_not_feed_tool_generation(monkeypatch):
     call = _captured_call()
     manager._captures[session.id] = _SequencedCapture([[], [call]])
 
-    tool_calls = []
-
     async def fake_observe(page, instruction):
         return {
             "url": page.url,
@@ -1615,15 +1599,12 @@ def test_directed_trace_does_not_feed_tool_generation(monkeypatch):
     async def fake_execute_action(page, action):
         return None
 
-    async def fake_generate_tools(session_id, calls_arg, source="auto", model_config=None):
-        tool_calls.extend(calls_arg)
-        return []
-
     monkeypatch.setattr(manager, "_observe_directed_page", fake_observe)
     monkeypatch.setattr("backend.rpa.api_monitor.manager.build_directed_step_decision", fake_decision)
     monkeypatch.setattr("backend.rpa.api_monitor.manager.execute_directed_action", fake_execute_action)
     monkeypatch.setattr(manager, "_wait_for_directed_settle", lambda *args, **kwargs: asyncio.sleep(0))
-    monkeypatch.setattr(manager, "_generate_tools_from_calls", fake_generate_tools)
+    monkeypatch.setattr(manager, "_generate_tools_from_calls", _forbid_legacy_generation)
+    monkeypatch.setattr(manager, "_enqueue_generation_candidate", lambda *args, **kwargs: None)
 
     asyncio.run(
         _collect_events(
@@ -1636,7 +1617,8 @@ def test_directed_trace_does_not_feed_tool_generation(monkeypatch):
         )
     )
 
-    assert tool_calls == [call]
+    assert session.captured_calls == [call]
+    assert [candidate.source_call_ids for candidate in session.generation_candidates] == [[call.id]]
     assert session.directed_traces[0].captured_call_ids == [call.id]
 
 
