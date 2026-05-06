@@ -10,6 +10,8 @@ import {
   startRecording as apiStartRecording,
   stopRecording as apiStopRecording,
   listTools,
+  listGenerationCandidates,
+  retryGenerationCandidate,
   updateTool as apiUpdateTool,
   deleteTool as apiDeleteTool,
   publishMcpToolBundle,
@@ -18,6 +20,7 @@ import {
   getTokenFlowProfile,
   type ApiMonitorSession,
   type ApiToolDefinition,
+  type ApiToolGenerationCandidate,
   type ApiMonitorAuthConfig,
   type ApiMonitorAuthProfile,
   type ApiMonitorManualTokenFlow,
@@ -62,6 +65,11 @@ const sessionId = ref<string>('');
 const session = ref<ApiMonitorSession | null>(null);
 const urlInput = ref('https://');
 const tools = ref<ApiToolDefinition[]>([]);
+const generationCandidates = ref<ApiToolGenerationCandidate[]>([]);
+const visibleGenerationCandidates = computed(() =>
+  generationCandidates.value.filter((candidate) => candidate.status !== 'generated' || !candidate.tool_id),
+);
+const detectedItemCount = computed(() => tools.value.length + visibleGenerationCandidates.value.length);
 const adoptedTools = computed(() => tools.value.filter((tool) => tool.selected));
 const notAdoptedTools = computed(() => tools.value.filter((tool) => !tool.selected));
 const adoptedToolCount = computed(() => adoptedTools.value.length);
@@ -468,6 +476,7 @@ const handleStartSession = async () => {
     // Load any existing tools
     const existingTools = await listTools(s.id);
     tools.value = existingTools;
+    generationCandidates.value = await listGenerationCandidates(s.id);
     if (existingTools.length > 0) {
       addLog('INFO', `已加载 ${existingTools.length} 个现有工具`);
     }
@@ -564,10 +573,51 @@ const startAnalysis = async () => {
           ? `第 ${data.step} 轮捕获了 ${data.calls} 个 API 调用`
           : `从元素 ${data.element_index} 捕获了 ${data.calls} 个 API 调用`);
         break;
+      case 'api_candidate_created':
+      case 'api_candidate_updated':
+      case 'api_candidate_rate_limited':
+      case 'api_tool_generation_failed':
+        upsertGenerationCandidate({
+          id: data.candidate_id,
+          session_id: sessionId.value,
+          dedup_key: data.dedup_key,
+          method: data.method,
+          url_pattern: data.url_pattern,
+          source_call_ids: [],
+          sample_call_ids: [],
+          status: data.status,
+          tool_id: data.tool_id,
+          error: data.error || '',
+          retry_after: data.retry_after,
+          attempts: 0,
+          capture_dom_context: {},
+          capture_page_url: '',
+          capture_title: '',
+          capture_dom_digest: '',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        addLog('BUILD', `${data.method} ${data.url_pattern} ${getCandidateStatusLabel(data.status)}`);
+        break;
+      case 'api_tool_generated':
+        if (data.tool) {
+          const idx = tools.value.findIndex((tool) => tool.id === data.tool.id);
+          if (idx >= 0) tools.value[idx] = data.tool;
+          else tools.value.unshift(data.tool);
+        }
+        generationCandidates.value = generationCandidates.value.filter((item) => item.id !== data.candidate_id);
+        addLog('BUILD', `工具已生成: ${data.tool?.name || data.url_pattern}`);
+        break;
       case 'analysis_complete':
         addLog('INFO', `分析完成: ${data.tools_generated} 个工具, ${data.total_calls} 个调用`);
         isAnalyzing.value = false;
-        listTools(sessionId.value).then((t) => { tools.value = t; }).catch(() => {});
+        Promise.all([
+          listTools(sessionId.value),
+          listGenerationCandidates(sessionId.value),
+        ]).then(([t, c]) => {
+          tools.value = t;
+          generationCandidates.value = c;
+        }).catch(() => {});
         cleanup();
         break;
       case 'analysis_error':
@@ -582,6 +632,17 @@ const startAnalysis = async () => {
   });
 };
 
+const handleRetryCandidate = async (candidate: ApiToolGenerationCandidate) => {
+  if (!sessionId.value) return;
+  try {
+    const updated = await retryGenerationCandidate(sessionId.value, candidate.id);
+    upsertGenerationCandidate(updated);
+    addLog('BUILD', `已重新排队: ${candidate.method} ${candidate.url_pattern}`);
+  } catch (err: any) {
+    addLog('ERROR', `重试生成失败: ${err.message}`);
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
@@ -592,11 +653,15 @@ const toggleRecording = async () => {
   if (isRecording.value) {
     try {
       addLog('INFO', '正在停止录制...');
-      const newTools = await apiStopRecording(sessionId.value);
+      const [newTools, newCandidates] = await Promise.all([
+        apiStopRecording(sessionId.value),
+        listGenerationCandidates(sessionId.value),
+      ]);
       isRecording.value = false;
       addLog('INFO', `录制已停止。生成了 ${newTools.length} 个工具。`);
       // Refresh tools list
       tools.value = await listTools(sessionId.value);
+      generationCandidates.value = newCandidates;
     } catch (err: any) {
       addLog('ERROR', `停止录制失败: ${err.message}`);
     }
@@ -868,6 +933,31 @@ const confidenceClasses: Record<string, string> = {
 
 const getConfidenceClass = (confidence: string) => confidenceClasses[confidence] || confidenceClasses.medium;
 
+const upsertGenerationCandidate = (candidate: ApiToolGenerationCandidate) => {
+  const idx = generationCandidates.value.findIndex((item) => item.id === candidate.id);
+  if (idx >= 0) {
+    generationCandidates.value[idx] = candidate;
+  } else {
+    generationCandidates.value.unshift(candidate);
+  }
+};
+
+const getCandidateStatusLabel = (status: ApiToolGenerationCandidate['status']) => {
+  if (status === 'pending') return '等待生成';
+  if (status === 'running') return '生成中';
+  if (status === 'rate_limited') return '限流重试中';
+  if (status === 'failed') return '生成失败';
+  if (status === 'stale') return '等待更新';
+  return '已生成';
+};
+
+const getCandidateStatusClass = (status: ApiToolGenerationCandidate['status']) => {
+  if (status === 'running' || status === 'pending') return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300';
+  if (status === 'rate_limited') return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300';
+  if (status === 'failed') return 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300';
+  return 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300';
+};
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -1115,14 +1205,51 @@ onBeforeUnmount(() => {
           <div class="h-10 flex items-center px-4 border-b border-slate-100 dark:border-white/10 bg-slate-50/50 dark:bg-white/[0.02] shrink-0 gap-2">
             <Wrench :size="14" class="text-sky-500" />
             <h3 class="text-xs font-bold text-[var(--text-primary)]">检测到的工具</h3>
-            <span class="px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-[var(--text-secondary)] font-mono text-[10px] font-bold leading-none ml-1">{{ tools.length }}</span>
+            <span class="px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-[var(--text-secondary)] font-mono text-[10px] font-bold leading-none ml-1">{{ detectedItemCount }}</span>
           </div>
           <div class="flex-1 overflow-y-auto p-4 space-y-3 bg-white dark:bg-transparent">
             <!-- Empty state -->
-            <div v-if="tools.length === 0" class="h-full flex flex-col items-center justify-center text-[var(--text-tertiary)]">
+            <div v-if="detectedItemCount === 0" class="h-full flex flex-col items-center justify-center text-[var(--text-tertiary)]">
               <Wrench :size="40" class="mb-3 opacity-30" />
               <p class="text-sm font-medium text-[var(--text-secondary)] mb-1">尚未检测到工具</p>
               <p class="text-xs">点击"分析"或"录制"以发现 API 工具。</p>
+            </div>
+
+            <!-- Generation candidate placeholders -->
+            <div v-if="visibleGenerationCandidates.length" class="space-y-2">
+              <div class="flex items-center justify-between px-1 text-[11px] font-bold text-[var(--text-tertiary)]">
+                <span>生成中</span>
+                <span>{{ visibleGenerationCandidates.length }}</span>
+              </div>
+              <div
+                v-for="candidate in visibleGenerationCandidates"
+                :key="candidate.id"
+                class="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/[0.04]"
+              >
+                <div class="flex items-center gap-3">
+                  <span class="text-[10px] font-bold px-2 py-0.5 rounded-md" :class="getMethodClass(candidate.method)">
+                    {{ candidate.method }}
+                  </span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--text-primary)]">
+                    {{ candidate.url_pattern }}
+                  </span>
+                  <span class="shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold" :class="getCandidateStatusClass(candidate.status)">
+                    {{ getCandidateStatusLabel(candidate.status) }}
+                  </span>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-3 text-[10px] text-[var(--text-tertiary)]">
+                  <span>样本 {{ candidate.source_call_ids?.length || 0 }}</span>
+                  <span v-if="candidate.retry_after">下次重试 {{ new Date(candidate.retry_after).toLocaleTimeString() }}</span>
+                  <span v-else-if="candidate.error" class="truncate text-red-500">{{ candidate.error }}</span>
+                  <button
+                    v-if="candidate.status === 'failed' || candidate.status === 'rate_limited'"
+                    class="rounded-lg border border-slate-200 px-2 py-1 font-bold text-[var(--text-secondary)] transition hover:bg-slate-100 dark:border-white/10 dark:hover:bg-white/10"
+                    @click="handleRetryCandidate(candidate)"
+                  >
+                    重试
+                  </button>
+                </div>
+              </div>
             </div>
 
             <!-- Grouped tool cards -->
