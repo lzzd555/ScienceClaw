@@ -206,3 +206,47 @@ class TestGenerateToolForCandidate(unittest.IsolatedAsyncioTestCase):
         assert candidate.status == "generated"
         assert candidate.tool_id == tool.id
         assert session.tool_definitions == [tool]
+
+    async def test_candidate_generation_rate_limit_sets_retry_after(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        call = _call("call-1")
+        session.captured_calls.append(call)
+        candidate, _ = manager._upsert_generation_candidate(session_id, call)
+
+        async def fake_generate_tool_definition(**kwargs):
+            raise RuntimeError("429 rate limit exceeded")
+
+        with patch(
+            "backend.rpa.api_monitor.manager.generate_tool_definition",
+            fake_generate_tool_definition,
+        ):
+            tool = await manager._generate_tool_for_candidate(session_id, candidate.id)
+
+        assert tool is None
+        assert candidate.status == "rate_limited"
+        assert candidate.attempts == 1
+        assert candidate.retry_after is not None
+        assert "429" in candidate.error
+
+    async def test_candidate_generation_failure_keeps_captured_call(self):
+        manager, session_id = _manager_with_session()
+        session = manager.sessions[session_id]
+        call = _call("call-1")
+        session.captured_calls.append(call)
+        candidate, _ = manager._upsert_generation_candidate(session_id, call)
+
+        async def fake_generate_tool_definition(**kwargs):
+            raise ValueError("bad yaml")
+
+        with patch(
+            "backend.rpa.api_monitor.manager.generate_tool_definition",
+            fake_generate_tool_definition,
+        ):
+            tool = await manager._generate_tool_for_candidate(session_id, candidate.id)
+
+        assert tool is None
+        assert candidate.status == "failed"
+        assert candidate.attempts == 1
+        assert candidate.error == "bad yaml"
+        assert session.captured_calls == [call]

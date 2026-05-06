@@ -12,7 +12,7 @@ import uuid
 import re
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncGenerator, Dict, List, Optional, Set
 
 from playwright.async_api import BrowserContext, Page
@@ -333,6 +333,8 @@ class ApiMonitorSessionManager:
         self._stop_recording_tasks: Dict[str, asyncio.Task[List[ApiToolDefinition]]] = {}
         self._last_recording_tools: Dict[str, List[ApiToolDefinition]] = {}
         self._last_recording_calls: Dict[str, List[CapturedApiCall]] = {}
+        self._generation_tasks: Dict[str, Dict[str, asyncio.Task[None]]] = defaultdict(dict)
+        self._generation_semaphore = asyncio.Semaphore(2)
 
     def register_screencast(self, session_id: str, controller: SessionScreencastController) -> None:
         """Register an active screencast controller so capture logs can be forwarded."""
@@ -1743,8 +1745,39 @@ class ApiMonitorSessionManager:
         session.updated_at = now
         return candidate, created
 
-    def _enqueue_generation_candidate(self, session_id: str, candidate_id: str) -> None:
-        return None
+    def _enqueue_generation_candidate(
+        self,
+        session_id: str,
+        candidate_id: str,
+        *,
+        model_config: Optional[Dict] = None,
+    ) -> None:
+        session_tasks = self._generation_tasks.setdefault(session_id, {})
+        existing = session_tasks.get(candidate_id)
+        if existing and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(
+            self._run_generation_candidate(session_id, candidate_id, model_config=model_config)
+        )
+        session_tasks[candidate_id] = task
+
+    async def _run_generation_candidate(
+        self,
+        session_id: str,
+        candidate_id: str,
+        *,
+        model_config: Optional[Dict] = None,
+    ) -> None:
+        async with self._generation_semaphore:
+            await self._generate_tool_for_candidate(
+                session_id,
+                candidate_id,
+                model_config=model_config,
+            )
 
     def _calls_for_candidate(
         self,
@@ -1756,6 +1789,14 @@ class ApiMonitorSessionManager:
         if calls:
             return calls
         return [call for call in session.captured_calls if self._candidate_dedup_key(call) == candidate.dedup_key][:5]
+
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "429" in text or "rate limit" in text or "too many requests" in text
+
+    def _retry_after_for_attempt(self, attempts: int) -> datetime:
+        delay = min(300, 2 ** max(attempts - 1, 0))
+        return datetime.now() + timedelta(seconds=delay)
 
     async def _generate_tool_for_candidate(
         self,
@@ -1784,14 +1825,28 @@ class ApiMonitorSessionManager:
         candidate.updated_at = datetime.now()
         dom_context = json.dumps(candidate.capture_dom_context, ensure_ascii=False, indent=2)
 
-        yaml_def = await generate_tool_definition(
-            method=candidate.method,
-            url_pattern=candidate.url_pattern,
-            samples=samples,
-            page_context=candidate.capture_page_url or session.target_url or "",
-            dom_context=dom_context,
-            model_config=model_config,
-        )
+        try:
+            yaml_def = await generate_tool_definition(
+                method=candidate.method,
+                url_pattern=candidate.url_pattern,
+                samples=samples,
+                page_context=candidate.capture_page_url or session.target_url or "",
+                dom_context=dom_context,
+                model_config=model_config,
+            )
+        except Exception as exc:
+            candidate.attempts += 1
+            candidate.error = str(exc)
+            if self._is_rate_limit_error(exc):
+                candidate.status = "rate_limited"
+                candidate.retry_after = self._retry_after_for_attempt(candidate.attempts)
+            else:
+                candidate.status = "failed"
+                candidate.retry_after = None
+            candidate.updated_at = datetime.now()
+            session.updated_at = datetime.now()
+            return None
+
         name, description = self._parse_yaml_metadata(yaml_def)
 
         existing = next(
