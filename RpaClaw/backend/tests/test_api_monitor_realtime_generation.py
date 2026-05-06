@@ -279,3 +279,32 @@ class TestProcessCapturedCalls(unittest.IsolatedAsyncioTestCase):
         assert session.captured_calls == calls
         assert len(candidates) == 1
         assert enqueued == [(session_id, candidates[0].id)]
+
+
+# ── Retry generation candidate tests ───────────────────────────────────
+
+
+def test_retry_generation_candidate_resets_failed_candidate():
+    manager, session_id = _manager_with_session()
+    call = _call("call-1")
+    manager.sessions[session_id].captured_calls.append(call)
+    candidate, _ = manager._upsert_generation_candidate(session_id, call)
+    candidate.status = "failed"
+    candidate.error = "bad yaml"
+    candidate.attempts = 2
+    enqueued: list[str] = []
+
+    # Patch enqueue to track calls
+    import unittest.mock
+    with unittest.mock.patch.object(
+        manager,
+        "_enqueue_generation_candidate",
+        side_effect=lambda sid, cid, **kw: enqueued.append(cid),
+    ):
+        result = manager.retry_generation_candidate(session_id, candidate.id)
+
+    assert result.id == candidate.id
+    assert result.status == "pending"
+    assert result.error == ""
+    assert result.retry_after is None
+    assert enqueued == [candidate.id]

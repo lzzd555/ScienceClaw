@@ -1978,6 +1978,31 @@ class ApiMonitorSessionManager:
 
         return changed
 
+    def list_generation_candidates(self, session_id: str) -> list[ApiToolGenerationCandidate]:
+        self.reconcile_generation_candidates(session_id, enqueue=False)
+        return list(self._require_session(session_id).generation_candidates)
+
+    def retry_generation_candidate(
+        self,
+        session_id: str,
+        candidate_id: str,
+        *,
+        model_config: Optional[Dict] = None,
+    ) -> ApiToolGenerationCandidate:
+        session = self._require_session(session_id)
+        candidate = next(
+            (item for item in session.generation_candidates if item.id == candidate_id),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("Generation candidate not found")
+        candidate.status = "pending"
+        candidate.error = ""
+        candidate.retry_after = None
+        candidate.updated_at = datetime.now()
+        self._enqueue_generation_candidate(session_id, candidate.id, model_config=model_config)
+        return candidate
+
     def _require_session(self, session_id: str) -> ApiMonitorSession:
         """Get session or raise ValueError."""
         session = self.sessions.get(session_id)

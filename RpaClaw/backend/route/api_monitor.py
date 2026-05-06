@@ -300,6 +300,40 @@ async def list_tools(
     }
 
 
+@router.get("/session/{session_id}/generation-candidates")
+async def list_generation_candidates(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = api_monitor_manager.get_session(session_id)
+    _verify_session_owner(session, current_user)
+    candidates = api_monitor_manager.list_generation_candidates(session_id)
+    return {
+        "status": "success",
+        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+    }
+
+
+@router.post("/session/{session_id}/generation-candidates/{candidate_id}/retry")
+async def retry_generation_candidate(
+    session_id: str,
+    candidate_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    session = api_monitor_manager.get_session(session_id)
+    _verify_session_owner(session, current_user)
+    model_config = await _resolve_user_model_config(str(current_user.id))
+    try:
+        candidate = api_monitor_manager.retry_generation_candidate(
+            session_id,
+            candidate_id,
+            model_config=model_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "success", "candidate": candidate.model_dump(mode="json")}
+
+
 @router.put("/session/{session_id}/tools/{tool_id}")
 async def update_tool(
     session_id: str,
