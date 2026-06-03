@@ -409,22 +409,25 @@ def _match_flows(
     flows: list[_TokenFlow] = []
     matched_consumer_ids: set[tuple[str, str]] = set()
 
-    # Producer-first: for each consumer, find matching producer
+    # Producer-first: for each consumer, find all matching producers
     for consumer in consumers:
         matching = value_to_producers.get(consumer.value_hash, [])
-        # Find best producer (earliest before consumer)
-        best_producer = None
-        for prod in matching:
-            if prod.timestamp_key < consumer.timestamp_key:
-                if best_producer is None or prod.timestamp_key < best_producer.timestamp_key:
-                    best_producer = prod
+        # Find all valid producers (before this consumer in time)
+        valid_producers = [
+            p for p in matching
+            if p.timestamp_key < consumer.timestamp_key
+        ]
+        if not valid_producers:
+            continue
 
-        if best_producer:
+        # 为每个有效 producer 创建独立 flow（不同 URL 不合并）
+        for best_producer in valid_producers:
             cons_origin = _origin_from_url_pattern(consumer.url_pattern)
             prod_origin = _origin_from_url_pattern(best_producer.url_pattern)
             same_origin = cons_origin == prod_origin if cons_origin and prod_origin else True
 
-            flow_id = f"flow_{_hash_value(best_producer.value_hash + consumer.value_hash)[:12]}"
+            # flow_id 包含 producer 的 method + url，确保不同接口独立
+            flow_id = f"flow_{_hash_value(best_producer.value_hash + consumer.value_hash + best_producer.method + best_producer.url_pattern)[:12]}"
             existing = next((f for f in flows if f.id == flow_id), None)
             if existing:
                 existing.consumers.append(consumer)

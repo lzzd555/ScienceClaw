@@ -33,3 +33,66 @@ class TestProducerDiscoveryNarrowing:
     def test_pure_numeric_short_rejected(self):
         """短纯数字仍被拒绝。"""
         assert is_dynamic_value_candidate("12345", field_name="token") is False
+
+
+from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
+from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile
+from datetime import datetime, timezone
+
+
+def _make_call(
+    call_id: str, method: str, url: str,
+    resp_body: str = "", resp_headers: dict | None = None,
+    req_headers: dict | None = None, timestamp: datetime | None = None,
+) -> CapturedApiCall:
+    ts = timestamp or datetime.now(timezone.utc)
+    return CapturedApiCall(
+        id=call_id,
+        request=CapturedRequest(
+            request_id=call_id, method=method, url=url,
+            headers=req_headers or {}, body="", timestamp=ts,
+            resource_type="xhr",
+        ),
+        response=CapturedResponse(
+            status=200, status_text="OK", headers=resp_headers or {},
+            body=resp_body, content_type="application/json",
+            timestamp=ts,
+        ),
+        url_pattern=url,
+    )
+
+
+class TestProducerDedupByUrl:
+    """改动3: 不同接口同名字段产生独立 flow。"""
+
+    def test_different_urls_same_field_different_values(self):
+        """不同接口返回同名字段但值不同，产生两个独立 flow。"""
+        calls = [
+            _make_call("c1", "GET", "https://example.com/api/session",
+                       resp_body='{"token": "abc_token_value_1"}'),
+            _make_call("c2", "GET", "https://example.com/api/config",
+                       resp_body='{"token": "xyz_token_value_2"}'),
+            _make_call("c3", "POST", "https://example.com/api/orders",
+                       req_headers={"X-Token": "abc_token_value_1"}),
+            _make_call("c4", "POST", "https://example.com/api/settings",
+                       req_headers={"X-Token": "xyz_token_value_2"}),
+        ]
+        profile = build_api_monitor_token_flow_profile(calls)
+        assert profile["flow_count"] == 2, (
+            f"Expected 2 independent flows, got {profile['flow_count']}"
+        )
+
+    def test_different_urls_same_field_same_value(self):
+        """不同接口返回同名字段且值相同，仍然产生两个独立 flow。"""
+        calls = [
+            _make_call("c1", "GET", "https://example.com/api/session",
+                       resp_body='{"csrfToken": "shared_csrf_value_12345"}'),
+            _make_call("c2", "GET", "https://example.com/api/bootstrap",
+                       resp_body='{"csrfToken": "shared_csrf_value_12345"}'),
+            _make_call("c3", "POST", "https://example.com/api/orders",
+                       req_headers={"X-CSRF-Token": "shared_csrf_value_12345"}),
+        ]
+        profile = build_api_monitor_token_flow_profile(calls)
+        assert profile["flow_count"] == 2, (
+            f"Expected 2 independent flows (one per URL), got {profile['flow_count']}"
+        )
