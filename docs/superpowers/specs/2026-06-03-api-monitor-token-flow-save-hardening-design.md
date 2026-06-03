@@ -55,28 +55,30 @@ API Monitor MCP 的 Token Flow 功能上线后，经过实际使用发现四个�
 
 ### 5.1 问题
 
-当前 `_collect_producers` 使用双层候选策略：显式语义规则 + 高熵动态值扫描。实际使用中，高熵扫描产生了大量与 token 无关的动态值 flow，信噪比太低。
+当前 `_collect_producers` 使用双层候选策略：显式语义规则 + 高熵动态值扫描。实际使用中，高熵扫描产生了大量与 token 无关的动态值 flow，信噪比太低。但某些场景下（如业务系统使用无语义字段名传递 token），高熵扫描仍有价值。
 
 ### 5.2 方案
 
-在 `api_monitor_token_flow.py` 的 `_collect_producers` 中，只保留第一层显式语义规则：
+将高熵动态值扫描改为**可选功能，默认关闭**：
 
-- 字段名包含 `csrf`、`xsrf`、`nonce`、`token`、`signature` 等语义关键词的候选。
-- 移除第二层高熵动态值扫描逻辑。
+- **默认行为**：只保留第一层显式语义规则，只发现字段名包含 `csrf`、`xsrf`、`nonce`、`token`、`signature` 等语义关键词的候选。
+- **用户可选开启**：允许用户在 API Monitor 页面或 publish 弹窗中启用"扩展发现"模式，开启后恢复高熵动态值扫描，捕获无语义字段名的 token 流程。
 
-移除的逻辑范围：
-- `is_dynamic_value_candidate` 中的熵值计算和长度判断（仅限 producer 发现；consumer 侧的值匹配不受影响）。
-- 基于熵值特征进入候选池的分支。
+实现方式：
+- `build_api_monitor_token_flow_profile` 和 `resolve_token_flows_for_publish` 新增可选参数 `enable_extended_discovery: bool = False`。
+- 当 `enable_extended_discovery=False`（默认）时，`_collect_producers` 中不使用高熵扫描。
+- 当 `enable_extended_discovery=True` 时，恢复原有高熵扫描行为。
+- 前端在 token flow 展示区域提供开关，用户可切换启用/关闭。
 
 保留的逻辑范围：
-- 显式语义字段名匹配（Response Headers、Set-Cookie、JSON Body 等来源的扫描）。
 - Consumer 侧的值匹配逻辑完全不变（精确匹配、规范化匹配）。
 - 置信度计算不变。
 
 ### 5.3 影响范围
 
-- 仅影响发现阶段，不影响已保存的 token flow 配置和 Runtime。
-- 新分析会产出更少但更精准的 token flow 候选。
+- 默认行为与改动前一致：仅影响发现阶段，不影响已保存的 token flow 配置和 Runtime。
+- 用户开启扩展发现后，高熵扫描重新生效，可能发现更多候选。
+- `enable_extended_discovery` 参数从 route 层传入，不影响 Runtime 和已保存配置。
 
 ## 6. 改动 3：修复 Producer 去重 Key
 
@@ -176,7 +178,8 @@ tool_type: str | None = None  # None = 普通业务工具, "dynamic_token" = 动
 ### 9.2 收窄发现策略测试
 
 - 包含 `csrf`/`token`/`nonce` 字段名的 producer 仍能被发现。
-- 不包含语义字段名但值高熵的 producer 不再被发现。
+- 默认模式下，不包含语义字段名但值高熵的 producer 不被发现。
+- 启用 `enable_extended_discovery` 后，高熵 producer 可被发现。
 - 已有的值匹配和置信度计算不受影响。
 
 ### 9.3 Producer 去重测试
