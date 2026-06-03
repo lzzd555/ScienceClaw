@@ -32,26 +32,24 @@ API Monitor MCP 的 Token Flow 功能上线后，经过实际使用发现四个�
 
 ### 4.1 问题
 
-`publish_session` 构建 `token_flows` 时，consumers 列表来自分析阶段的完整匹配结果。如果用户只选中了部分工具，未选中工具对应的 consumers 仍然会被保存，导致配置中包含无关接口。
+用户点击保存 MCP 时，token flow 的 consumers 包含了未选中工具的 URL。用户只关心自己选中的工具相关的 token 注入，无关接口的 consumer 是噪声。
 
 ### 4.2 方案
 
-在 `api_monitor_mcp_registry.py` 的 `publish_session` 中，构建 token_flows 后增加一步过滤：
+在前端 publish 弹窗中，根据用户已选中的工具列表过滤 token flow consumers：
 
-```
-对每个 flow 的 consumers：
-  保留 consumer.method 和 consumer.url 命中 selected_tools 列表的 consumer
-  移除未命中任何 selected tool 的 consumer
-```
+1. **展示时**：publish 弹窗显示的 token flow consumers 只包含用户已选中工具对应的 consumer（按 method + URL 匹配）。
+2. **保存时**：前端组装 publish 请求时，只传过滤后的 consumers。后端 `publish_session` 不需要改动，继续原样存入前端传来的数据。
 
-URL 比较使用规范化路径匹配，与 Runtime V2 的 `_token_urls_match` 逻辑一致（处理相对 URL vs 绝对 URL、路径参数化等）。
+过滤规则：consumer 的 `(method, url)` 命中 selected tools 列表中的 `(method, url_pattern)` 则保留，否则移除。URL 比较使用规范化路径匹配，与 Runtime V2 的匹配逻辑一致。
 
-如果一个 flow 过滤后 consumers 为空，则整个 flow 不保存。
+如果一个 flow 过滤后 consumers 为空，则整个 flow 不展示也不保存。
 
 ### 4.3 影响范围
 
-- 仅影响 publish 阶段，不影响分析和 Runtime。
-- 已保存的 MCP server 不受影响（静态配置不会被改写）。
+- 前端 publish 弹窗需要根据 selected tools 过滤 consumers 展示。
+- 后端 `publish_session` 无需改动（继续存前端传来的数据）。
+- 已保存的 MCP server 不受影响。
 
 ## 5. 改动 2：收窄 Producer 发现策略
 
@@ -161,9 +159,10 @@ tool_type: str | None = None  # None = 普通业务工具, "dynamic_token" = 动
 
 ### 9.1 过滤 Consumers 测试
 
-- Publish 时只选中部分工具，验证 token_flows 中只包含对应 consumers。
-- 全部工具未选中时，验证 token_flows 为空。
-- consumers 过滤后为空的 flow 被移除，不保存空 flow。
+- 前端 publish 弹窗中只选中部分工具时，验证 token flow consumers 只展示对应选中的工具。
+- 全部工具未选中时，验证 token flows 不展示。
+- consumers 过滤后为空的 flow 不展示也不保存。
+- 前端提交的 publish 请求中 token_flows 只包含过滤后的 consumers。
 
 ### 9.2 收窄发现策略测试
 
