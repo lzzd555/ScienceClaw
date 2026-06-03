@@ -174,6 +174,62 @@ const publishForm = reactive({
 });
 const authProfile = ref<ApiMonitorAuthProfile | null>(null);
 const tokenFlowProfile = ref<TokenFlowProfile[]>([]);
+
+/** 改动1: 只展示命中已选中工具的 token flow consumers */
+const filteredTokenFlowProfile = computed(() => {
+  if (!tokenFlowProfile.value.length) return [];
+
+  // 构建已选中工具的 (method, url_path) 集合
+  const selectedEndpoints = new Set(
+    adoptedTools.value.map((t: ApiToolDefinition) => {
+      try {
+        const parsed = new URL(t.url_pattern || '', 'http://dummy');
+        const method = (t.method || 'GET').toUpperCase();
+        const path = '/' + parsed.pathname.replace(/^\/+|\/+$/g, '');
+        return `${method} ${path}`;
+      } catch {
+        return '';
+      }
+    }).filter(Boolean)
+  );
+
+  return tokenFlowProfile.value
+    .map((flow: TokenFlowProfile) => {
+      // 过滤 consumer_summaries: 保留命中 selected tools 的 consumer
+      const filteredConsumers = (flow.consumer_summaries || []).filter((cs: string) => {
+        const match = cs.match(/^(\w+)\s+(\S+)/);
+        if (!match) return true;
+        const method = match[1].toUpperCase();
+        const path = match[2];
+        return selectedEndpoints.has(`${method} ${path}`);
+      });
+
+      // 同步过滤 runtime_config.consumers（如果存在）
+      let runtimeConsumers = flow.runtime_config?.consumers || [];
+      if (runtimeConsumers.length) {
+        runtimeConsumers = runtimeConsumers.filter((c: any) => {
+          const method = (c.method || 'GET').toUpperCase();
+          const url = c.url || '';
+          return selectedEndpoints.has(`${method} ${url}`);
+        });
+      }
+
+      // consumers 全部过滤掉的 flow 不展示
+      if (filteredConsumers.length === 0) {
+        return null;
+      }
+
+      return {
+        ...flow,
+        consumer_summaries: filteredConsumers,
+        runtime_config: flow.runtime_config
+          ? { ...flow.runtime_config, consumers: runtimeConsumers }
+          : undefined,
+      };
+    })
+    .filter(Boolean) as TokenFlowProfile[];
+});
+
 const tokenFlowSelections = ref<Record<string, boolean>>({});
 const tokenFlowDrafts = reactive<Record<string, string>>({});
 const tokenFlowDraftErrors = reactive<Record<string, string>>({});
@@ -1744,7 +1800,7 @@ onBeforeUnmount(() => {
           </section>
 
           <!-- Token Flow Detection -->
-          <section v-if="tokenFlowProfile.length > 0" class="rounded-2xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
+          <section v-if="filteredTokenFlowProfile.length > 0" class="rounded-2xl border border-sky-200 bg-sky-50/50 p-4 dark:border-sky-800/50 dark:bg-sky-950/20">
             <div class="mb-3 flex items-center gap-2">
               <div class="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-[10px] font-bold text-white">
                 <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
@@ -1754,7 +1810,7 @@ onBeforeUnmount(() => {
             <p class="mb-3 text-xs text-[var(--text-tertiary)]">{{ t('Token flow detection hint') }}</p>
             <div class="space-y-2">
               <div
-                v-for="flow in tokenFlowProfile"
+                v-for="flow in filteredTokenFlowProfile"
                 :key="flow.id"
                 class="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]"
               >
