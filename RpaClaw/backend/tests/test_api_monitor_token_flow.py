@@ -63,8 +63,11 @@ def test_entropy_per_char_scores_repeated_values_low_and_tokens_higher():
     assert entropy_per_char("8fa7c91e2d8a4c90b0f7") > 3.0
 
 
-def test_dynamic_value_candidate_uses_length_entropy_and_shape_filters():
-    assert is_dynamic_value_candidate("8fa7c91e2d8a4c90b0f7") is True
+def test_dynamic_value_candidate_uses_semantic_name_and_shape_filters():
+    # 高熵值无语义字段名，收窄后不再通过
+    assert is_dynamic_value_candidate("8fa7c91e2d8a4c90b0f7") is False
+    # 有语义字段名且值>=6，通过
+    assert is_dynamic_value_candidate("8fa7c91e2d8a4c90b0f7", field_name="token") is True
     assert is_dynamic_value_candidate("12345678") is False
     assert is_dynamic_value_candidate("active") is False
     assert is_dynamic_value_candidate("2026-04-27") is False
@@ -120,7 +123,7 @@ def test_profile_supports_consumer_first_custom_header_backtracking():
             "bootstrap",
             method="GET",
             url="https://example.test/api/bootstrap",
-            response_body='{"r":"8fa7c91e2d8a4c90b0f7"}',
+            response_body='{"token":"8fa7c91e2d8a4c90b0f7"}',
             seconds=0,
         ),
         _call(
@@ -136,9 +139,8 @@ def test_profile_supports_consumer_first_custom_header_backtracking():
 
     assert profile["flow_count"] == 1
     flow = profile["flows"][0]
-    assert flow["producer_summary"] == "GET /api/bootstrap response.body.$.r"
+    assert flow["producer_summary"] == "GET /api/bootstrap response.body.$.token"
     assert flow["consumer_summaries"] == ["POST /api/guarded request.headers.X-Company-Guard"]
-    assert "high-entropy" in flow["reasons"]
 
 
 # ── Multiple consumers for one token ────────────────────────────────────

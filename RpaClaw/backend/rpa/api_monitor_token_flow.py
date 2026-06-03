@@ -89,6 +89,11 @@ def entropy_per_char(value: str) -> float:
 
 
 def is_dynamic_value_candidate(value: str, *, field_name: str = "") -> bool:
+    """判断值是否为动态 token 候选。
+
+    改动2后只依赖字段名语义规则，不再使用高熵扫描。
+    字段名必须包含 token 相关语义关键词，且值长度>=6。
+    """
     text = str(value or "").strip()
     if not text:
         return False
@@ -100,9 +105,8 @@ def is_dynamic_value_candidate(value: str, *, field_name: str = "") -> bool:
     strong_name = bool(TOKEN_NAME_RE.search(field_name or ""))
     if strong_name and len(text) >= 6:
         return True
-    if len(text) < 16:
-        return False
-    return entropy_per_char(text) >= 3.0 and entropy_per_char(text) * len(text) >= 40
+    # 不再使用高熵扫描：非语义字段名的值一律不进入候选池
+    return False
 
 
 def build_api_monitor_token_flow_profile(calls: list[CapturedApiCall]) -> dict[str, Any]:
@@ -629,12 +633,9 @@ def _producer_signals(field_name: str, value: str) -> list[str]:
     if TOKEN_NAME_RE.search(lowered):
         if "csrf" in lowered or "xsrf" in lowered:
             signals.append("csrf-name")
-        elif "token" in lowered:
-            signals.append("token-name")
         else:
             signals.append("token-name")
-    if is_dynamic_value_candidate(value, field_name=field_name):
-        signals.append("high-entropy")
+    # 不再添加 high-entropy signal
     return signals
 
 
