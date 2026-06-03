@@ -19,6 +19,7 @@ from backend.rpa.api_monitor import api_monitor_manager
 from backend.rpa.api_monitor.models import (
     AnalyzeSessionRequest,
     ApiMonitorSession,
+    ApiToolDefinition,
     StartSessionRequest,
     NavigateRequest,
     PublishMcpRequest,
@@ -30,7 +31,8 @@ from backend.rpa.api_monitor.models import (
 from backend.rpa.api_monitor.analysis_modes import get_analysis_mode_config
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
-from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow
+from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow, extract_producer_source_calls
+from backend.rpa.api_monitor.llm_analyzer import generate_tool_definition
 from backend.rpa.screencast import SessionScreencastController
 from backend.credential.vault import get_vault
 
@@ -622,6 +624,103 @@ async def publish_mcp(
     if combined_flows:
         api_monitor_auth["token_flows"] = combined_flows
 
+    # ── 改动4: 为 token producer 生成 dynamic_token 工具 ──
+    dynamic_token_tools = []
+    if combined_flows:
+        source_calls = extract_producer_source_calls(
+            _token_flow_calls_for_session(session), combined_flows
+        )
+        for flow_doc in combined_flows:
+            flow_id = flow_doc.get("id", "")
+            source_call = source_calls.get(flow_id)
+            if not source_call:
+                continue
+
+            # 生成 YAML，失败重试一次
+            yaml_str = None
+            for attempt in range(2):
+                try:
+                    yaml_str = await generate_tool_definition(
+                        method=source_call.request.method,
+                        url_pattern=source_call.url_pattern or source_call.request.url,
+                        samples=[source_call],
+                        page_context=session.target_url or "",
+                    )
+                    if yaml_str:
+                        break
+                except Exception as exc:
+                    if attempt == 0:
+                        logger.warning(
+                            "[Publish] dynamic_token 工具生成失败 (attempt 1, flow=%s), 重试: %s",
+                            flow_id, exc,
+                        )
+                    else:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Token producer 工具生成失败 (flow={flow_id}): {exc}",
+                        ) from exc
+
+            if not yaml_str:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Token producer 工具生成返回空结果 (flow={flow_id})",
+                )
+
+            # YAML 校验，失败重试一次
+            from backend.rpa.api_monitor_mcp_contract import parse_api_monitor_tool_yaml
+
+            contract = None
+            for attempt in range(2):
+                try:
+                    contract = parse_api_monitor_tool_yaml(yaml_str)
+                    if contract.valid:
+                        break
+                    if attempt == 0:
+                        logger.warning(
+                            "[Publish] dynamic_token YAML 校验失败 (attempt 1, flow=%s): %s",
+                            flow_id, contract.validation_errors,
+                        )
+                        try:
+                            yaml_str = await generate_tool_definition(
+                                method=source_call.request.method,
+                                url_pattern=source_call.url_pattern or source_call.request.url,
+                                samples=[source_call],
+                                page_context=session.target_url or "",
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    else:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Token producer YAML 校验失败 (flow={flow_id}): {contract.validation_errors}",
+                        )
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    if attempt == 0:
+                        logger.warning("[Publish] dynamic_token YAML 解析异常, 重试: %s", exc)
+                    else:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Token producer YAML 解析失败 (flow={flow_id}): {exc}",
+                        ) from exc
+
+            tool = ApiToolDefinition(
+                session_id=session_id,
+                name=contract.name or f"dynamic_token_{flow_id}",
+                description=contract.description or f"Dynamic token producer: {flow_doc.get('name', flow_id)}",
+                method=source_call.request.method,
+                url_pattern=source_call.url_pattern or source_call.request.url,
+                yaml_definition=yaml_str,
+                source_calls=[source_call.id],
+                source="auto",
+                selected=True,
+                is_reserve=False,
+                tool_type="dynamic_token",
+            )
+            dynamic_token_tools.append(tool)
+
     result = await registry.publish_session(
         session=session,
         user_id=str(current_user.id),
@@ -630,5 +729,6 @@ async def publish_mcp(
         overwrite=bool(existing),
         existing_server_id=str(existing["_id"]) if existing else None,
         api_monitor_auth=api_monitor_auth,
+        extra_tools=dynamic_token_tools,
     )
     return {"status": "success", "data": result}

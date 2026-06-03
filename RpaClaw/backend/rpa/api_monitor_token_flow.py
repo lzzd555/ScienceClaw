@@ -792,6 +792,36 @@ def validate_token_flow_config(value: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def extract_producer_source_calls(
+    calls: list[CapturedApiCall],
+    token_flows: list[dict[str, Any]],
+) -> dict[str, CapturedApiCall]:
+    """从 resolved token_flows 中提取 producer 的源调用。
+
+    返回: {flow_id: CapturedApiCall}
+    """
+    result: dict[str, CapturedApiCall] = {}
+    if not token_flows:
+        return result
+
+    call_by_id = {c.id: c for c in calls}
+
+    for flow_doc in token_flows:
+        flow_id = flow_doc.get("id", "")
+        summary = flow_doc.get("summary", {})
+        source_call_ids = summary.get("source_call_ids", [])
+
+        producer_method = flow_doc.get("producer", {}).get("request", {}).get("method", "GET")
+
+        for cid in source_call_ids:
+            call = call_by_id.get(cid)
+            if call and call.request.method.upper() == producer_method.upper():
+                result[flow_id] = call
+                break
+
+    return result
+
+
 # ── V1 to V2 migration ──────────────────────────────────────────────────
 
 
