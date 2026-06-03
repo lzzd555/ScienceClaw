@@ -1673,6 +1673,12 @@ onBeforeUnmount(() => {
                     >
                       候补
                     </span>
+                    <span
+                      v-if="tool.tool_type === 'dynamic_token'"
+                      class="shrink-0 rounded-md border border-purple-300 bg-purple-50 px-2 py-0.5 text-[10px] font-bold text-purple-700 dark:border-purple-500/20 dark:bg-purple-500/10 dark:text-purple-300"
+                    >
+                      Dynamic Token
+                    </span>
                     <ChevronDown :size="16" class="text-[var(--text-tertiary)] transition-transform" :class="expandedToolId === tool.id ? 'rotate-180' : ''" />
                   </div>
 
