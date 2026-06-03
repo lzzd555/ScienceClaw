@@ -34,6 +34,16 @@ class TestProducerDiscoveryNarrowing:
         """短纯数字仍被拒绝。"""
         assert is_dynamic_value_candidate("12345", field_name="token") is False
 
+    def test_non_semantic_high_entropy_enabled(self):
+        """启用扩展发现后，高熵值可通过。"""
+        high_entropy_value = "xK9$mB2#nL5&pQ8!rT3"
+        assert is_dynamic_value_candidate(high_entropy_value, field_name="data", enable_extended_discovery=True) is True
+
+    def test_non_semantic_long_value_enabled(self):
+        """启用扩展发现后，长高熵值可通过。"""
+        long_random = "8fa7c91e2d8a4c90b0f7a3d5e1c2b4a6"
+        assert is_dynamic_value_candidate(long_random, field_name="r", enable_extended_discovery=True) is True
+
 
 from backend.rpa.api_monitor.models import CapturedApiCall, CapturedRequest, CapturedResponse
 from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile

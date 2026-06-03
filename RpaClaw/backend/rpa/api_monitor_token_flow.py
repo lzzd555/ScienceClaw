@@ -88,11 +88,11 @@ def entropy_per_char(value: str) -> float:
     return -sum((count / length) * log2(count / length) for count in counts.values())
 
 
-def is_dynamic_value_candidate(value: str, *, field_name: str = "") -> bool:
+def is_dynamic_value_candidate(value: str, *, field_name: str = "", enable_extended_discovery: bool = False) -> bool:
     """判断值是否为动态 token 候选。
 
-    改动2后只依赖字段名语义规则，不再使用高熵扫描。
-    字段名必须包含 token 相关语义关键词，且值长度>=6。
+    默认只依赖字段名语义规则。
+    当 enable_extended_discovery=True 时，额外使用高熵动态值扫描。
     """
     text = str(value or "").strip()
     if not text:
@@ -105,12 +105,16 @@ def is_dynamic_value_candidate(value: str, *, field_name: str = "") -> bool:
     strong_name = bool(TOKEN_NAME_RE.search(field_name or ""))
     if strong_name and len(text) >= 6:
         return True
-    # 不再使用高熵扫描：非语义字段名的值一律不进入候选池
+    # 高熵扫描：仅当用户显式启用时才使用
+    if enable_extended_discovery:
+        if len(text) < 16:
+            return False
+        return entropy_per_char(text) >= 3.0 and entropy_per_char(text) * len(text) >= 40
     return False
 
 
-def build_api_monitor_token_flow_profile(calls: list[CapturedApiCall]) -> dict[str, Any]:
-    producers, value_to_producers = _collect_producers(calls)
+def build_api_monitor_token_flow_profile(calls: list[CapturedApiCall], *, enable_extended_discovery: bool = False) -> dict[str, Any]:
+    producers, value_to_producers = _collect_producers(calls, enable_extended_discovery=enable_extended_discovery)
     consumers = _collect_consumers(calls)
     flows = _match_flows(producers, value_to_producers, consumers)
     flow_docs = [_flow_profile_doc(flow) for flow in flows]
@@ -133,6 +137,8 @@ def build_api_monitor_token_flow_profile(calls: list[CapturedApiCall]) -> dict[s
 def resolve_token_flows_for_publish(
     calls: list[CapturedApiCall],
     selections: list[dict[str, Any]],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert selected flow IDs from the session profile into persisted runtime configs.
 
@@ -141,7 +147,7 @@ def resolve_token_flows_for_publish(
     """
     if not selections:
         return []
-    producers, value_to_producers = _collect_producers(calls)
+    producers, value_to_producers = _collect_producers(calls, enable_extended_discovery=enable_extended_discovery)
     consumers = _collect_consumers(calls)
     flows = _match_flows(producers, value_to_producers, consumers)
 
@@ -159,6 +165,8 @@ def resolve_token_flows_for_publish(
 
 def _collect_producers(
     calls: list[CapturedApiCall],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> tuple[list[_TokenCandidate], dict[str, list[_TokenCandidate]]]:
     candidates: list[_TokenCandidate] = []
     value_map: dict[str, list[_TokenCandidate]] = {}
@@ -173,9 +181,9 @@ def _collect_producers(
                 lowered = name.lower()
                 if lowered in NOISE_HEADER_NAMES:
                     continue
-                if not is_dynamic_value_candidate(value, field_name=lowered):
+                if not is_dynamic_value_candidate(value, field_name=lowered, enable_extended_discovery=enable_extended_discovery):
                     continue
-                signals = _producer_signals(lowered, value)
+                signals = _producer_signals(lowered, value, enable_extended_discovery=enable_extended_discovery)
                 if not signals:
                     continue
                 c = _TokenCandidate(
@@ -196,9 +204,9 @@ def _collect_producers(
             set_cookie = resp.headers.get("set-cookie", "")
             if set_cookie:
                 for cookie_name, cookie_value in _parse_set_cookie(set_cookie):
-                    if not is_dynamic_value_candidate(cookie_value, field_name=cookie_name):
+                    if not is_dynamic_value_candidate(cookie_value, field_name=cookie_name, enable_extended_discovery=enable_extended_discovery):
                         continue
-                    signals = _producer_signals(cookie_name, cookie_value)
+                    signals = _producer_signals(cookie_name, cookie_value, enable_extended_discovery=enable_extended_discovery)
                     if not signals:
                         continue
                     c = _TokenCandidate(
@@ -220,7 +228,8 @@ def _collect_producers(
                 content_type = (resp.content_type or "").lower()
                 if "json" in content_type or resp.body.strip().startswith("{"):
                     _scan_json_body(
-                        resp.body, call, ts, "response.body.", candidates, value_map
+                        resp.body, call, ts, "response.body.", candidates, value_map,
+                        enable_extended_discovery=enable_extended_discovery,
                     )
 
     return candidates, value_map
@@ -233,6 +242,8 @@ def _scan_json_body(
     prefix: str,
     candidates: list[_TokenCandidate],
     value_map: dict[str, list[_TokenCandidate]],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> None:
     try:
         data = __import__("json").loads(body_text)
@@ -240,7 +251,7 @@ def _scan_json_body(
         return
     if not isinstance(data, dict):
         return
-    _scan_json_dict(data, call, ts, prefix, candidates, value_map)
+    _scan_json_dict(data, call, ts, prefix, candidates, value_map, enable_extended_discovery=enable_extended_discovery)
 
 
 def _scan_json_dict(
@@ -250,12 +261,14 @@ def _scan_json_dict(
     prefix: str,
     candidates: list[_TokenCandidate],
     value_map: dict[str, list[_TokenCandidate]],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> None:
     for key, value in data.items():
         path = f"$.{key}"
         if isinstance(value, str):
-            if is_dynamic_value_candidate(value, field_name=key):
-                signals = _producer_signals(key, value)
+            if is_dynamic_value_candidate(value, field_name=key, enable_extended_discovery=enable_extended_discovery):
+                signals = _producer_signals(key, value, enable_extended_discovery=enable_extended_discovery)
                 if signals:
                     c = _TokenCandidate(
                         value_hash=_hash_value(value),
@@ -271,7 +284,7 @@ def _scan_json_dict(
                     candidates.append(c)
                     value_map.setdefault(c.value_hash, []).append(c)
         elif isinstance(value, dict):
-            _scan_json_dict(value, call, ts, path + ".", candidates, value_map)
+            _scan_json_dict(value, call, ts, path + ".", candidates, value_map, enable_extended_discovery=enable_extended_discovery)
 
 
 # ── Consumer collection ─────────────────────────────────────────────────
@@ -630,7 +643,7 @@ def _endpoint_path(url_pattern: str) -> str:
     return "/" + path.strip("/")
 
 
-def _producer_signals(field_name: str, value: str) -> list[str]:
+def _producer_signals(field_name: str, value: str, *, enable_extended_discovery: bool = False) -> list[str]:
     signals: list[str] = []
     lowered = field_name.lower()
     if TOKEN_NAME_RE.search(lowered):
@@ -638,7 +651,8 @@ def _producer_signals(field_name: str, value: str) -> list[str]:
             signals.append("csrf-name")
         else:
             signals.append("token-name")
-    # 不再添加 high-entropy signal
+    if enable_extended_discovery and is_dynamic_value_candidate(value, field_name=field_name, enable_extended_discovery=True):
+        signals.append("high-entropy")
     return signals
 
 
