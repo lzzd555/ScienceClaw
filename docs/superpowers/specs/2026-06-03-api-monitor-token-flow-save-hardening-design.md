@@ -128,6 +128,13 @@ Token producer 接口目前仅作为 `token_flows[].producer` 中的配置数据
 4. 创建 `ApiToolDefinition`，标记 `tool_type: "dynamic_token"`。
 5. 将该工具加入 `selected_tools` 列表一起保存。
 
+**异常处理**：
+
+- **工具生成失败**（`generate_tool_definition` 抛出异常或返回空结果）：跳过该 producer 的工具生成，不阻塞整个发布流程。该 flow 的 token_flows 配置仍正常保存（producer 规则完整，只是没有对应的 Swagger YAML 工具定义）。日志中记录警告，提示具体哪个 producer 的工具生成失败。
+- **YAML 校验不通过**（生成的 YAML 不符合 Swagger 2.0 schema 或工具名校验失败）：跳过该工具，不保存无效定义。token_flows 配置同样不受影响继续保存。日志中记录警告，包含校验失败的具体原因。
+
+两种失败情况下，token flow 本身的 producer/consumer 规则仍然完整保存，只是缺少对应的可视化工具定义。Runtime 执行不依赖工具定义，因此 token 注入链路不受影响。
+
 #### 7.2.3 工具模型扩展
 
 `ApiToolDefinition` 新增可选字段：
@@ -182,3 +189,5 @@ tool_type: str | None = None  # None = 普通业务工具, "dynamic_token" = 动
 - 工具定义中 `tool_type` 为 `"dynamic_token"`。
 - 不影响普通业务工具的生成和保存。
 - 已保存的无 `tool_type` 工具仍能正常加载和使用。
+- `generate_tool_definition` 失败时，发布不阻塞，token_flows 配置仍正常保存，日志有警告。
+- 生成的 YAML 校验失败时，跳过该工具定义，token_flows 配置仍正常保存，日志有警告。
