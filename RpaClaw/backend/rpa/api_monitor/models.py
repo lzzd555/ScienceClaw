@@ -78,6 +78,7 @@ class ApiToolDefinition(BaseModel):
     score: int = 0
     selected: bool = False
     is_reserve: bool = False
+    tool_type: Optional[str] = None  # None = 普通业务工具, "dynamic_token" = 动态 token 工具
     intent_group: Optional[IntentGroup] = None
     intent_reason: Optional[str] = None
     intent_score: Optional[int] = None

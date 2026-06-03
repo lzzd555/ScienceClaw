@@ -109,6 +109,7 @@ export interface ApiToolDefinition {
   validation_status?: 'valid' | 'invalid'
   validation_errors?: string[]
   is_reserve?: boolean
+  tool_type?: string | null // null = 普通业务工具, "dynamic_token" = 动态 token 工具
   intent_group?: ApiMonitorIntentGroup | null
   intent_reason?: string | null
   intent_score?: number | null
