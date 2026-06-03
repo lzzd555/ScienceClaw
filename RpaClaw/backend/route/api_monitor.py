@@ -540,19 +540,21 @@ async def get_auth_profile(
 @router.get("/session/{session_id}/token-flow-profile")
 async def get_token_flow_profile(
     session_id: str,
+    enable_extended_discovery: bool = False,
     current_user: User = Depends(get_current_user),
 ):
     session = api_monitor_manager.get_session(session_id)
     _verify_session_owner(session, current_user)
     calls = _token_flow_calls_for_session(session)
     logger.info(
-        "[TokenFlow] session=%s token_flow_calls=%d captured_calls=%d evidence_calls=%d",
+        "[TokenFlow] session=%s token_flow_calls=%d captured_calls=%d evidence_calls=%d extended=%s",
         session_id,
         len(calls),
         len(session.captured_calls),
         len(getattr(session, "evidence_calls", [])),
+        enable_extended_discovery,
     )
-    profile = build_api_monitor_token_flow_profile(calls)
+    profile = build_api_monitor_token_flow_profile(calls, enable_extended_discovery=enable_extended_discovery)
     logger.info(
         "[TokenFlow] session=%s flow_count=%d",
         session_id,

@@ -174,6 +174,7 @@ const publishForm = reactive({
 });
 const authProfile = ref<ApiMonitorAuthProfile | null>(null);
 const tokenFlowProfile = ref<TokenFlowProfile[]>([]);
+const enableExtendedDiscovery = ref(false);
 
 /** 改动1: 只展示命中已选中工具的 token flow consumers */
 const filteredTokenFlowProfile = computed(() => {
@@ -935,7 +936,7 @@ const openPublishDialog = async () => {
     publishAuth.credential_type = profile.recommended_credential_type || 'placeholder';
     // Load token flow profile separately (non-critical)
     try {
-      const tfProfile = await getTokenFlowProfile(sessionId.value);
+      const tfProfile = await getTokenFlowProfile(sessionId.value, enableExtendedDiscovery.value);
       tokenFlowProfile.value = tfProfile.flows || [];
       tokenFlowSelections.value = {};
       Object.keys(tokenFlowDrafts).forEach((key) => delete tokenFlowDrafts[key]);
@@ -1180,6 +1181,21 @@ function updateCandidateTimers() {
 }
 
 watch(generationCandidates, updateCandidateTimers, { deep: true, immediate: true })
+
+// 当扩展发现开关变化时重新加载 token flow profile
+watch(enableExtendedDiscovery, async () => {
+  if (!sessionId.value || !publishDialogOpen.value) return;
+  try {
+    const tfProfile = await getTokenFlowProfile(sessionId.value, enableExtendedDiscovery.value);
+    tokenFlowProfile.value = tfProfile.flows || [];
+    tokenFlowSelections.value = {};
+    for (const flow of tfProfile.flows || []) {
+      tokenFlowSelections.value[flow.id] = flow.enabled_by_default;
+    }
+  } catch (err: any) {
+    addLog('WARNING', `重新加载 Token Flow 失败: ${err.message}`);
+  }
+})
 
 function getCandidateElapsedLabel(candidate: ApiToolGenerationCandidate): string {
   const start = candidateTimerStarts.value[candidate.id]
@@ -1814,6 +1830,14 @@ onBeforeUnmount(() => {
               <h3 class="text-sm font-black text-[var(--text-primary)]">{{ t('Dynamic Token Flow Detected') }}</h3>
             </div>
             <p class="mb-3 text-xs text-[var(--text-tertiary)]">{{ t('Token flow detection hint') }}</p>
+            <label class="mb-3 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                v-model="enableExtendedDiscovery"
+                class="h-3.5 w-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-500"
+              />
+              <span>{{ t('Enable extended discovery (high-entropy scanning)') }}</span>
+            </label>
             <div class="space-y-2">
               <div
                 v-for="flow in filteredTokenFlowProfile"

@@ -416,8 +416,9 @@ export async function getAuthProfile(sessionId: string): Promise<ApiMonitorAuthP
 /**
  * Get the token flow profile for a session's captured traffic.
  */
-export async function getTokenFlowProfile(sessionId: string): Promise<TokenFlowProfileResponse> {
-  const response = await apiClient.get(`/api-monitor/session/${sessionId}/token-flow-profile`)
+export async function getTokenFlowProfile(sessionId: string, enableExtendedDiscovery = false): Promise<TokenFlowProfileResponse> {
+  const params = enableExtendedDiscovery ? { enable_extended_discovery: 'true' } : {}
+  const response = await apiClient.get(`/api-monitor/session/${sessionId}/token-flow-profile`, { params })
   return response.data.profile
 }
 
