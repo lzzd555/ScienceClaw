@@ -629,6 +629,7 @@ async def publish_mcp(
     # ── 改动4: 为 token producer 生成 dynamic_token 工具 ──
     dynamic_token_tools = []
     if combined_flows:
+        model_config = await _resolve_user_model_config(str(current_user.id))
         source_calls = extract_producer_source_calls(
             _token_flow_calls_for_session(session), combined_flows
         )
@@ -647,6 +648,7 @@ async def publish_mcp(
                         url_pattern=source_call.url_pattern or source_call.request.url,
                         samples=[source_call],
                         page_context=session.target_url or "",
+                        model_config=model_config,
                     )
                     if yaml_str:
                         break
@@ -688,6 +690,7 @@ async def publish_mcp(
                                 url_pattern=source_call.url_pattern or source_call.request.url,
                                 samples=[source_call],
                                 page_context=session.target_url or "",
+                                model_config=model_config,
                             )
                         except Exception:
                             pass
