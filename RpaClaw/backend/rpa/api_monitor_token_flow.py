@@ -538,12 +538,10 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
     extract_path = _runtime_extract_path(producer.source_kind, producer.source_path)
 
     deduped_consumers, source_call_ids = _dedupe_consumers(flow.consumers)
-    consumer_summaries: list[str] = []
     grouped_consumers: dict[tuple[str, str], dict[str, Any]] = {}
 
     for consumer in deduped_consumers:
         endpoint = _endpoint_path(consumer.url_pattern)
-        consumer_summaries.append(f"{consumer.method} {endpoint} {consumer.location}.{consumer.path}")
         group_key = (consumer.method.upper(), endpoint)
         consumer_doc = grouped_consumers.setdefault(
             group_key,
@@ -589,7 +587,6 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
         "confidence": flow.confidence,
         "summary": {
             "producer": producer_summary,
-            "consumers": consumer_summaries,
             "sample_count": len(flow.consumers),
             "reasons": flow.reasons,
             "source_call_ids": source_call_ids,

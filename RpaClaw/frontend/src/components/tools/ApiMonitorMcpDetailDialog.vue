@@ -154,7 +154,7 @@
                 </div>
                 <div v-if="flow.summary" class="mt-1 text-xs text-[var(--text-tertiary)]">
                   <div>{{ t('Source') }}: {{ flow.summary.producer }}</div>
-                  <div v-for="cs in flow.summary.consumers" :key="cs">{{ t('Inject to') }}: {{ cs }}</div>
+                  <div v-for="c in (flow.consumers || [])" :key="`${c.method}-${c.url}`">{{ t('Inject to') }}: {{ c.method }} {{ c.url }} <template v-for="(val, key) in (c.inject?.headers || {})" :key="'h-'+key"> headers.{{ key }}</template><template v-for="(val, key) in (c.inject?.query || {})" :key="'q-'+key"> query.{{ key }}</template><template v-for="(val, key) in (c.inject?.body || {})" :key="'b-'+key"> body.{{ key }}</template></div>
                   <div v-if="flow.summary.sample_count && flow.summary.sample_count > 1" class="mt-1 text-[11px] opacity-70">
                     {{ t('Samples: {count}', { count: flow.summary.sample_count }) }}
                   </div>
