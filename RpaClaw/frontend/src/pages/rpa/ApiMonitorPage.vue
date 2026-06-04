@@ -941,8 +941,13 @@ const openPublishDialog = async () => {
       tokenFlowSelections.value = {};
       Object.keys(tokenFlowDrafts).forEach((key) => delete tokenFlowDrafts[key]);
       Object.keys(tokenFlowDraftErrors).forEach((key) => delete tokenFlowDraftErrors[key]);
+      // 只为用户可见的（filtered）flows 设置默认选中状态
+      // 不可见的 flow（consumers 全部被过滤掉）不设置 selection，不会被保存
+      const filteredFlowIds = new Set(filteredTokenFlowProfile.value.map((f: any) => f.id));
       for (const flow of tfProfile.flows || []) {
-        tokenFlowSelections.value[flow.id] = flow.enabled_by_default;
+        if (filteredFlowIds.has(flow.id)) {
+          tokenFlowSelections.value[flow.id] = flow.enabled_by_default;
+        }
       }
       if (tokenFlowProfile.value.length > 0) {
         addLog('INFO', `检测到 ${tokenFlowProfile.value.length} 个动态 Token 流程`);
@@ -1014,9 +1019,10 @@ const submitPublish = async (confirmOverwrite = false) => {
       isPublishing.value = false;
       return;
     }
-    // Include enabled token flow selections
+    // Include enabled token flow selections (only visible flows)
+    const visibleFlowIds = new Set(filteredTokenFlowProfile.value.map((f: any) => f.id));
     const enabledFlows: TokenFlowSelection[] = Object.entries(tokenFlowSelections.value)
-      .filter(([id, enabled]) => enabled && !(id in tokenFlowDrafts))
+      .filter(([id, enabled]) => enabled && !(id in tokenFlowDrafts) && visibleFlowIds.has(id))
       .map(([id, enabled]) => ({ id, enabled }));
     if (enabledFlows.length > 0) {
       authPayload.token_flows = enabledFlows;
