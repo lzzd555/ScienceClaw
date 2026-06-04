@@ -31,7 +31,7 @@ from backend.rpa.api_monitor.models import (
 from backend.rpa.api_monitor.analysis_modes import get_analysis_mode_config
 from backend.rpa.api_monitor_mcp_registry import ApiMonitorMcpRegistry
 from backend.rpa.api_monitor_auth import build_api_monitor_auth_profile, validate_api_monitor_auth_config
-from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow, extract_producer_source_calls
+from backend.rpa.api_monitor_token_flow import build_api_monitor_token_flow_profile, resolve_token_flows_for_publish, validate_manual_token_flow, extract_producer_source_calls, _endpoint_path
 from backend.rpa.api_monitor.llm_analyzer import generate_tool_definition
 from backend.rpa.screencast import SessionScreencastController
 from backend.credential.vault import get_vault
@@ -617,8 +617,7 @@ async def publish_mcp(
         if getattr(tool, "selected", False) and not getattr(tool, "is_reserve", False):
             method = (getattr(tool, "method", "GET") or "GET").upper()
             url = getattr(tool, "url_pattern", "") or ""
-            parsed = urlsplit(url)
-            path = "/" + parsed.path.strip("/")
+            path = _endpoint_path(url)
             selected_endpoints.add(f"{method} {path}")
 
     for flow_doc in token_flows:
@@ -628,7 +627,8 @@ async def publish_mcp(
             for c in consumers:
                 c_method = (c.get("method") or "GET").upper()
                 c_url = c.get("url") or ""
-                key = f"{c_method} {c_url}"
+                c_path = _endpoint_path(c_url)
+                key = f"{c_method} {c_path}"
                 if key in selected_endpoints:
                     filtered.append(c)
             flow_doc["consumers"] = filtered
