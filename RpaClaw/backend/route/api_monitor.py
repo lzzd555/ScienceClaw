@@ -611,6 +611,31 @@ async def publish_mcp(
         _token_flow_calls_for_session(session), token_flow_selections
     )
 
+    # 过滤 auto token flows 的 consumers：只保留命中 selected tools 的 consumer
+    selected_endpoints = set()
+    for tool in session.tool_definitions:
+        if getattr(tool, "selected", False) and not getattr(tool, "is_reserve", False):
+            method = (getattr(tool, "method", "GET") or "GET").upper()
+            url = getattr(tool, "url_pattern", "") or ""
+            parsed = urlsplit(url)
+            path = "/" + parsed.path.strip("/")
+            selected_endpoints.add(f"{method} {path}")
+
+    for flow_doc in token_flows:
+        consumers = flow_doc.get("consumers", [])
+        if consumers and selected_endpoints:
+            filtered = []
+            for c in consumers:
+                c_method = (c.get("method") or "GET").upper()
+                c_url = c.get("url") or ""
+                key = f"{c_method} {c_url}"
+                if key in selected_endpoints:
+                    filtered.append(c)
+            flow_doc["consumers"] = filtered
+
+    # 移除 consumers 为空的 flow
+    token_flows = [f for f in token_flows if f.get("consumers")]
+
     # Resolve manual token flows
     manual_flows = []
     if request.api_monitor_auth and request.api_monitor_auth.manual_token_flows:
