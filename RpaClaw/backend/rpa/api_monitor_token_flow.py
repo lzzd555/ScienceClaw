@@ -537,7 +537,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
     extract_from = producer.source_kind
     extract_path = _runtime_extract_path(producer.source_kind, producer.source_path)
 
-    deduped_consumers, _ = _dedupe_consumers(flow.consumers)
+    deduped_consumers, source_call_ids = _dedupe_consumers(flow.consumers)
     consumer_summaries: list[str] = []
     grouped_consumers: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -592,6 +592,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
             "consumers": consumer_summaries,
             "sample_count": len(flow.consumers),
             "reasons": flow.reasons,
+            "source_call_ids": source_call_ids,
         },
     }
 
