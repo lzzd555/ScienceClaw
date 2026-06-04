@@ -593,6 +593,7 @@ def _flow_runtime_doc(flow: _TokenFlow) -> dict[str, Any]:
             "sample_count": len(flow.consumers),
             "reasons": flow.reasons,
             "source_call_ids": source_call_ids,
+            "producer_call_id": producer.call_id,
         },
     }
 
@@ -824,10 +825,18 @@ def extract_producer_source_calls(
     for flow_doc in token_flows:
         flow_id = flow_doc.get("id", "")
         summary = flow_doc.get("summary", {})
+
+        # 优先使用 producer_call_id（producer 的源调用 ID）
+        producer_call_id = summary.get("producer_call_id", "")
+        if producer_call_id:
+            call = call_by_id.get(producer_call_id)
+            if call:
+                result[flow_id] = call
+                continue
+
+        # 回退：从 source_call_ids 中按 method 匹配
         source_call_ids = summary.get("source_call_ids", [])
-
         producer_method = flow_doc.get("producer", {}).get("request", {}).get("method", "GET")
-
         for cid in source_call_ids:
             call = call_by_id.get(cid)
             if call and call.request.method.upper() == producer_method.upper():
