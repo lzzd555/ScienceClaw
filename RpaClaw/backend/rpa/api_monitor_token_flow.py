@@ -107,7 +107,7 @@ def is_dynamic_value_candidate(value: str, *, field_name: str = "", enable_exten
         return True
     # 高熵扫描：仅当用户显式启用时才使用
     if enable_extended_discovery:
-        return entropy_per_char(text) >= 3.0 and entropy_per_char(text) * len(text) >= 40
+        return entropy_per_char(text) >= 2.0 and entropy_per_char(text) * len(text) >= 20
     return False
 
 
