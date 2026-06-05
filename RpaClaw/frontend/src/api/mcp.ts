@@ -102,6 +102,7 @@ export interface ApiMonitorAuthConfigPublish {
     consumers: Array<Record<string, unknown>>;
     refresh_on_status?: number[];
   }>;
+  enable_extended_discovery?: boolean;
 }
 
 export interface McpEndpointConfig {

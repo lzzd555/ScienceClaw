@@ -240,6 +240,7 @@ class ApiMonitorAuthConfigRequest(BaseModel):
     login_url: str = ""
     token_flows: List[TokenFlowSelection] = Field(default_factory=list)
     manual_token_flows: List[ManualTokenFlowRequest] = Field(default_factory=list)
+    enable_extended_discovery: bool = False
 
 
 class PublishMcpRequest(BaseModel):

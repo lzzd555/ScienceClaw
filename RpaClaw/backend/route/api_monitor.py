@@ -603,12 +603,16 @@ async def publish_mcp(
 
     # Resolve token flow selections from session profile
     token_flow_selections = []
-    if request.api_monitor_auth and request.api_monitor_auth.token_flows:
-        token_flow_selections = [
-            sel.model_dump() for sel in request.api_monitor_auth.token_flows if sel.enabled
-        ]
+    extended_discovery = False
+    if request.api_monitor_auth:
+        extended_discovery = request.api_monitor_auth.enable_extended_discovery
+        if request.api_monitor_auth.token_flows:
+            token_flow_selections = [
+                sel.model_dump() for sel in request.api_monitor_auth.token_flows if sel.enabled
+            ]
     token_flows = resolve_token_flows_for_publish(
-        _token_flow_calls_for_session(session), token_flow_selections
+        _token_flow_calls_for_session(session), token_flow_selections,
+        enable_extended_discovery=extended_discovery,
     )
 
     # 过滤 auto token flows 的 consumers：只保留命中 selected tools 的 consumer

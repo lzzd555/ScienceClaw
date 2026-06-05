@@ -1027,6 +1027,8 @@ const submitPublish = async (confirmOverwrite = false) => {
     if (enabledFlows.length > 0) {
       authPayload.token_flows = enabledFlows;
     }
+    // 透传扩展发现开关，确保 resolve 阶段与检测阶段使用相同的发现策略
+    authPayload.enable_extended_discovery = enableExtendedDiscovery.value;
     // Include manual token flows
     const manualFlows = parseManualTokenFlows();
     if (manualTokenFlowJsonError.value) {
