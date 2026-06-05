@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal, Loader2, Check } from 'lucide-vue-next';
+import { ArrowLeft, Globe, BarChart2, Disc, Square, Save, Wrench, ChevronDown, MonitorPlay, X, AlertTriangle, Terminal, Loader2, Check, Zap, ZapOff } from 'lucide-vue-next';
 import { ref, reactive, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
@@ -936,7 +936,7 @@ const openPublishDialog = async () => {
     publishAuth.credential_type = profile.recommended_credential_type || 'placeholder';
     // Load token flow profile separately (non-critical)
     try {
-      const tfProfile = await getTokenFlowProfile(sessionId.value);
+      const tfProfile = await getTokenFlowProfile(sessionId.value, enableExtendedDiscovery.value);
       tokenFlowProfile.value = tfProfile.flows || [];
       tokenFlowSelections.value = {};
       Object.keys(tokenFlowDrafts).forEach((key) => delete tokenFlowDrafts[key]);
@@ -1279,7 +1279,26 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="flex items-center gap-2">
-              <!-- Model Selector -->
+              <!-- Extended Discovery Toggle -->
+              <TooltipProvider :delay-duration="200">
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <button
+                      @click="enableExtendedDiscovery = !enableExtendedDiscovery"
+                      class="flex items-center gap-1.5 rounded-full border border-white/20 px-3 py-2 text-xs font-medium transition backdrop-blur"
+                      :class="enableExtendedDiscovery ? 'bg-amber-400/20 text-amber-100 border-amber-400/40' : 'bg-white/15 text-white/70'"
+                    >
+                      <component :is="enableExtendedDiscovery ? Zap : ZapOff" :size="14" />
+                      <span class="hidden sm:inline">{{ enableExtendedDiscovery ? '扩展' : '标准' }}</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" :side-offset="4">
+                    <p class="text-xs">{{ enableExtendedDiscovery ? '扩展发现已开启：将识别非标准字段名的高熵动态值' : '标准模式：仅识别字段名含 token/csrf/nonce 的动态值' }}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </Tooltip>
+
+            <!-- Model Selector -->
               <Popover v-model:open="isModelsOpen">
                 <PopoverTrigger as-child>
                   <div class="flex items-center gap-2 rounded-full bg-white/15 border border-white/20 px-3 py-2 text-sm font-medium text-white cursor-pointer hover:bg-white/25 transition backdrop-blur">
