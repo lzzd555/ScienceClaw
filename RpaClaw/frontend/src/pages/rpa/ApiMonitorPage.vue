@@ -1296,9 +1296,9 @@ onBeforeUnmount(() => {
                     <p class="text-xs">{{ enableExtendedDiscovery ? '扩展发现已开启：将识别非标准字段名的高熵动态值' : '标准模式：仅识别字段名含 token/csrf/nonce 的动态值' }}</p>
                   </TooltipContent>
                 </Tooltip>
-              </Tooltip>
+              </TooltipProvider>
 
-            <!-- Model Selector -->
+              <!-- Model Selector -->
               <Popover v-model:open="isModelsOpen">
                 <PopoverTrigger as-child>
                   <div class="flex items-center gap-2 rounded-full bg-white/15 border border-white/20 px-3 py-2 text-sm font-medium text-white cursor-pointer hover:bg-white/25 transition backdrop-blur">
