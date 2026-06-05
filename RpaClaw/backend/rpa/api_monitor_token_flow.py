@@ -113,7 +113,7 @@ def is_dynamic_value_candidate(value: str, *, field_name: str = "", enable_exten
 
 def build_api_monitor_token_flow_profile(calls: list[CapturedApiCall], *, enable_extended_discovery: bool = False) -> dict[str, Any]:
     producers, value_to_producers = _collect_producers(calls, enable_extended_discovery=enable_extended_discovery)
-    consumers = _collect_consumers(calls)
+    consumers = _collect_consumers(calls, enable_extended_discovery=enable_extended_discovery)
     flows = _match_flows(producers, value_to_producers, consumers)
     flow_docs = [_flow_profile_doc(flow) for flow in flows]
     logger.info(
@@ -146,7 +146,7 @@ def resolve_token_flows_for_publish(
     if not selections:
         return []
     producers, value_to_producers = _collect_producers(calls, enable_extended_discovery=enable_extended_discovery)
-    consumers = _collect_consumers(calls)
+    consumers = _collect_consumers(calls, enable_extended_discovery=enable_extended_discovery)
     flows = _match_flows(producers, value_to_producers, consumers)
 
     selected_ids = {s.get("id", "") for s in selections if s.get("enabled", True)}
@@ -288,7 +288,11 @@ def _scan_json_dict(
 # ── Consumer collection ─────────────────────────────────────────────────
 
 
-def _collect_consumers(calls: list[CapturedApiCall]) -> list[_TokenConsumer]:
+def _collect_consumers(
+    calls: list[CapturedApiCall],
+    *,
+    enable_extended_discovery: bool = False,
+) -> list[_TokenConsumer]:
     consumers: list[_TokenConsumer] = []
     for call in calls:
         ts = _call_timestamp(call)
@@ -299,7 +303,7 @@ def _collect_consumers(calls: list[CapturedApiCall]) -> list[_TokenConsumer]:
             lowered = name.lower()
             if lowered in NOISE_HEADER_NAMES:
                 continue
-            if not is_dynamic_value_candidate(value, field_name=lowered):
+            if not is_dynamic_value_candidate(value, field_name=lowered, enable_extended_discovery=enable_extended_discovery):
                 continue
             consumers.append(_TokenConsumer(
                 value_hash=_hash_value(value),
@@ -316,7 +320,7 @@ def _collect_consumers(calls: list[CapturedApiCall]) -> list[_TokenConsumer]:
         # Query parameters
         parsed = urlsplit(req.url)
         for qname, qvalue in parse_qsl(parsed.query, keep_blank_values=True):
-            if is_dynamic_value_candidate(qvalue, field_name=qname):
+            if is_dynamic_value_candidate(qvalue, field_name=qname, enable_extended_discovery=enable_extended_discovery):
                 consumers.append(_TokenConsumer(
                     value_hash=_hash_value(qvalue),
                     call_id=call.id,
@@ -340,9 +344,9 @@ def _collect_consumers(calls: list[CapturedApiCall]) -> list[_TokenConsumer]:
                 except (ValueError, TypeError):
                     is_json_content = False
             if is_json_content:
-                _scan_json_body_consumers(req.body, call, ts, consumers)
+                _scan_json_body_consumers(req.body, call, ts, consumers, enable_extended_discovery=enable_extended_discovery)
             elif is_form_explicit or "=" in req.body:
-                _scan_form_body_consumers(req.body, call, ts, consumers)
+                _scan_form_body_consumers(req.body, call, ts, consumers, enable_extended_discovery=enable_extended_discovery)
 
     return consumers
 
@@ -352,6 +356,8 @@ def _scan_json_body_consumers(
     call: CapturedApiCall,
     ts: float,
     consumers: list[_TokenConsumer],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> None:
     try:
         data = __import__("json").loads(body_text)
@@ -359,7 +365,7 @@ def _scan_json_body_consumers(
         return
     if not isinstance(data, dict):
         return
-    _scan_json_dict_consumers(data, call, ts, "request.body.$.", consumers)
+    _scan_json_dict_consumers(data, call, ts, "request.body.$.", consumers, enable_extended_discovery=enable_extended_discovery)
 
 
 def _scan_json_dict_consumers(
@@ -368,11 +374,13 @@ def _scan_json_dict_consumers(
     ts: float,
     prefix: str,
     consumers: list[_TokenConsumer],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> None:
     for key, value in data.items():
         path = f"{prefix}{key}"
         if isinstance(value, str):
-            if is_dynamic_value_candidate(value, field_name=key):
+            if is_dynamic_value_candidate(value, field_name=key, enable_extended_discovery=enable_extended_discovery):
                 consumers.append(_TokenConsumer(
                     value_hash=_hash_value(value),
                     call_id=call.id,
@@ -385,7 +393,7 @@ def _scan_json_dict_consumers(
                     signals=("high-entropy",),
                 ))
         elif isinstance(value, dict):
-            _scan_json_dict_consumers(value, call, ts, f"{path}.", consumers)
+            _scan_json_dict_consumers(value, call, ts, f"{path}.", consumers, enable_extended_discovery=enable_extended_discovery)
 
 
 def _scan_form_body_consumers(
@@ -393,9 +401,11 @@ def _scan_form_body_consumers(
     call: CapturedApiCall,
     ts: float,
     consumers: list[_TokenConsumer],
+    *,
+    enable_extended_discovery: bool = False,
 ) -> None:
     for fname, fvalue in parse_qsl(body_text, keep_blank_values=True):
-        if is_dynamic_value_candidate(fvalue, field_name=fname):
+        if is_dynamic_value_candidate(fvalue, field_name=fname, enable_extended_discovery=enable_extended_discovery):
             consumers.append(_TokenConsumer(
                 value_hash=_hash_value(fvalue),
                 call_id=call.id,
